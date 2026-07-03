@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Theme tokens ─────────────────────────────────────────── */
+:root {
+  --surface-bg:      248 250 255;   /* #F8FAFF */
+  --surface-panel:   255 255 255;   /* #FFFFFF */
+  --surface-raised:  241 245 255;   /* #F1F5FF */
+  --surface-border:  209 217 238;   /* #D1D9EE */
+  --text-primary:     15  23  42;   /* #0F172A */
+  --text-secondary:   71  85 105;   /* #475569 */
+  --text-muted:      148 163 184;   /* #94A3B8 */
+}
+
+.dark {
+  --surface-bg:        6  11  23;   /* #060B17 */
+  --surface-panel:    11  18  32;   /* #0B1220 */
+  --surface-raised:   17  27  46;   /* #111B2E */
+  --surface-border:   28  42  66;   /* #1C2A42 */
+  --text-primary:    232 236 246;   /* #E8ECF6 */
+  --text-secondary:  139 153 184;   /* #8B99B8 */
+  --text-muted:       76  90 120;   /* #4C5A78 */
+}
+
+/* ─── Base ──────────────────────────────────────────────────── */
+@layer base {
+  html, body, #root { @apply h-full; }
+  body { @apply bg-surface-bg text-text-primary font-sans antialiased; }
+
+  * { scrollbar-width: thin; scrollbar-color: rgb(var(--surface-border)) rgb(var(--surface-bg)); }
+  *::-webkit-scrollbar        { width: 5px; height: 5px; }
+  *::-webkit-scrollbar-track  { background: rgb(var(--surface-bg)); }
+  *::-webkit-scrollbar-thumb  { background: rgb(var(--surface-border)); border-radius: 3px; }
+}
+
+/* ─── Components ────────────────────────────────────────────── */
+@layer components {
+  .card {
+    @apply bg-surface-panel border border-surface-border rounded-xl;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .dark .card { box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
+
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold
+           transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-white hover:bg-brand-dim focus:ring-brand/40;
+  }
+  .btn-secondary {
+    @apply btn bg-surface-raised text-text-secondary border border-surface-border
+           hover:bg-surface-border/50 focus:ring-brand/30;
+  }
+  .btn-danger {
+    @apply btn bg-status-danger text-white hover:bg-red-700 focus:ring-red-400/40;
+  }
+  .btn-ghost {
+    @apply btn text-text-secondary hover:bg-surface-raised hover:text-text-primary focus:ring-brand/30;
+  }
+
+  .input {
+    @apply w-full bg-surface-raised border border-surface-border rounded-lg px-3 py-2 text-sm
+           text-text-primary placeholder-text-muted
+           focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand/30 transition-colors;
+  }
+
+  .label { @apply block text-xs font-semibold uppercase tracking-wider text-text-muted mb-1.5; }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border;
+  }
+  .badge-green  { @apply badge bg-green-500/10  text-green-600  dark:text-green-400  border-green-500/30; }
+  .badge-red    { @apply badge bg-red-500/10    text-red-600    dark:text-red-400    border-red-500/30; }
+  .badge-amber  { @apply badge bg-amber-500/10  text-amber-600  dark:text-amber-400  border-amber-500/30; }
+  .badge-blue   { @apply badge bg-blue-500/10   text-blue-600   dark:text-blue-400   border-blue-500/30; }
+  .badge-gray   { @apply badge bg-surface-raised text-text-muted border-surface-border; }
+
+  .table-head { @apply text-[11px] font-semibold uppercase tracking-wider text-text-muted; }
+  .table-row  {
+    @apply border-b border-surface-border/60 last:border-0
+           hover:bg-surface-raised/50 transition-colors;
+  }
+  .table-cell { @apply py-3 px-4 text-sm text-text-primary; }
+
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium
+           text-text-secondary transition-all duration-100
+           hover:bg-surface-raised hover:text-text-primary;
+  }
+  .sidebar-link.active {
+    @apply bg-brand/10 text-brand font-semibold;
+  }
+
+  .stat-card {
+    @apply card p-5 flex flex-col gap-1;
+  }
+  .stat-label { @apply text-[11px] font-semibold uppercase tracking-wider text-text-muted; }
+  .stat-value { @apply text-2xl font-bold tabular-nums text-text-primary; }
+}

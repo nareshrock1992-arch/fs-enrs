@@ -1,0 +1,52 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fs_enrs
+      POSTGRES_USER: ${DB_USER:-enrs}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-enrs_pass}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-enrs} -d fs_enrs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enrs
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DB_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4100:4100"
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - enrs
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8100:8100"
+    depends_on:
+      - backend
+    networks:
+      - enrs
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
+
+networks:
+  enrs:
+    driver: bridge
