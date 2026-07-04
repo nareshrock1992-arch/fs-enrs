@@ -159,10 +159,37 @@ export function eslCommand(cmd) {
   });
 }
 
-// ─── Originate a call (e.g., for ENS notification dialing) ──
-export async function originateCall({ from, to, dialplan = 'XML', context = 'default', vars = {} }) {
-  const varStr = Object.entries(vars).map(([k, v]) => `${k}=${v}`).join(',');
-  const cmd    = `originate {${varStr}}sofia/gateway/${from}/${to} &bridge(sofia/gateway/${from}/${to})`;
+// ─── Originate an ENS blast leg ─────────────────────────────
+// B14 FIX — old command bridged the call back to itself:
+//   originate {...}sofia/gateway/FROM/TO &bridge(sofia/gateway/FROM/TO)
+//   FROM was being used as both the gateway name AND dial string.
+//   The correct form for blast playback is &playback(file), and for
+//   conference bridge is &conference(room@profile).
+//
+// opts.gateway  — SIP gateway name in FreeSWITCH
+// opts.to       — destination number to dial
+// opts.clid     — caller ID shown on recipient's phone (blast_clid)
+// opts.action   — 'playback' | 'conference'
+// opts.target   — recording file path (playback) or room name (conference)
+// opts.vars     — additional channel variables
+export async function originateCall({ gateway, to, clid, action = 'playback', target, vars = {} }) {
+  const varParts = {
+    origination_caller_id_number: clid || gateway,
+    origination_caller_id_name:   clid || gateway,
+    ignore_early_media:           'true',
+    originate_timeout:            '30',
+    ...vars,
+  };
+  const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
+
+  let app;
+  if (action === 'conference') {
+    app = `&conference(${target}@default)`;
+  } else {
+    app = `&playback(${target})`;
+  }
+
+  const cmd = `originate {${varStr}}sofia/gateway/${gateway}/${to} ${app}`;
   return eslCommand(cmd);
 }
 

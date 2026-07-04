@@ -2,33 +2,49 @@ import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
+// B5: pin was NOT NULL — CLID-based design makes it optional
 const EnsConfigSchema = z.object({
-  organization_id: z.number().int().positive(),
-  name:            z.string().min(1).max(128),
-  pin:             z.string().min(1).max(32),
-  phone_number:    z.string().optional().nullable(),
-  caller_id:       z.string().optional().nullable(),
-  retry_count:     z.number().int().min(0).max(10).default(3),
-  template_id:     z.number().int().positive().optional().nullable(),
-  is_active:       z.boolean().default(true),
-  group_ids:       z.array(z.number().int().positive()).default([]),
-  contact_ids:     z.array(z.number().int().positive()).default([]),
+  organization_id:           z.number().int().positive(),
+  name:                      z.string().min(1).max(128),
+  destination_number:        z.string().max(32).optional().nullable(),
+  blast_clid:                z.string().max(32).optional().nullable(),
+  reply_clid:                z.string().max(32).optional().nullable(),
+  pin:                       z.string().max(32).optional().nullable(),  // deprecated, nullable
+  retry_count:               z.number().int().min(0).max(10).default(3),
+  retry_delay_seconds:       z.number().int().min(0).default(60),
+  recording_retention_hours: z.number().int().min(1).default(24),
+  max_concurrent:            z.number().int().min(1).default(50),
+  template_id:               z.number().int().positive().optional().nullable(),
+  is_active:                 z.boolean().default(true),
+  group_ids:                 z.array(z.number().int().positive()).default([]),
+  contact_ids:               z.array(z.number().int().positive()).default([]),
 });
 
-// GET /api/v1/ens/configurations
+// B12: listConfigurations returned a plain array — now paginated
 export const listConfigurations = asyncHandler(async (req, res) => {
+  const page   = Math.max(1, Number(req.query.page)  || 1);
+  const limit  = Math.min(200, Number(req.query.limit) || 50);
+  const offset = (page - 1) * limit;
+  const orgId  = req.query.organization_id || null;
+
   const { rows } = await query(
     `SELECT e.*, o.name AS organization_name,
-       (SELECT COUNT(*) FROM ens_configuration_groups WHERE ens_configuration_id = e.id)::INT AS group_count,
+       (SELECT COUNT(*) FROM ens_configuration_groups   WHERE ens_configuration_id = e.id)::INT AS group_count,
        (SELECT COUNT(*) FROM ens_configuration_contacts WHERE ens_configuration_id = e.id)::INT AS contact_count
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
        AND ($1::int IS NULL OR e.organization_id = $1)
-     ORDER BY e.name`,
-    [req.query.organization_id || null]
+     ORDER BY e.name
+     LIMIT $2 OFFSET $3`,
+    [orgId, limit, offset]
   );
-  res.json(rows);
+  const { rows: cnt } = await query(
+    `SELECT COUNT(*)::INT AS total FROM ens_configurations
+     WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId]
+  );
+  res.json({ data: rows, total: cnt[0].total, page, limit });
 });
 
 // GET /api/v1/ens/configurations/:id
@@ -134,16 +150,74 @@ export const deleteConfiguration = asyncHandler(async (req, res) => {
   res.status(204).end();
 });
 
-// GET /api/v1/ens/lookup?pin=XXX  — Lua API: lookup config by PIN
+// GET /api/v1/internal/ens/lookup?number=XXX  — primary Lua lookup (CLID-based)
+// Returns config + full contact mobile list for the blast engine.
+export const lookupByNumber = asyncHandler(async (req, res) => {
+  const number = req.query.number;
+  if (!number) return res.status(400).json({ error: 'number required' });
+
+  const { rows } = await query(
+    `SELECT e.id, e.name, e.destination_number, e.blast_clid, e.reply_clid,
+       e.pin, e.retry_count, e.retry_delay_seconds,
+       e.recording_retention_hours, e.max_concurrent, e.organization_id
+     FROM ens_configurations e
+     WHERE e.destination_number = $1
+       AND e.is_active = true AND e.deleted_at IS NULL LIMIT 1`,
+    [number]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'No ENS configuration for number' });
+
+  const cfg = rows[0];
+
+  // Collect all active contact mobile numbers (groups + direct)
+  const { rows: contacts } = await query(
+    `SELECT DISTINCT c.mobile_number
+     FROM emergency_contacts c
+     WHERE c.deleted_at IS NULL AND c.is_active = true
+       AND (
+         c.id IN (
+           SELECT rgm.emergency_contact_id FROM responder_group_members rgm
+           JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
+           WHERE ecg.ens_configuration_id = $1
+         )
+         OR c.id IN (
+           SELECT ecc.emergency_contact_id FROM ens_configuration_contacts ecc
+           WHERE ecc.ens_configuration_id = $1
+         )
+       )`,
+    [cfg.id]
+  );
+
+  res.json({
+    success: true,
+    data: {
+      configuration_id:           cfg.id,
+      name:                       cfg.name,
+      blast_clid:                 cfg.blast_clid,
+      reply_clid:                 cfg.reply_clid,
+      pin:                        cfg.pin,            // null if CLID-only
+      retry_count:                cfg.retry_count,
+      retry_delay_seconds:        cfg.retry_delay_seconds,
+      recording_retention_hours:  cfg.recording_retention_hours,
+      max_concurrent:             cfg.max_concurrent,
+      contacts:                   contacts.map(r => r.mobile_number),
+    },
+  });
+});
+
+// GET /api/v1/ens/lookup?pin=XXX  — DEPRECATED: kept for backward compat (90 days)
+// Lua scripts should migrate to /internal/ens/lookup?number=
 export const lookupByPin = asyncHandler(async (req, res) => {
   const pin = req.query.pin;
   if (!pin) return res.status(400).json({ error: 'pin required' });
 
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Sunset', 'Mon, 31 Aug 2026 00:00:00 GMT');
+
   const { rows } = await query(
-    `SELECT e.id, e.name, e.pin, e.caller_id, e.retry_count,
-       e.phone_number, e.organization_id, o.name AS organization_name
+    `SELECT e.id, e.name, e.pin, e.blast_clid, e.reply_clid,
+       e.retry_count, e.organization_id
      FROM ens_configurations e
-     JOIN organizations o ON o.id = e.organization_id
      WHERE e.pin = $1 AND e.is_active = true AND e.deleted_at IS NULL LIMIT 1`,
     [pin]
   );

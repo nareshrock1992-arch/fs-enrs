@@ -25,6 +25,23 @@ export async function query(sql, params) {
   return res;
 }
 
+// Transaction helper — fn receives a client bound query function
+// Usage: withTransaction(async (tq) => { await tq(sql, params); })
+export async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn((sql, params) => client.query(sql, params));
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function testConnection() {
   try {
     const { rows } = await query('SELECT NOW() AS now');

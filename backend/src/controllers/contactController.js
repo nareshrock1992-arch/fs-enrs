@@ -148,9 +148,13 @@ export const bulkUpload = asyncHandler(async (req, res) => {
   res.json({ inserted, errors, total: records.length });
 });
 
-// GET /api/v1/contacts/by-pin?pin=XXX  — used by Lua scripts
-// Returns contacts for the ENS configuration matching the PIN
+// GET /api/v1/contacts/by-pin?pin=XXX  — DEPRECATED (use /internal/ens/lookup?number=)
+// B15 FIX — this endpoint breaks when ens_contacts and ers_responders are
+// separated into their own tables. Kept for backward compat, marked Sunset.
 export const getByPin = asyncHandler(async (req, res) => {
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Sunset', 'Mon, 31 Aug 2026 00:00:00 GMT');
+
   const pin = req.query.pin;
   if (!pin) return res.status(400).json({ error: 'pin required' });
 

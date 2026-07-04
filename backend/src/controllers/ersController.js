@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { query } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { eslCommand } from '../services/eslService.js';
 
@@ -16,26 +16,40 @@ const ErsConfigSchema = z.object({
 
 // ── ERS Configurations ────────────────────────────────────────
 
+// B13: listConfigurations was returning a plain array with no pagination
 export const listConfigurations = asyncHandler(async (req, res) => {
+  const page   = Math.max(1, Number(req.query.page)  || 1);
+  const limit  = Math.min(200, Number(req.query.limit) || 50);
+  const offset = (page - 1) * limit;
+  const orgId  = req.query.organization_id || null;
+
   const { rows } = await query(
     `SELECT e.*,
-       o.name AS organization_name,
+       o.name  AS organization_name,
        pg.name AS primary_group_name,
        sg.name AS secondary_group_name,
        (SELECT COUNT(*) FROM ers_incidents i
-        WHERE i.ers_configuration_id = e.id AND i.status = 'ACTIVE')::INT AS active_incidents,
+        WHERE i.ers_configuration_id = e.id
+          AND i.status = 'ACTIVE')::INT AS active_incidents,
        (SELECT COUNT(*) FROM ers_queues q
-        WHERE q.ers_configuration_id = e.id AND q.status = 'QUEUED')::INT AS queued_count
+        WHERE q.ers_configuration_id = e.id
+          AND q.status = 'QUEUED')::INT AS queued_count
      FROM ers_configurations e
-     LEFT JOIN organizations   o  ON o.id  = e.organization_id
+     LEFT JOIN organizations    o  ON o.id  = e.organization_id
      LEFT JOIN responder_groups pg ON pg.id = e.primary_group_id
      LEFT JOIN responder_groups sg ON sg.id = e.secondary_group_id
      WHERE e.deleted_at IS NULL
        AND ($1::int IS NULL OR e.organization_id = $1)
-     ORDER BY e.name`,
-    [req.query.organization_id || null]
+     ORDER BY e.name
+     LIMIT $2 OFFSET $3`,
+    [orgId, limit, offset]
   );
-  res.json(rows);
+  const { rows: cnt } = await query(
+    `SELECT COUNT(*)::INT AS total FROM ers_configurations
+     WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId]
+  );
+  res.json({ data: rows, total: cnt[0].total, page, limit });
 });
 
 export const getConfiguration = asyncHandler(async (req, res) => {
@@ -157,75 +171,139 @@ export const listIncidents = asyncHandler(async (req, res) => {
 });
 
 // POST /api/v1/ers/incidents  — Lua calls this when emergency call arrives
+//
+// B7 FIX — Race condition: two simultaneous callers could both read
+// active_count < max and both insert as ACTIVE.
+// Fix: use SELECT … FOR UPDATE inside a transaction to serialise the
+// read-then-insert. The lock on the ers_configurations row means a
+// second concurrent call blocks at the SELECT until the first COMMIT.
 export const createIncident = asyncHandler(async (req, res) => {
-  const { ers_configuration_id, emergency_call_number, conference_id } = req.body;
+  const {
+    ers_configuration_id,
+    caller_number,
+    caller_name,
+    conference_room,
+    group_type,
+    recording_path,
+  } = req.body;
 
-  // Check if we're at max concurrent conferences
-  const { rows: cnt } = await query(
-    `SELECT max_concurrent_conferences,
-       (SELECT COUNT(*) FROM ers_incidents WHERE ers_configuration_id = $1 AND status = 'ACTIVE')::INT AS active
-     FROM ers_configurations WHERE id = $1`,
-    [ers_configuration_id]
-  );
-
-  const cfg = cnt[0];
-  const isQueued = cfg && cfg.active >= cfg.max_concurrent_conferences;
-
-  const { rows } = await query(
-    `INSERT INTO ers_incidents
-       (ers_configuration_id, emergency_call_number, conference_id, status, queued_at)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [ers_configuration_id, emergency_call_number, conference_id,
-     isQueued ? 'QUEUED' : 'ACTIVE',
-     isQueued ? new Date() : null]
-  );
-
-  if (isQueued) {
-    const { rows: qpos } = await query(
-      `SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM ers_queues
-       WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,
+  const incident = await withTransaction(async (tq) => {
+    // Lock the config row for the duration of this transaction
+    const { rows: cfgRows } = await tq(
+      `SELECT id, max_concurrent_conferences, queue_enabled
+       FROM ers_configurations
+       WHERE id = $1 AND is_active = true AND deleted_at IS NULL
+       FOR UPDATE`,
       [ers_configuration_id]
     );
-    await query(
-      `INSERT INTO ers_queues (ers_configuration_id, incident_id, position, status)
-       VALUES ($1,$2,$3,'QUEUED')`,
-      [ers_configuration_id, rows[0].id, qpos[0].next_pos]
-    );
-  }
+    if (!cfgRows[0]) throw Object.assign(new Error('ERS configuration not found'), { status: 404 });
 
-  res.status(201).json({ ...rows[0], queued: isQueued });
+    const cfg = cfgRows[0];
+
+    // Count active incidents while holding the row lock — no TOCTOU gap
+    const { rows: cntRows } = await tq(
+      `SELECT COUNT(*)::INT AS active FROM ers_incidents
+       WHERE ers_configuration_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+      [ers_configuration_id]
+    );
+    const isQueued = cntRows[0].active >= cfg.max_concurrent_conferences;
+
+    if (isQueued && !cfg.queue_enabled) {
+      throw Object.assign(new Error('All conferences active and queue is disabled'), { status: 409 });
+    }
+
+    const { rows: incRows } = await tq(
+      `INSERT INTO ers_incidents
+         (ers_configuration_id, caller_number, caller_name, conference_room,
+          group_type, recording_path, status, queued_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [
+        ers_configuration_id,
+        caller_number, caller_name, conference_room, group_type, recording_path,
+        isQueued ? 'QUEUED' : 'ACTIVE',
+        isQueued ? new Date() : null,
+      ]
+    );
+
+    if (isQueued) {
+      const { rows: qRows } = await tq(
+        `SELECT COALESCE(MAX(position), 0) + 1 AS next_pos
+         FROM ers_queues WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,
+        [ers_configuration_id]
+      );
+      await tq(
+        `INSERT INTO ers_queues
+           (ers_configuration_id, incident_id, position, status, caller_number, queued_reason)
+         VALUES ($1,$2,$3,'QUEUED',$4,'max_concurrent_reached')`,
+        [ers_configuration_id, incRows[0].id, qRows[0].next_pos, caller_number]
+      );
+    }
+
+    return { ...incRows[0], queued: isQueued };
+  });
+
+  res.status(201).json(incident);
 });
 
-// PATCH /api/v1/ers/incidents/:id/complete
+// POST /api/v1/ers/incidents/:uuid/complete  — Lua calls after caller leaves
+//
+// B8 FIX — Non-atomic completion: the old code ran three separate queries
+// (UPDATE incident, SELECT queue, UPDATE queue) without a transaction.
+// If the process crashed between queries, the queue entry would be stuck as
+// QUEUED forever while the incident was COMPLETED. Now all three are atomic.
 export const completeIncident = asyncHandler(async (req, res) => {
-  const { rows } = await query(
-    `UPDATE ers_incidents SET status = 'COMPLETED', ended_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Incident not found' });
+  // Accept both integer id and UUID (Lua uses UUID)
+  const idParam = req.params.id;
+  const isUuid  = /^[0-9a-f-]{36}$/i.test(idParam);
+  const whereClause = isUuid
+    ? 'incident_uuid = $1'
+    : 'id = $1';
 
-  // Auto-dequeue next waiting incident for this configuration
-  const { rows: nextQ } = await query(
-    `SELECT q.*, i.id AS incident_id FROM ers_queues q
-     JOIN ers_incidents i ON i.id = q.incident_id
-     WHERE q.ers_configuration_id = $1 AND q.status = 'QUEUED'
-     ORDER BY q.position ASC LIMIT 1`,
-    [rows[0].ers_configuration_id]
-  );
+  const { recording_file } = req.body || {};
 
-  if (nextQ[0]) {
-    await query(
-      `UPDATE ers_incidents SET status = 'ACTIVE', dequeued_at = now() WHERE id = $1`,
-      [nextQ[0].incident_id]
+  const result = await withTransaction(async (tq) => {
+    const { rows } = await tq(
+      `UPDATE ers_incidents
+       SET status       = 'COMPLETED',
+           ended_at     = now(),
+           recording_path = COALESCE($2, recording_path)
+       WHERE ${whereClause} AND deleted_at IS NULL
+       RETURNING *`,
+      [idParam, recording_file || null]
     );
-    await query(
-      `UPDATE ers_queues SET status = 'DEQUEUED', updated_at = now() WHERE id = $1`,
-      [nextQ[0].id]
-    );
-  }
+    if (!rows[0]) throw Object.assign(new Error('Incident not found'), { status: 404 });
+    const incident = rows[0];
 
-  res.json(rows[0]);
+    // Auto-dequeue — both queries in the same transaction
+    const { rows: nextQ } = await tq(
+      `SELECT q.id AS queue_id, q.incident_id FROM ers_queues q
+       WHERE q.ers_configuration_id = $1 AND q.status = 'QUEUED'
+       ORDER BY q.position ASC LIMIT 1
+       FOR UPDATE`,               -- lock the queue row too
+      [incident.ers_configuration_id]
+    );
+
+    let dequeued = null;
+    if (nextQ[0]) {
+      await tq(
+        `UPDATE ers_incidents
+         SET status = 'ACTIVE', dequeued_at = now()
+         WHERE id = $1`,
+        [nextQ[0].incident_id]
+      );
+      const { rows: dq } = await tq(
+        `UPDATE ers_queues
+         SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()
+         WHERE id = $1 RETURNING *`,
+        [nextQ[0].queue_id]
+      );
+      dequeued = dq[0];
+    }
+
+    return { incident, dequeued };
+  });
+
+  res.json({ ...result.incident, dequeued: result.dequeued });
 });
 
 // POST /api/v1/ers/incidents/:id/responders  — add responders to incident

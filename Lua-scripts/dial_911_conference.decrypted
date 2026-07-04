@@ -1,0 +1,241 @@
+-- =========================================================
+-- fs-enrs ERS EMERGENCY CONFERENCE  v2.0
+-- Caller dials an emergency number (e.g. 1222).
+-- The API resolves which ERS configuration handles it.
+-- Conference rooms: ers_{config_id}_primary / _secondary
+-- All DB operations via the fs-enrs REST API.
+-- =========================================================
+
+local http  = require("socket.http")
+local ltn12 = require("ltn12")
+local cjson = require("cjson")
+
+-- ── Runtime config ───────────────────────────────────────
+local API_BASE     = "http://127.0.0.1:4100/api/v1"
+local INTERNAL_KEY = os.getenv("FS_INTERNAL_KEY") or "change_me_internal_key"
+local GATEWAY      = os.getenv("FS_GATEWAY")      or "avaya"
+local SOUNDS       = "/usr/share/freeswitch/sounds/en/us/callie/blast_call"
+local REC_DIR      = "/var/lib/freeswitch/recordings/ers"
+local HOLD_PROMPT  = SOUNDS .. "/EmergencyLineBusy.wav"
+
+-- ── Logging ─────────────────────────────────────────────
+local function log(lvl, msg)
+    freeswitch.consoleLog(lvl, "[ERS-CONF] " .. tostring(msg) .. "\n")
+end
+
+-- ── HTTP helper ─────────────────────────────────────────
+local function api(method, path, body)
+    local url  = API_BASE .. path
+    local resp = {}
+    local hdrs = { ["X-Internal-Key"] = INTERNAL_KEY }
+    local src
+
+    if body then
+        local raw = cjson.encode(body)
+        hdrs["Content-Type"]   = "application/json"
+        hdrs["Content-Length"] = tostring(#raw)
+        src = ltn12.source.string(raw)
+    end
+
+    local _, code = http.request{
+        url = url, method = method,
+        headers = hdrs, source = src,
+        sink = ltn12.sink.table(resp),
+    }
+
+    if not code then
+        log("ERR", "API " .. method .. " " .. path .. " — no response")
+        return nil
+    end
+    if code ~= 200 and code ~= 201 then
+        log("ERR", "API " .. method .. " " .. path .. " → HTTP " .. code)
+        return nil
+    end
+    local ok, dec = pcall(cjson.decode, table.concat(resp))
+    if not ok then return nil end
+    return dec
+end
+
+-- ── Session guard ────────────────────────────────────────
+if not session or not session:ready() then return end
+
+local fapi = freeswitch.API()
+
+-- ── Conference member count ──────────────────────────────
+local function conf_count(room)
+    local r = fapi:executeString("conference " .. room .. " list count")
+    return tonumber(r) or 0
+end
+
+-- ── 1. Dialed number ────────────────────────────────────
+local dest = session:getVariable("destination_number")
+if not dest then
+    log("ERR", "No destination_number")
+    return
+end
+log("INFO", "Emergency number dialed: " .. dest)
+
+-- ── 2. Fetch ERS configuration ───────────────────────────
+local cfg_resp = api("GET", "/internal/ers/lookup?number=" .. dest, nil)
+if not cfg_resp or not cfg_resp.success or not cfg_resp.data then
+    log("ERR", "No ERS config for " .. dest)
+    session:answer()
+    session:execute("speak", "flite|slt|Configuration error. Please try again.")
+    session:sleep(2000)
+    session:hangup()
+    return
+end
+
+local cfg               = cfg_resp.data
+local config_id         = cfg.configuration_id
+local primary_resp      = cfg.primary_responders   or {}
+local secondary_resp    = cfg.secondary_responders or {}
+local retry_count       = tonumber(cfg.retry_count) or 2
+local record_conf       = cfg.record_conferences ~= false
+local queue_enabled     = cfg.queue_enabled ~= false
+local max_concurrent    = tonumber(cfg.max_concurrent_conferences) or 2
+
+log("INFO", string.format(
+    "Config id=%s primary=%d secondary=%d retries=%d record=%s",
+    tostring(config_id), #primary_resp, #secondary_resp,
+    retry_count, tostring(record_conf)))
+
+if #primary_resp == 0 then
+    log("ERR", "No primary responders configured")
+    session:answer()
+    session:execute("speak", "flite|slt|No responders configured.")
+    session:sleep(2000)
+    session:hangup()
+    return
+end
+
+-- ── 3. Caller info ───────────────────────────────────────
+local caller_num  = session:getVariable("effective_caller_id_number")
+if not caller_num or caller_num == "" then
+    caller_num = session:getVariable("caller_id_number") or "unknown"
+end
+local caller_name = session:getVariable("effective_caller_id_name") or caller_num
+log("INFO", "Caller: " .. caller_name .. " <" .. caller_num .. ">")
+
+-- ── 4. Determine conference room ─────────────────────────
+local primary_room   = "ers_" .. config_id .. "_primary"
+local secondary_room = "ers_" .. config_id .. "_secondary"
+
+local target_room    = nil
+local target_resp    = nil
+local group_type     = nil
+
+local function route()
+    local pc = conf_count(primary_room)
+    local sc = conf_count(secondary_room)
+    log("INFO", "primary=" .. pc .. " secondary=" .. sc)
+
+    if pc == 0 then
+        target_room = primary_room
+        target_resp = primary_resp
+        group_type  = "primary"
+        return true
+    end
+    if sc == 0 and max_concurrent >= 2 then
+        target_room = secondary_room
+        target_resp = secondary_resp
+        group_type  = "secondary"
+        return true
+    end
+    return false
+end
+
+-- ── 5. Answer caller ─────────────────────────────────────
+session:answer()
+session:sleep(500)
+
+-- ── 6. Route or hold ────────────────────────────────────
+if not route() then
+    if not queue_enabled then
+        log("INFO", "Both groups busy and queue disabled — rejecting")
+        session:streamFile(SOUNDS .. "/EmergencyLineBusy.wav")
+        session:sleep(1000)
+        session:hangup()
+        return
+    end
+
+    log("INFO", "Both groups active — holding " .. caller_num)
+    while session:ready() do
+        session:streamFile(HOLD_PROMPT)
+        session:sleep(2000)
+        if not session:ready() then break end
+        if route() then
+            log("INFO", "Slot freed → " .. target_room)
+            break
+        end
+    end
+
+    if not session:ready() then
+        log("INFO", "Queued caller " .. caller_num .. " hung up")
+        return
+    end
+end
+
+log("INFO", caller_num .. " → " .. target_room .. " (" .. group_type .. ")")
+
+-- ── 7. Create incident via API ───────────────────────────
+os.execute("mkdir -p " .. REC_DIR)
+local rec_file = REC_DIR .. "/ers_" .. config_id .. "_" ..
+    os.date("%Y%m%d%H%M%S") .. ".wav"
+
+local inc_resp = api("POST", "/internal/ers/incidents", {
+    configuration_id = config_id,
+    caller_number    = caller_num,
+    caller_name      = caller_name,
+    conference_room  = target_room,
+    group_type       = group_type,
+    recording_path   = record_conf and rec_file or nil,
+    status           = "ACTIVE",
+})
+
+if not inc_resp or not inc_resp.incident_uuid then
+    log("ERR", "Failed to create incident record")
+    session:hangup()
+    return
+end
+
+local incident_uuid = inc_resp.incident_uuid
+local incident_id   = inc_resp.incident_id
+log("INFO", "Incident created: " .. incident_uuid)
+
+-- ── 8. Launch background retry dialer ───────────────────
+local numbers_csv = table.concat(target_resp, ",")
+local bgcmd = string.format(
+    "bgapi luarun /usr/share/freeswitch/scripts/ers_retry_caller.lua %s %s %d %s %s %s",
+    target_room,
+    numbers_csv,
+    retry_count,
+    GATEWAY,
+    incident_uuid,
+    caller_num  -- shown as CLI on responder phones
+)
+fapi:executeString(bgcmd)
+log("INFO", "Retry script launched for " .. #target_resp .. " responders")
+
+-- ── 9. Start recording ───────────────────────────────────
+if record_conf then
+    session:execute("record_session", rec_file)
+    log("INFO", "Recording: " .. rec_file)
+end
+
+-- ── 10. Join conference (BLOCKS until caller leaves) ─────
+session:execute("conference", target_room .. "@default")
+
+-- ── 11. Post-conference cleanup ──────────────────────────
+if record_conf then
+    session:execute("stop_record_session", rec_file)
+end
+
+log("INFO", caller_num .. " left " .. target_room ..
+    " | remaining=" .. conf_count(target_room))
+
+-- ── 12. Complete incident via API ────────────────────────
+api("POST", "/internal/ers/incidents/" .. incident_uuid .. "/complete", {
+    recording_file = record_conf and rec_file or nil,
+})
+log("INFO", "Incident " .. incident_uuid .. " completed")
