@@ -4,7 +4,7 @@ import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
-const EMPTY = { organization_id: '', first_name: '', last_name: '', phone: '', email: '', pin: '', department_id: '' };
+const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_number: '', extension_number: '', email: '', role: '', department_id: '' };
 
 export default function ContactList() {
   const [rows,     setRows]     = useState([]);
@@ -47,8 +47,9 @@ export default function ContactList() {
   function openEdit(r) {
     setForm({
       organization_id: r.organization_id, first_name: r.first_name || '',
-      last_name: r.last_name || '', phone: r.phone || '',
-      email: r.email || '', pin: r.pin || '', department_id: r.department_id || '',
+      last_name: r.last_name || '', mobile_number: r.mobile_number || '',
+      extension_number: r.extension_number || '',
+      email: r.email || '', role: r.role || '', department_id: r.department_id || '',
     });
     setModal(r); setError('');
   }
@@ -93,14 +94,14 @@ export default function ContactList() {
 
       <Table>
         <thead><tr className="bg-surface-hover">
-          <Th>Name</Th><Th>Phone</Th><Th>PIN</Th><Th>Organization</Th><Th></Th>
+          <Th>Name</Th><Th>Mobile</Th><Th>Role</Th><Th>Organization</Th><Th></Th>
         </tr></thead>
         <tbody>
           {rows.length === 0 ? <EmptyRow cols={5} /> : rows.map(r => (
             <Tr key={r.id}>
               <Td className="font-medium">{r.first_name} {r.last_name}</Td>
-              <Td className="text-text-muted font-mono text-xs">{r.phone || '—'}</Td>
-              <Td className="text-text-muted font-mono text-xs">{r.pin || '—'}</Td>
+              <Td className="text-text-muted font-mono text-xs">{r.mobile_number || '—'}</Td>
+              <Td className="text-text-muted text-xs">{r.role || '—'}</Td>
               <Td className="text-text-muted">{orgName(r.organization_id)}</Td>
               <Td>
                 <div className="flex gap-1 justify-end">
@@ -119,7 +120,7 @@ export default function ContactList() {
           <div className="space-y-3">
             <div>
               <label className="label">Organization</label>
-              <select className="input" value={form.organization_id} onChange={e => f('organization_id', e.target.value)}>
+              <select className="input" value={form.organization_id} onChange={e => f('organization_id', Number(e.target.value) || '')}>
                 <option value="">Select…</option>
                 {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
@@ -131,13 +132,17 @@ export default function ContactList() {
                 <input className="input" value={form.last_name} onChange={e => f('last_name', e.target.value)} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="label">Phone</label>
-                <input className="input" value={form.phone} onChange={e => f('phone', e.target.value)} /></div>
-              <div><label className="label">PIN</label>
-                <input className="input" value={form.pin} onChange={e => f('pin', e.target.value)} /></div>
+              <div><label className="label">Mobile Number</label>
+                <input className="input" value={form.mobile_number} onChange={e => f('mobile_number', e.target.value)} /></div>
+              <div><label className="label">Extension</label>
+                <input className="input" value={form.extension_number} onChange={e => f('extension_number', e.target.value)} /></div>
             </div>
-            <div><label className="label">Email</label>
-              <input className="input" type="email" value={form.email} onChange={e => f('email', e.target.value)} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="label">Email</label>
+                <input className="input" type="email" value={form.email} onChange={e => f('email', e.target.value)} /></div>
+              <div><label className="label">Role</label>
+                <input className="input" value={form.role} onChange={e => f('role', e.target.value)} placeholder="e.g. Security, Manager" /></div>
+            </div>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
               <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>

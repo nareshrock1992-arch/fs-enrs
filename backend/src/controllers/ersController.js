@@ -49,7 +49,7 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
     [orgId]
   );
-  res.json({ data: rows, total: cnt[0].total, page, limit });
+  res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
 
 export const getConfiguration = asyncHandler(async (req, res) => {
@@ -279,7 +279,7 @@ export const completeIncident = asyncHandler(async (req, res) => {
       `SELECT q.id AS queue_id, q.incident_id FROM ers_queues q
        WHERE q.ers_configuration_id = $1 AND q.status = 'QUEUED'
        ORDER BY q.position ASC LIMIT 1
-       FOR UPDATE`,               -- lock the queue row too
+       FOR UPDATE`,        // -- lock the queue row too     
       [incident.ers_configuration_id]
     );
 

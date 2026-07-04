@@ -5,11 +5,16 @@ import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 
-const EMPTY = { organization_id: '', name: '', pin: '', conference_profile: 'default', max_concurrent_conferences: 5, queue_enabled: true, escalation_timeout: 300, audio_file: '' };
+const EMPTY = {
+  organization_id: '', name: '', pin: '',
+  primary_group_id: '', secondary_group_id: '',
+  max_concurrent_conferences: 2, queue_enabled: true,
+};
 
 export default function ErsConfigList() {
   const [rows,  setRows]  = useState([]);
   const [orgs,  setOrgs]  = useState([]);
+  const [groups,setGroups]= useState([]);
   const [modal, setModal] = useState(null);
   const [form,  setForm]  = useState(EMPTY);
   const [saving,setSaving]= useState(false);
@@ -17,9 +22,10 @@ export default function ErsConfigList() {
 
   async function load() {
     try {
-      const [e, o] = await Promise.all([api.ers.list(), api.orgs.list()]);
+      const [e, o, g] = await Promise.all([api.ers.list(), api.orgs.list(), api.groups.list()]);
       setRows(e.configurations || []);
       setOrgs(o.organizations || []);
+      setGroups(g.groups || []);
     } catch {}
   }
   useEffect(() => { load(); }, []);
@@ -29,7 +35,14 @@ export default function ErsConfigList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      const payload = { ...form, max_concurrent_conferences: Number(form.max_concurrent_conferences), escalation_timeout: Number(form.escalation_timeout) };
+      const payload = {
+        ...form,
+        organization_id:            Number(form.organization_id) || undefined,
+        max_concurrent_conferences: Number(form.max_concurrent_conferences),
+        primary_group_id:           Number(form.primary_group_id) || undefined,
+        secondary_group_id:         Number(form.secondary_group_id) || undefined,
+        pin:                        form.pin || undefined,
+      };
       if (!modal.id) await api.ers.create(payload);
       else           await api.ers.update(modal.id, payload);
       setModal(null); load();
@@ -39,12 +52,13 @@ export default function ErsConfigList() {
   function openCreate() { setForm(EMPTY); setModal({}); setError(''); }
   function openEdit(r) {
     setForm({
-      organization_id: r.organization_id, name: r.name, pin: r.pin || '',
-      conference_profile: r.conference_profile || 'default',
-      max_concurrent_conferences: r.max_concurrent_conferences ?? 5,
-      queue_enabled: r.queue_enabled ?? true,
-      escalation_timeout: r.escalation_timeout ?? 300,
-      audio_file: r.audio_file || '',
+      organization_id:            r.organization_id,
+      name:                       r.name,
+      pin:                        r.pin || '',
+      primary_group_id:           r.primary_group_id || '',
+      secondary_group_id:         r.secondary_group_id || '',
+      max_concurrent_conferences: r.max_concurrent_conferences ?? 2,
+      queue_enabled:              r.queue_enabled ?? true,
     });
     setModal(r); setError('');
   }
@@ -58,7 +72,8 @@ export default function ErsConfigList() {
     try { await api.ers.toggle(r.id); load(); } catch (e) { alert(e.message); }
   }
 
-  const orgName = id => orgs.find(o => o.id === id)?.name || '—';
+  const orgName   = id => orgs.find(o => o.id === id)?.name || '—';
+  const orgGroups = oid => groups.filter(g => g.organization_id === Number(oid));
 
   return (
     <div className="space-y-4">
@@ -69,13 +84,12 @@ export default function ErsConfigList() {
 
       <Table>
         <thead><tr className="bg-surface-hover">
-          <Th>Name</Th><Th>PIN</Th><Th>Organization</Th><Th>Max Conf.</Th><Th>Queue</Th><Th>Status</Th><Th></Th>
+          <Th>Name</Th><Th>Organization</Th><Th>Max Conf.</Th><Th>Queue</Th><Th>Status</Th><Th></Th>
         </tr></thead>
         <tbody>
-          {rows.length === 0 ? <EmptyRow cols={7} /> : rows.map(r => (
+          {rows.length === 0 ? <EmptyRow cols={6} /> : rows.map(r => (
             <Tr key={r.id}>
               <Td className="font-medium">{r.name}</Td>
-              <Td className="font-mono text-xs text-text-muted">{r.pin || '—'}</Td>
               <Td className="text-text-muted">{orgName(r.organization_id)}</Td>
               <Td>{r.max_concurrent_conferences}</Td>
               <Td><Badge variant={r.queue_enabled ? 'success' : 'default'}>{r.queue_enabled ? 'On' : 'Off'}</Badge></Td>
@@ -100,33 +114,52 @@ export default function ErsConfigList() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">Organization</label>
-                <select className="input" value={form.organization_id} onChange={e => f('organization_id', e.target.value)}>
+                <select className="input" value={form.organization_id}
+                        onChange={e => f('organization_id', Number(e.target.value) || '')}>
                   <option value="">Select…</option>
                   {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                 </select>
               </div>
-              <div><label className="label">PIN</label>
-                <input className="input" value={form.pin} onChange={e => f('pin', e.target.value)} /></div>
+              <div><label className="label">Name</label>
+                <input className="input" value={form.name} onChange={e => f('name', e.target.value)} /></div>
             </div>
-            <div><label className="label">Name</label>
-              <input className="input" value={form.name} onChange={e => f('name', e.target.value)} /></div>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="label">Conference Profile</label>
-                <input className="input" value={form.conference_profile} onChange={e => f('conference_profile', e.target.value)} /></div>
+              <div>
+                <label className="label">Primary Responder Group</label>
+                <select className="input" value={form.primary_group_id}
+                        onChange={e => f('primary_group_id', e.target.value)}>
+                  <option value="">None</option>
+                  {orgGroups(form.organization_id).map(g => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Secondary Responder Group</label>
+                <select className="input" value={form.secondary_group_id}
+                        onChange={e => f('secondary_group_id', e.target.value)}>
+                  <option value="">None</option>
+                  {orgGroups(form.organization_id).map(g => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
               <div><label className="label">Max Concurrent Conferences</label>
-                <input className="input" type="number" min="1" value={form.max_concurrent_conferences} onChange={e => f('max_concurrent_conferences', e.target.value)} /></div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><label className="label">Escalation Timeout (s)</label>
-                <input className="input" type="number" value={form.escalation_timeout} onChange={e => f('escalation_timeout', e.target.value)} /></div>
+                <input className="input" type="number" min="1" max="10"
+                       value={form.max_concurrent_conferences}
+                       onChange={e => f('max_concurrent_conferences', e.target.value)} /></div>
+              <div><label className="label">PIN (optional)</label>
+                <input className="input" value={form.pin}
+                       onChange={e => f('pin', e.target.value)}
+                       placeholder="Leave blank for CLID-only" /></div>
               <div className="flex items-center gap-3 pt-5">
                 <input type="checkbox" id="qEnabled" checked={form.queue_enabled}
                        onChange={e => f('queue_enabled', e.target.checked)} />
                 <label htmlFor="qEnabled" className="text-sm text-text-primary cursor-pointer">Enable Queue</label>
               </div>
             </div>
-            <div><label className="label">Audio File Path</label>
-              <input className="input" value={form.audio_file} onChange={e => f('audio_file', e.target.value)} /></div>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
               <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>

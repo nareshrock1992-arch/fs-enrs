@@ -6,6 +6,9 @@ const OrgSchema = z.object({
   name:        z.string().min(1).max(128),
   code:        z.string().max(64).optional(),
   description: z.string().optional(),
+  address:     z.string().max(256).optional().nullable(),
+  phone:       z.string().max(32).optional().nullable(),
+  email:       z.string().email().optional().nullable(),
   is_active:   z.boolean().default(true),
   tenant_id:   z.number().int().positive().optional(),
 });
@@ -32,7 +35,7 @@ export const listOrganizations = asyncHandler(async (req, res) => {
     ? (await query(`SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL ${search ? 'AND (name ILIKE $1 OR code ILIKE $1)' : ''}`, search ? [search] : [])).rows[0].count
     : 0;
 
-  res.json({ data: rows, total: Number(total), page, limit });
+  res.json({ organizations: rows, total: Number(total), page, limit });
 });
 
 export const getOrganization = asyncHandler(async (req, res) => {
@@ -47,9 +50,9 @@ export const getOrganization = asyncHandler(async (req, res) => {
 export const createOrganization = asyncHandler(async (req, res) => {
   const data = OrgSchema.parse(req.body);
   const { rows } = await query(
-    `INSERT INTO organizations (name, code, description, is_active, tenant_id)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [data.name, data.code, data.description, data.is_active, data.tenant_id]
+    `INSERT INTO organizations (name, code, description, address, phone, email, is_active, tenant_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active, data.tenant_id]
   );
   res.status(201).json(rows[0]);
 });
@@ -61,11 +64,14 @@ export const updateOrganization = asyncHandler(async (req, res) => {
        name        = COALESCE($2, name),
        code        = COALESCE($3, code),
        description = COALESCE($4, description),
-       is_active   = COALESCE($5, is_active),
+       address     = COALESCE($5, address),
+       phone       = COALESCE($6, phone),
+       email       = COALESCE($7, email),
+       is_active   = COALESCE($8, is_active),
        updated_at  = now()
      WHERE id = $1 AND deleted_at IS NULL
      RETURNING *`,
-    [req.params.id, data.name, data.code, data.description, data.is_active]
+    [req.params.id, data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Organization not found' });
   res.json(rows[0]);
@@ -84,6 +90,7 @@ export const deleteOrganization = asyncHandler(async (req, res) => {
 const LocationSchema = z.object({
   organization_id: z.number().int().positive(),
   name:       z.string().min(1).max(128),
+  address:    z.string().max(256).optional().nullable(),
   building:   z.string().optional(),
   floor:      z.string().optional(),
   room:       z.string().optional(),
@@ -98,15 +105,15 @@ export const listLocations = asyncHandler(async (req, res) => {
      ORDER BY name ASC`,
     orgId ? [orgId] : []
   );
-  res.json(rows);
+  res.json({ locations: rows });
 });
 
 export const createLocation = asyncHandler(async (req, res) => {
   const d = LocationSchema.parse(req.body);
   const { rows } = await query(
-    `INSERT INTO locations (organization_id, name, building, floor, room, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [d.organization_id, d.name, d.building, d.floor, d.room, d.is_active]
+    `INSERT INTO locations (organization_id, name, address, building, floor, room, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [d.organization_id, d.name, d.address, d.building, d.floor, d.room, d.is_active]
   );
   res.status(201).json(rows[0]);
 });
@@ -116,13 +123,14 @@ export const updateLocation = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE locations SET
        name      = COALESCE($2, name),
-       building  = COALESCE($3, building),
-       floor     = COALESCE($4, floor),
-       room      = COALESCE($5, room),
-       is_active = COALESCE($6, is_active),
+       address   = COALESCE($3, address),
+       building  = COALESCE($4, building),
+       floor     = COALESCE($5, floor),
+       room      = COALESCE($6, room),
+       is_active = COALESCE($7, is_active),
        updated_at = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.building, d.floor, d.room, d.is_active]
+    [req.params.id, d.name, d.address, d.building, d.floor, d.room, d.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Location not found' });
   res.json(rows[0]);
@@ -152,7 +160,7 @@ export const listDepartments = asyncHandler(async (req, res) => {
      ORDER BY d.name ASC`,
     orgId ? [orgId] : []
   );
-  res.json(rows);
+  res.json({ departments: rows });
 });
 
 export const createDepartment = asyncHandler(async (req, res) => {

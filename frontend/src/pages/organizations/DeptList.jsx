@@ -77,7 +77,7 @@ export default function DeptList() {
           <div className="space-y-3">
             <div>
               <label className="label">Organization</label>
-              <select className="input" value={form.organization_id} onChange={e => f('organization_id', e.target.value)}>
+              <select className="input" value={form.organization_id} onChange={e => f('organization_id', Number(e.target.value) || '')}>
                 <option value="">Select…</option>
                 {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>

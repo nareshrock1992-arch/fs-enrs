@@ -44,7 +44,7 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
     [orgId]
   );
-  res.json({ data: rows, total: cnt[0].total, page, limit });
+  res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
 
 // GET /api/v1/ens/configurations/:id
@@ -78,9 +78,13 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `INSERT INTO ens_configurations
-       (organization_id, name, pin, phone_number, caller_id, retry_count, template_id, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [d.organization_id, d.name, d.pin, d.phone_number, d.caller_id, d.retry_count, d.template_id, d.is_active]
+       (organization_id, name, destination_number, blast_clid, reply_clid, pin,
+        retry_count, retry_delay_seconds, recording_retention_hours, max_concurrent,
+        template_id, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [d.organization_id, d.name, d.destination_number, d.blast_clid, d.reply_clid, d.pin,
+     d.retry_count, d.retry_delay_seconds, d.recording_retention_hours, d.max_concurrent,
+     d.template_id, d.is_active]
   );
   const cfg = rows[0];
 
@@ -105,15 +109,21 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.partial().parse(req.body);
   const { rows } = await query(
     `UPDATE ens_configurations SET
-       name        = COALESCE($2,  name),
-       pin         = COALESCE($3,  pin),
-       phone_number= COALESCE($4,  phone_number),
-       caller_id   = COALESCE($5,  caller_id),
-       retry_count = COALESCE($6,  retry_count),
-       is_active   = COALESCE($7,  is_active),
-       updated_at  = now()
+       name                       = COALESCE($2,  name),
+       destination_number         = COALESCE($3,  destination_number),
+       blast_clid                 = COALESCE($4,  blast_clid),
+       reply_clid                 = COALESCE($5,  reply_clid),
+       pin                        = COALESCE($6,  pin),
+       retry_count                = COALESCE($7,  retry_count),
+       retry_delay_seconds        = COALESCE($8,  retry_delay_seconds),
+       recording_retention_hours  = COALESCE($9,  recording_retention_hours),
+       max_concurrent             = COALESCE($10, max_concurrent),
+       is_active                  = COALESCE($11, is_active),
+       updated_at                 = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.pin, d.phone_number, d.caller_id, d.retry_count, d.is_active]
+    [req.params.id, d.name, d.destination_number, d.blast_clid, d.reply_clid, d.pin,
+     d.retry_count, d.retry_delay_seconds, d.recording_retention_hours, d.max_concurrent,
+     d.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
 

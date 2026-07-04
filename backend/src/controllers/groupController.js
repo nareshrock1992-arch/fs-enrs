@@ -24,7 +24,7 @@ export const listGroups = asyncHandler(async (req, res) => {
      ORDER BY g.name`,
     [orgId]
   );
-  res.json(rows);
+  res.json({ groups: rows });
 });
 
 export const getGroup = asyncHandler(async (req, res) => {

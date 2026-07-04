@@ -51,7 +51,7 @@ export const listContacts = asyncHandler(async (req, res) => {
     [orgId, search]
   );
 
-  res.json({ data: rows, total: cnt[0].total, page, limit });
+  res.json({ contacts: rows, total: cnt[0].total, page, limit });
 });
 
 export const getContact = asyncHandler(async (req, res) => {
