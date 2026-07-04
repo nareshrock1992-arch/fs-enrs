@@ -1,6 +1,6 @@
 // FreeSWITCH ESL (Event Socket Library) service
 // Maintains a persistent connection; auto-reconnects; fires events to Socket.IO
-import esl from 'esl';
+import esl from 'modesl';
 import { config } from '../config/index.js';
 import { query }  from '../db/pool.js';
 

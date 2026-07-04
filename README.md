@@ -65,7 +65,7 @@ node src/db/seed.js           # create default admin + tenant
 npm run dev                   # nodemon on :4100
 ```
 
-Default admin credentials after seed: `admin@example.com` / `Admin@1234`
+Default admin credentials after seed: `admin@enrs.local` / `Admin@12345`
 
 ### 3. Frontend
 
