@@ -2,14 +2,16 @@ import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
+const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+
 // B5: pin was NOT NULL — CLID-based design makes it optional
 const EnsConfigSchema = z.object({
   organization_id:           z.number().int().positive(),
   name:                      z.string().min(1).max(128),
-  destination_number:        z.string().max(32).optional().nullable(),
-  blast_clid:                z.string().max(32).optional().nullable(),
-  reply_clid:                z.string().max(32).optional().nullable(),
-  pin:                       z.string().max(32).optional().nullable(),  // deprecated, nullable
+  destination_number:        emptyToNull,
+  blast_clid:                emptyToNull,
+  reply_clid:                emptyToNull,
+  pin:                       emptyToNull,  // deprecated, nullable
   retry_count:               z.number().int().min(0).max(10).default(3),
   retry_delay_seconds:       z.number().int().min(0).default(60),
   recording_retention_hours: z.number().int().min(1).default(24),

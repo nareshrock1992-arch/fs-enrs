@@ -72,7 +72,7 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
      GROUP BY c.id, o.name
      ORDER BY c.last_name, c.first_name`
   );
-  res.json(rows);
+  res.json({ contacts: rows });
 }));
 
 export default router;

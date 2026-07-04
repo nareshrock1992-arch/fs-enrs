@@ -49,7 +49,7 @@ router.get('/', adminOnly, asyncHandler(async (req, res) => {
        AND ($2::boolean IS NULL OR is_active = $2)`,
     [role, active]
   );
-  res.json({ data: rows, total: cnt[0].total, page, limit });
+  res.json({ users: rows, total: cnt[0].total, page, limit });
 }));
 
 router.get('/:id', adminOnly, asyncHandler(async (req, res) => {

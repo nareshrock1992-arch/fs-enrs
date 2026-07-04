@@ -3,10 +3,12 @@ import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { eslCommand } from '../services/eslService.js';
 
+const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+
 const ErsConfigSchema = z.object({
   organization_id:            z.number().int().positive(),
   name:                       z.string().min(1).max(128),
-  pin:                        z.string().max(32).optional().nullable(),
+  pin:                        emptyToNull,
   primary_group_id:           z.number().int().positive().optional().nullable(),
   secondary_group_id:         z.number().int().positive().optional().nullable(),
   max_concurrent_conferences: z.number().int().min(1).max(10).default(2),

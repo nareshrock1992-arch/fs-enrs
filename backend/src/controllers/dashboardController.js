@@ -92,9 +92,18 @@ export const getChartData = asyncHandler(async (req, res) => {
     ),
   ]);
 
-  res.json({
-    notifications: notifRows.rows,
-    incidents:     incidentRows.rows,
-    period,
-  });
+  // Merge notification and incident counts by bucket for chart rendering
+  const bucketMap = {};
+  for (const r of notifRows.rows) {
+    const k = r.bucket;
+    bucketMap[k] = { bucket: k, notifications: r.count, incidents: 0 };
+  }
+  for (const r of incidentRows.rows) {
+    const k = r.bucket;
+    if (bucketMap[k]) bucketMap[k].incidents = r.count;
+    else bucketMap[k] = { bucket: k, notifications: 0, incidents: r.count };
+  }
+  const data = Object.values(bucketMap).sort((a, b) => a.bucket < b.bucket ? -1 : 1);
+
+  res.json({ data, notifications: notifRows.rows, incidents: incidentRows.rows, period });
 });

@@ -28,8 +28,13 @@ export default function DeptList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      if (!modal.id) await api.departments.create(form);
-      else           await api.departments.update(modal.id, form);
+      const payload = {
+        organization_id: Number(form.organization_id) || undefined,
+        name:            form.name,
+        extension:       form.extension || null,
+      };
+      if (!modal.id) await api.departments.create(payload);
+      else           await api.departments.update(modal.id, payload);
       setModal(null); load();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }

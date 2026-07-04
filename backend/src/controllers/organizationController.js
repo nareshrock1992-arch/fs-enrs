@@ -2,13 +2,17 @@ import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
+// Coerce empty string → null for optional string fields so '' doesn't fail .email() etc.
+const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+const emptyToNullEmail = z.preprocess(v => (v === '' ? null : v), z.string().email().nullable().optional());
+
 const OrgSchema = z.object({
   name:        z.string().min(1).max(128),
-  code:        z.string().max(64).optional(),
-  description: z.string().optional(),
-  address:     z.string().max(256).optional().nullable(),
-  phone:       z.string().max(32).optional().nullable(),
-  email:       z.string().email().optional().nullable(),
+  code:        emptyToNull,
+  description: emptyToNull,
+  address:     emptyToNull,
+  phone:       emptyToNull,
+  email:       emptyToNullEmail,
   is_active:   z.boolean().default(true),
   tenant_id:   z.number().int().positive().optional(),
 });
@@ -90,10 +94,10 @@ export const deleteOrganization = asyncHandler(async (req, res) => {
 const LocationSchema = z.object({
   organization_id: z.number().int().positive(),
   name:       z.string().min(1).max(128),
-  address:    z.string().max(256).optional().nullable(),
-  building:   z.string().optional(),
-  floor:      z.string().optional(),
-  room:       z.string().optional(),
+  address:    emptyToNull,
+  building:   emptyToNull,
+  floor:      emptyToNull,
+  room:       emptyToNull,
   is_active:  z.boolean().default(true),
 });
 
@@ -144,10 +148,11 @@ export const deleteLocation = asyncHandler(async (req, res) => {
 // ── Departments ──────────────────────────────────────────────
 const DeptSchema = z.object({
   organization_id: z.number().int().positive(),
-  location_id:     z.number().int().positive().optional(),
+  location_id:     z.number().int().positive().optional().nullable(),
   name:            z.string().min(1).max(128),
-  type:            z.string().optional(),
-  notes:           z.string().optional(),
+  extension:       emptyToNull,
+  type:            emptyToNull,
+  notes:           emptyToNull,
   is_active:       z.boolean().default(true),
 });
 
@@ -166,9 +171,9 @@ export const listDepartments = asyncHandler(async (req, res) => {
 export const createDepartment = asyncHandler(async (req, res) => {
   const d = DeptSchema.parse(req.body);
   const { rows } = await query(
-    `INSERT INTO departments (organization_id, location_id, name, type, notes, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [d.organization_id, d.location_id, d.name, d.type, d.notes, d.is_active]
+    `INSERT INTO departments (organization_id, location_id, name, extension, type, notes, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [d.organization_id, d.location_id, d.name, d.extension, d.type, d.notes, d.is_active]
   );
   res.status(201).json(rows[0]);
 });
@@ -179,12 +184,13 @@ export const updateDepartment = asyncHandler(async (req, res) => {
     `UPDATE departments SET
        name        = COALESCE($2, name),
        location_id = COALESCE($3, location_id),
-       type        = COALESCE($4, type),
-       notes       = COALESCE($5, notes),
-       is_active   = COALESCE($6, is_active),
+       extension   = COALESCE($4, extension),
+       type        = COALESCE($5, type),
+       notes       = COALESCE($6, notes),
+       is_active   = COALESCE($7, is_active),
        updated_at  = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.location_id, d.type, d.notes, d.is_active]
+    [req.params.id, d.name, d.location_id, d.extension, d.type, d.notes, d.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Department not found' });
   res.json(rows[0]);

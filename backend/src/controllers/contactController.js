@@ -3,16 +3,19 @@ import { parse } from 'csv-parse/sync';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
+const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+const emptyToNullEmail = z.preprocess(v => (v === '' ? null : v), z.string().email().nullable().optional());
+
 const ContactSchema = z.object({
   organization_id:  z.number().int().positive(),
   location_id:      z.number().int().positive().optional().nullable(),
   department_id:    z.number().int().positive().optional().nullable(),
   first_name:       z.string().min(1).max(64),
   last_name:        z.string().min(1).max(64),
-  role:             z.string().max(64).optional(),
+  role:             emptyToNull,
   mobile_number:    z.string().min(1).max(32),
-  extension_number: z.string().max(32).optional().nullable(),
-  email:            z.string().email().optional().nullable(),
+  extension_number: emptyToNull,
+  email:            emptyToNullEmail,
   is_active:        z.boolean().default(true),
 });
 

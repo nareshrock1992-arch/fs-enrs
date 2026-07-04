@@ -32,8 +32,13 @@ export default function GroupList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      if (!modal.id) await api.groups.create(form);
-      else           await api.groups.update(modal.id, form);
+      const payload = {
+        organization_id: Number(form.organization_id) || undefined,
+        name:            form.name,
+        description:     form.description || null,
+      };
+      if (!modal.id) await api.groups.create(payload);
+      else           await api.groups.update(modal.id, payload);
       setModal(null); load();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }
@@ -59,7 +64,7 @@ export default function GroupList() {
 
   async function addMembers() {
     if (!selIds.length) return;
-    await api.groups.addMembers(membersModal.id, selIds);
+    await api.groups.addMembers(membersModal.id, selIds.map(Number));
     openMembers(membersModal);
   }
 
@@ -106,7 +111,7 @@ export default function GroupList() {
           <div className="space-y-3">
             <div>
               <label className="label">Organization</label>
-              <select className="input" value={form.organization_id} onChange={e => f('organization_id', e.target.value)}>
+              <select className="input" value={form.organization_id} onChange={e => f('organization_id', Number(e.target.value) || '')}>
                 <option value="">Select…</option>
                 {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>

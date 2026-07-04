@@ -40,6 +40,9 @@ export default function EnsList() {
       const payload = {
         ...form,
         organization_id:           Number(form.organization_id) || undefined,
+        destination_number:        form.destination_number || null,
+        blast_clid:                form.blast_clid         || null,
+        reply_clid:                form.reply_clid         || null,
         retry_count:               Number(form.retry_count),
         retry_delay_seconds:       Number(form.retry_delay_seconds),
         recording_retention_hours: Number(form.recording_retention_hours),

@@ -338,4 +338,11 @@ ALTER TABLE ers_incident_responders
 --   created_at, updated_at
 -- FROM emergency_contacts WHERE deleted_at IS NULL;
 
+-- ────────────────────────────────────────────────────────────
+-- B16: departments missing extension column
+-- Root cause: UI form has an extension field but the table didn't.
+-- ────────────────────────────────────────────────────────────
+ALTER TABLE departments
+  ADD COLUMN IF NOT EXISTS extension VARCHAR(32);
+
 COMMIT;

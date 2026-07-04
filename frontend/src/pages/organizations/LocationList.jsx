@@ -28,8 +28,14 @@ export default function LocationList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      if (!modal.id) await api.locations.create(form);
-      else           await api.locations.update(modal.id, form);
+      const payload = {
+        organization_id: Number(form.organization_id) || undefined,
+        name:            form.name,
+        address:         form.address || null,
+        floor_plan_url:  form.floor_plan_url || null,
+      };
+      if (!modal.id) await api.locations.create(payload);
+      else           await api.locations.update(modal.id, payload);
       setModal(null); load();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }

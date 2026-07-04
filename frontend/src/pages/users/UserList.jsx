@@ -5,7 +5,7 @@ import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
 
-const ROLES = ['ADMIN', 'OPERATOR', 'VIEWER'];
+const ROLES = ['ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER'];
 
 const EMPTY = { email: '', full_name: '', password: '', role: 'VIEWER' };
 

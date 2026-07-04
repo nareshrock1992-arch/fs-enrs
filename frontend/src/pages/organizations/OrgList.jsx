@@ -23,8 +23,15 @@ export default function OrgList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      if (!modal.id) await api.orgs.create(form);
-      else           await api.orgs.update(modal.id, form);
+      const payload = {
+        name:    form.name,
+        code:    form.code    || null,
+        address: form.address || null,
+        phone:   form.phone   || null,
+        email:   form.email   || null,
+      };
+      if (!modal.id) await api.orgs.create(payload);
+      else           await api.orgs.update(modal.id, payload);
       setModal(null); load();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }

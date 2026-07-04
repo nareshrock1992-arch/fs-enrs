@@ -37,8 +37,18 @@ export default function ContactList() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      if (!modal.id) await api.contacts.create(form);
-      else           await api.contacts.update(modal.id, form);
+      const payload = {
+        organization_id:  Number(form.organization_id) || undefined,
+        first_name:       form.first_name,
+        last_name:        form.last_name,
+        mobile_number:    form.mobile_number,
+        extension_number: form.extension_number || null,
+        email:            form.email            || null,
+        role:             form.role             || null,
+        department_id:    form.department_id ? Number(form.department_id) : null,
+      };
+      if (!modal.id) await api.contacts.create(payload);
+      else           await api.contacts.update(modal.id, payload);
       setModal(null); load();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }

@@ -2,10 +2,12 @@ import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
+const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+
 const GroupSchema = z.object({
   organization_id: z.number().int().positive(),
   name:            z.string().min(1).max(128),
-  description:     z.string().optional(),
+  description:     emptyToNull,
   is_active:       z.boolean().default(true),
 });
 
