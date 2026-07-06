@@ -135,8 +135,9 @@ export const api = {
     update:     (id, d)  => request('PUT',    `/ers/configurations/${id}`, d),
     toggle:     (id)     => request('PATCH',  `/ers/configurations/${id}/toggle`),
     remove:     (id)     => request('DELETE', `/ers/configurations/${id}`),
-    incidents:  (q)      => request('GET',    `/ers/incidents?${new URLSearchParams(q || {})}`),
-    queue:      ()       => request('GET',    '/ers/queue'),
+    incidents:        (q)    => request('GET',  `/ers/incidents?${new URLSearchParams(q || {})}`),
+    queue:            ()     => request('GET',  '/ers/queue'),
+    completeIncident: (uuid) => request('POST', `/ers/incidents/${uuid}/complete`),
   },
 
   // Reports
@@ -148,11 +149,27 @@ export const api = {
 
   // Settings
   settings: {
-    list:    ()          => request('GET', '/settings'),
-    update:  (key, val)  => request('PUT', `/settings/${key}`, { value: val }),
-    eslStatus: ()        => request('GET', '/settings/esl/status'),
-    flags:   ()          => request('GET', '/settings/feature-flags'),
-    setFlag: (key, val)  => request('PATCH', `/settings/feature-flags/${key}`, { is_enabled: val }),
+    list:             ()          => request('GET', '/settings'),
+    update:           (key, val)  => request('PUT', `/settings/${key}`, { value: val }),
+    eslStatus:        ()          => request('GET', '/settings/esl/status'),
+    flags:            ()          => request('GET', '/settings/feature-flags'),
+    setFlag:          (key, val)  => request('PATCH', `/settings/feature-flags/${key}`, { is_enabled: val }),
+    emergencyNumbers: ()          => request('GET', '/settings/emergency-numbers'),
+  },
+
+  // IVR flows
+  ivr: {
+    list:     (q)           => request('GET',    `/ivr/flows?${new URLSearchParams(q || {})}`),
+    get:      (uuid)        => request('GET',    `/ivr/flows/${uuid}`),
+    create:   (d)           => request('POST',   '/ivr/flows', d),
+    update:   (uuid, d)     => request('PUT',    `/ivr/flows/${uuid}`, d),
+    delete:   (uuid)        => request('DELETE', `/ivr/flows/${uuid}`),
+    validate: (uuid, graph) => request('POST',   `/ivr/flows/${uuid}/validate`, graph ? { graph } : {}),
+    publish:  (uuid, notes) => request('POST',   `/ivr/flows/${uuid}/publish`, { change_notes: notes || undefined }),
+    versions: (uuid)        => request('GET',    `/ivr/flows/${uuid}/versions`),
+    getVersion: (uuid, v)   => request('GET',    `/ivr/flows/${uuid}/versions/${v}`),
+    bind:     (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/bind`, { emergency_number_id: numId }),
+    unbind:   (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/unbind`, { emergency_number_id: numId }),
   },
 
   // Media

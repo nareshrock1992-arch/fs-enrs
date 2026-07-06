@@ -5,12 +5,6 @@ import * as ctrl from '../../controllers/ersController.js';
 
 const router = Router();
 
-// Lua-accessible routes
-router.get( '/lookup',                              ctrl.lookupByPin);
-router.post('/incidents',                           ctrl.createIncident);
-router.patch('/incidents/:id/complete',             ctrl.completeIncident);
-router.post('/incidents/:id/responders',            ctrl.addResponder);
-
 router.use(requireAuth);
 
 // Configurations

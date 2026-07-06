@@ -6,10 +6,11 @@ import { query }  from '../db/pool.js';
 
 const { Connection } = esl;
 
-let conn     = null;     // active ESL connection
-let io       = null;     // Socket.IO instance (injected after boot)
-let isConn   = false;
-let retryTimer = null;
+let conn            = null;     // active ESL connection
+let io              = null;     // Socket.IO instance (injected after boot)
+let isConn          = false;
+let retryTimer      = null;
+let reconnectCount  = 0;
 
 // ─── Inject Socket.IO instance ──────────────────────────────
 export function setSocketIO(ioInstance) {
@@ -110,6 +111,7 @@ export function connect() {
     () => {
       console.log('[esl] Connected to FreeSWITCH');
       isConn = true;
+      reconnectCount = 0;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
 
       // Subscribe to events we care about
@@ -122,7 +124,7 @@ export function connect() {
 
       conn.on('esl::event', handleEvent);
 
-      emit('esl.status', { connected: true });
+      emit('esl.status', { connected: true, host: config.esl.host, port: config.esl.port });
       updateHeartbeat(true);
     }
   );
@@ -135,7 +137,7 @@ export function connect() {
   conn.on('end', () => {
     if (isConn) console.log('[esl] Connection closed');
     isConn = false;
-    emit('esl.status', { connected: false });
+    emit('esl.status', { connected: false, host: config.esl.host, port: config.esl.port, reconnect_attempts: reconnectCount });
     updateHeartbeat(false);
     scheduleReconnect();
   });
@@ -143,6 +145,7 @@ export function connect() {
 
 function scheduleReconnect() {
   if (retryTimer) return;
+  reconnectCount++;
   retryTimer = setTimeout(() => {
     retryTimer = null;
     connect();
@@ -159,28 +162,59 @@ export function eslCommand(cmd) {
   });
 }
 
-// ─── Originate an ENS blast leg ─────────────────────────────
-// B14 FIX — old command bridged the call back to itself:
-//   originate {...}sofia/gateway/FROM/TO &bridge(sofia/gateway/FROM/TO)
-//   FROM was being used as both the gateway name AND dial string.
-//   The correct form for blast playback is &playback(file), and for
-//   conference bridge is &conference(room@profile).
+// ─── Originate a call leg ────────────────────────────────────
 //
-// opts.gateway  — SIP gateway name in FreeSWITCH
-// opts.to       — destination number to dial
-// opts.clid     — caller ID shown on recipient's phone (blast_clid)
-// opts.action   — 'playback' | 'conference'
-// opts.target   — recording file path (playback) or room name (conference)
-// opts.vars     — additional channel variables
-export async function originateCall({ gateway, to, clid, action = 'playback', target, vars = {} }) {
+// mode: 'gateway'  — external SIP gateway (production)
+//         opts.gateway  = gateway name in FreeSWITCH
+//         opts.to       = destination number to dial
+//
+// mode: 'user'     — internal user/ dial string (lab mode, no SIP trunk needed)
+//         opts.extension = internal extension (e.g. '1001')
+//
+// mode: 'internal' — sofia/internal profile (lab/internal profile)
+//         opts.extension = extension
+//         opts.domain    = FreeSWITCH domain (default 127.0.0.1)
+//
+// Common opts:
+//   clid   — caller ID shown on recipient phone
+//   action — 'playback' | 'conference'
+//   target — recording path (playback) or room@profile (conference)
+//   vars   — additional channel variables { key: value }
+export async function originateCall({
+  mode = 'gateway',
+  gateway,
+  extension,
+  domain,
+  to,
+  clid,
+  action = 'playback',
+  target,
+  vars = {},
+}) {
+  const dest = extension || to;
+  const cid  = clid || dest;
+
   const varParts = {
-    origination_caller_id_number: clid || gateway,
-    origination_caller_id_name:   clid || gateway,
+    origination_caller_id_number: cid,
+    origination_caller_id_name:   cid,
     ignore_early_media:           'true',
     originate_timeout:            '30',
     ...vars,
   };
   const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
+
+  let dialStr;
+  if (mode === 'user') {
+    // user/ dial string — routes through FreeSWITCH user directory (no external gateway)
+    dialStr = `user/${dest}`;
+  } else if (mode === 'internal') {
+    // sofia/internal profile — for extensions on internal SIP profile
+    const dom = domain || config.esl.domain || '127.0.0.1';
+    dialStr = `sofia/internal/${dest}@${dom}`;
+  } else {
+    // External SIP gateway (production)
+    dialStr = `sofia/gateway/${gateway}/${dest}`;
+  }
 
   let app;
   if (action === 'conference') {
@@ -189,7 +223,7 @@ export async function originateCall({ gateway, to, clid, action = 'playback', ta
     app = `&playback(${target})`;
   }
 
-  const cmd = `originate {${varStr}}sofia/gateway/${gateway}/${to} ${app}`;
+  const cmd = `originate {${varStr}}${dialStr} ${app}`;
   return eslCommand(cmd);
 }
 
@@ -205,7 +239,7 @@ export async function confKick(confName, memberId) {
 
 // ─── Get current ESL status ─────────────────────────────────
 export function eslStatus() {
-  return { connected: isConn, host: config.esl.host, port: config.esl.port };
+  return { connected: isConn, host: config.esl.host, port: config.esl.port, reconnect_attempts: reconnectCount };
 }
 
 // ─── Heartbeat: ping FS every 30 s ──────────────────────────

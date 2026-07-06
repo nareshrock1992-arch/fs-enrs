@@ -3,6 +3,13 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config/index.js';
 import { setSocketIO, eslStatus } from './eslService.js';
 
+let _io = null;
+
+// Emit an event from internal API controllers to all connected dashboard clients
+export function emitInternal(event, data) {
+  if (_io) _io.emit(event, data);
+}
+
 export function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: {
@@ -13,6 +20,7 @@ export function initSocket(httpServer) {
   });
 
   // Inject into ESL service so it can broadcast events
+  _io = io;
   setSocketIO(io);
 
   io.on('connection', (socket) => {

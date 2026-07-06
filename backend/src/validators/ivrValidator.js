@@ -1,0 +1,183 @@
+import { z } from 'zod';
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+const nodeId = z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/i, 'Node ID must be alphanumeric/underscore/hyphen');
+
+// audio_url must be a local media path — no absolute URLs (SSRF prevention)
+const localAudioUrl = z.string()
+  .max(512)
+  .regex(/^\/media\//, 'audio_url must start with /media/ (no external URLs)');
+
+// session variable name — alphanumeric/underscore
+const varName = z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'variable name must start with a letter/underscore');
+
+// ── Per-type node schemas ─────────────────────────────────────────────────────
+
+const PlayNodeSchema = z.object({
+  type:              z.literal('play'),
+  next:              nodeId,
+  audio_file_id:     z.number().int().positive().optional(),
+  audio_url:         localAudioUrl.optional(),
+}).refine(d => d.audio_file_id !== undefined || d.audio_url !== undefined, {
+  message: 'play node requires audio_file_id or audio_url',
+});
+
+const SayNodeSchema = z.object({
+  type:     z.literal('say'),
+  text:     z.string().min(1).max(1000),
+  next:     nodeId,
+  language: z.string().max(10).optional().default('en-US'),
+  voice:    z.string().max(64).optional(),
+});
+
+// gather now supports: digit branches, _default catch-all, timeout, invalid
+// and optional variable_name so downstream condition nodes can read digits
+const GatherNodeSchema = z.object({
+  type:                  z.literal('gather'),
+  branches:              z.record(z.string().max(16), nodeId).refine(
+    b => Object.keys(b).length >= 1,
+    'gather node requires at least one branch'
+  ),
+  max_digits:            z.number().int().min(1).max(11).optional().default(1),
+  timeout_seconds:       z.number().int().min(1).max(60).optional().default(5),
+  terminators:           z.string().max(4).optional().default('#'),
+  variable_name:         varName.optional().default('gather_result'),
+  prompt_audio_file_id:  z.number().int().positive().optional(),
+  prompt_text:           z.string().max(1000).optional(),
+  prompt_audio_url:      localAudioUrl.optional(),
+});
+
+const GotoNodeSchema = z.object({
+  type:           z.literal('goto'),
+  target_node_id: nodeId,
+});
+
+// ens node: either hardcoded ens_configuration_id OR ens_config_var (session var)
+// recording_file_var: session variable holding the recorded file path (from record_message node)
+const EnsNodeSchema = z.object({
+  type:                  z.literal('ens'),
+  ens_configuration_id:  z.number().int().positive().optional(),
+  ens_config_var:        varName.optional(),
+  recording_file_var:    varName.optional(),
+  next:                  nodeId.optional(),
+}).refine(
+  d => (d.ens_configuration_id !== undefined) || (d.ens_config_var !== undefined && d.ens_config_var !== ''),
+  { message: 'ens node requires ens_configuration_id or ens_config_var' }
+);
+
+const ErsNodeSchema = z.object({
+  type:                  z.literal('ers'),
+  ers_configuration_id:  z.number().int().positive(),
+});
+
+const HangupNodeSchema = z.object({
+  type:               z.literal('hangup'),
+  play_audio_file_id: z.number().int().positive().optional(),
+  play_audio_url:     localAudioUrl.optional(),
+});
+
+// ── NEW: condition node ───────────────────────────────────────────────────────
+// Evaluates session.getVariable(variable) against expected_value using operator.
+// operator 'ens_pin_valid' makes an HTTP call to /internal/ens/lookup and compares PIN,
+// then stores ens_configuration_id + metadata as session variables.
+
+const ConditionNodeSchema = z.object({
+  type:           z.literal('condition'),
+  variable:       varName,                // session variable to read
+  operator:       z.enum(['==', '!=', 'contains', 'starts_with', 'ens_pin_valid', 'ens_callback_valid']),
+  expected_value: z.string().max(256),    // static value or ${var_name} interpolation
+  true_node:      nodeId,
+  false_node:     nodeId,
+});
+
+// ── NEW: record_message node ──────────────────────────────────────────────────
+// Records caller audio until # pressed or silence detected.
+// Saves file path into variable_name for use by downstream ens node.
+
+const RecordMessageNodeSchema = z.object({
+  type:               z.literal('record_message'),
+  variable_name:      varName,                              // session var to store recording path
+  record_dir:         z.string().max(512).optional(),       // defaults to /var/enrs/recordings
+  max_seconds:        z.number().int().min(1).max(300).optional().default(60),
+  silence_threshold:  z.number().int().min(10).max(2000).optional().default(500),
+  silence_hits:       z.number().int().min(1).max(10).optional().default(3),
+  prompt_text:        z.string().max(1000).optional(),
+  prompt_audio_url:   localAudioUrl.optional(),
+  next:               nodeId,
+});
+
+// ── NEW: set_variable node ────────────────────────────────────────────────────
+// Sets a FreeSWITCH channel variable. value supports ${other_var} interpolation.
+
+const SetVariableNodeSchema = z.object({
+  type:     z.literal('set_variable'),
+  variable: varName,
+  value:    z.string().max(1024),   // may contain ${var_name} references
+  next:     nodeId,
+});
+
+// ── NEW: transfer node ────────────────────────────────────────────────────────
+// Transfers the call to another extension/context. Ends executor control (no next).
+
+const TransferNodeSchema = z.object({
+  type:        z.literal('transfer'),
+  destination: z.string().min(1).max(128),          // extension number or ${var}
+  dialplan:    z.string().max(64).optional().default('XML'),
+  context:     z.string().max(64).optional().default('default'),
+});
+
+// ── Discriminated union — validates any node by its type field ────────────────
+
+export const AnyNodeSchema = z.discriminatedUnion('type', [
+  PlayNodeSchema,
+  SayNodeSchema,
+  GatherNodeSchema,
+  GotoNodeSchema,
+  EnsNodeSchema,
+  ErsNodeSchema,
+  HangupNodeSchema,
+  ConditionNodeSchema,
+  RecordMessageNodeSchema,
+  SetVariableNodeSchema,
+  TransferNodeSchema,
+]);
+
+// ── Full graph schema ─────────────────────────────────────────────────────────
+
+export const GraphSchema = z.object({
+  entry_node_id: nodeId,
+  nodes:         z.record(nodeId, AnyNodeSchema).refine(
+    n => Object.keys(n).length >= 1,
+    'graph must have at least one node'
+  ),
+}).refine(
+  g => g.nodes[g.entry_node_id] !== undefined,
+  { message: 'entry_node_id must reference an existing node', path: ['entry_node_id'] }
+);
+
+// ── Request body schemas ──────────────────────────────────────────────────────
+
+export const CreateFlowSchema = z.object({
+  name:            z.string().min(1).max(128).trim(),
+  description:     z.string().max(1000).optional(),
+  organization_id: z.number().int().positive().optional(),
+});
+
+export const UpdateFlowSchema = z.object({
+  name:        z.string().min(1).max(128).trim().optional(),
+  description: z.string().max(1000).optional(),
+  graph:       GraphSchema.optional(),
+});
+
+export const PublishFlowSchema = z.object({
+  change_notes: z.string().max(500).optional(),
+});
+
+export const BindFlowSchema = z.object({
+  emergency_number_id: z.number().int().positive(),
+});
+
+export const UnbindFlowSchema = z.object({
+  emergency_number_id: z.number().int().positive(),
+});

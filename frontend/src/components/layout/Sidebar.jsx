@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Bell, ShieldAlert, Building2,
   MapPin, Layers, Contact, Group, FileBarChart2,
-  Settings, ChevronDown, ChevronRight, Radio
+  Settings, ChevronDown, ChevronRight, Radio, Workflow
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -18,6 +18,8 @@ const NAV = [
       { label: 'ERS Live View',      to: '/ers/live' },
     ]
   },
+
+  { label: 'IVR Flows', icon: Workflow, to: '/ivr' },
 
   {
     label: 'Organization', icon: Building2, children: [

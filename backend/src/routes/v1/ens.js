@@ -5,12 +5,8 @@ import * as ctrl from '../../controllers/ensController.js';
 
 const router = Router();
 
-// Lua-accessible — lookup by PIN, no UI auth needed
-router.get('/lookup',            ctrl.lookupByPin);
-
-// Notification status updates from Lua
-router.patch('/notifications/:uuid/status', ctrl.updateNotificationStatus);
-
+// All ENS routes require JWT authentication.
+// Lua script endpoints have been moved to /api/v1/internal/ens/* (X-Internal-Key auth).
 router.use(requireAuth);
 
 // Configurations

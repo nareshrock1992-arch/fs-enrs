@@ -4,17 +4,18 @@ import { eslStatus } from '../services/eslService.js';
 
 // GET /api/v1/dashboard/metrics
 export const getMetrics = asyncHandler(async (req, res) => {
+  const tid = req.user.tenantId;
   const [contacts, groups, orgs, ensConfigs, ersConfigs,
          notifications, incidents, activeConfs, queuedCalls] = await Promise.all([
-    query(`SELECT COUNT(*)::INT AS n FROM emergency_contacts WHERE deleted_at IS NULL AND is_active = true`),
-    query(`SELECT COUNT(*)::INT AS n FROM responder_groups WHERE deleted_at IS NULL AND is_active = true`),
-    query(`SELECT COUNT(*)::INT AS n FROM organizations WHERE deleted_at IS NULL AND is_active = true`),
-    query(`SELECT COUNT(*)::INT AS n FROM ens_configurations WHERE deleted_at IS NULL AND is_active = true`),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_configurations WHERE deleted_at IS NULL AND is_active = true`),
-    query(`SELECT COUNT(*)::INT AS n FROM ens_notifications WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE`),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE`),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE status = 'ACTIVE' AND deleted_at IS NULL`),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_queues WHERE status = 'QUEUED'`),
+    query(`SELECT COUNT(*)::INT AS n FROM emergency_contacts WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM responder_groups WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM organizations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ens_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ers_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ens_notifications WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE status = 'ACTIVE' AND deleted_at IS NULL AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ers_queues WHERE status = 'QUEUED' AND tenant_id = $1`, [tid]),
   ]);
 
   res.json({
@@ -33,27 +34,53 @@ export const getMetrics = asyncHandler(async (req, res) => {
 
 // GET /api/v1/dashboard/active  — real-time: active conferences and queued calls
 export const getActive = asyncHandler(async (req, res) => {
-  const { rows: conferences } = await query(
-    `SELECT i.*,
+  const tid = req.user.tenantId;
+  const { rows: incidents } = await query(
+    `SELECT
+       i.id, i.incident_uuid, i.conference_room, i.caller_number,
+       i.group_type, i.started_at, i.status,
        e.name AS ers_name,
-       COUNT(r.id)::INT AS responder_count,
        EXTRACT(EPOCH FROM (now() - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id AND r.status = 'JOINED'
-     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL
-     GROUP BY i.id, e.name
-     ORDER BY i.started_at`
+     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND i.tenant_id = $1
+     ORDER BY i.started_at`,
+    [tid]
   );
 
+  // Attach responders to each incident
+  const incidentIds = incidents.map(i => i.id);
+  let responderRows = [];
+  if (incidentIds.length > 0) {
+    const { rows } = await query(
+      `SELECT ers_incident_id, mobile_number AS responder_number, status
+       FROM ers_incident_responders
+       WHERE ers_incident_id = ANY($1) AND status IN ('JOINED','REJOINED')`,
+      [incidentIds]
+    );
+    responderRows = rows;
+  }
+
+  const responderMap = {};
+  for (const r of responderRows) {
+    (responderMap[r.ers_incident_id] ??= []).push(r);
+  }
+
+  const conferences = incidents.map(i => ({
+    ...i,
+    responders:    responderMap[i.id] || [],
+    member_count:  (responderMap[i.id] || []).length,
+  }));
+
   const { rows: queued } = await query(
-    `SELECT q.*, e.name AS ers_name, i.emergency_call_number,
-       EXTRACT(EPOCH FROM (now() - q.created_at))::INT AS wait_seconds
+    `SELECT q.id, q.position, q.caller_number, q.queued_at, q.status,
+       e.name AS ers_name,
+       EXTRACT(EPOCH FROM (now() - q.queued_at))::INT AS wait_seconds
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
-     LEFT JOIN ers_incidents  i ON i.id  = q.incident_id
-     WHERE q.status = 'QUEUED'
-     ORDER BY q.position`
+     WHERE q.status = 'QUEUED' AND q.tenant_id = $1
+     ORDER BY q.position`,
+    [tid]
   );
 
   const { rows: recent_notifs } = await query(
@@ -61,8 +88,9 @@ export const getActive = asyncHandler(async (req, res) => {
        n.created_at, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     WHERE n.deleted_at IS NULL
-     ORDER BY n.created_at DESC LIMIT 5`
+     WHERE n.deleted_at IS NULL AND n.tenant_id = $1
+     ORDER BY n.created_at DESC LIMIT 5`,
+    [tid]
   );
 
   res.json({ conferences, queued, recent_notifications: recent_notifs });
@@ -75,20 +103,21 @@ export const getChartData = asyncHandler(async (req, res) => {
   const interval  = intervals[period] || '7 days';
   const trunc     = period === 'day' ? 'hour' : 'day';
 
+  const tid = req.user.tenantId;
   const [notifRows, incidentRows] = await Promise.all([
     query(
       `SELECT date_trunc($1, created_at) AS bucket, COUNT(*)::INT AS count
        FROM ens_notifications
-       WHERE created_at >= now() - $2::interval AND deleted_at IS NULL
+       WHERE created_at >= now() - $2::interval AND deleted_at IS NULL AND tenant_id = $3
        GROUP BY bucket ORDER BY bucket`,
-      [trunc, interval]
+      [trunc, interval, tid]
     ),
     query(
       `SELECT date_trunc($1, started_at) AS bucket, COUNT(*)::INT AS count
        FROM ers_incidents
-       WHERE started_at >= now() - $2::interval AND deleted_at IS NULL
+       WHERE started_at >= now() - $2::interval AND deleted_at IS NULL AND tenant_id = $3
        GROUP BY bucket ORDER BY bucket`,
-      [trunc, interval]
+      [trunc, interval, tid]
     ),
   ]);
 

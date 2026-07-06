@@ -16,6 +16,8 @@ import GroupList     from './pages/groups/GroupList.jsx';
 import EnsList       from './pages/ens/EnsList.jsx';
 import ErsConfigList from './pages/ers/ErsConfigList.jsx';
 import ErsLive       from './pages/ers/ErsLive.jsx';
+import IvrList       from './pages/ivr/IvrList.jsx';
+import IvrBuilder    from './pages/ivr/IvrBuilder.jsx';
 import ReportNotifications from './pages/reports/ReportNotifications.jsx';
 import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
@@ -54,6 +56,10 @@ export default function App() {
         <Route path="ens"                   element={<EnsList />} />
         <Route path="ers"                   element={<ErsConfigList />} />
         <Route path="ers/live"              element={<ErsLive />} />
+
+        {/* IVR */}
+        <Route path="ivr"                   element={<IvrList />} />
+        <Route path="ivr/:uuid"             element={<IvrBuilder />} />
 
         {/* Organization */}
         <Route path="organizations"         element={<OrgList />} />

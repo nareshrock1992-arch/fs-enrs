@@ -8,7 +8,9 @@
     "start":   "node server.js",
     "dev":     "node --watch server.js",
     "migrate": "node src/db/migrate.js",
-    "seed":    "node src/db/seed.js"
+    "seed":    "node src/db/seed.js",
+    "test":    "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "bcryptjs":          "^2.4.3",
@@ -28,7 +30,10 @@
     "zod":               "^3.23.8"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "nodemon":    "^3.1.4",
+    "vitest":     "^1.6.0",
+    "supertest":  "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.0"
   },
   "engines": { "node": ">=20" }
 }
