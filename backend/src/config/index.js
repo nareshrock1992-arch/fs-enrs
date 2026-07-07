@@ -1,7 +1,10 @@
 import 'dotenv/config';
+import { fsConfig } from './fsConfig.js';
 
 // All configuration read from environment variables.
 // Never hardcode secrets — change them in .env only.
+export { fsConfig };
+
 export const config = {
   env:  process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT) || 4100,
@@ -39,4 +42,6 @@ export const config = {
     dir: process.env.UPLOAD_DIR || './uploads',
     maxSizeMb: Number(process.env.UPLOAD_MAX_MB) || 50,
   },
+
+  fs: fsConfig,
 };

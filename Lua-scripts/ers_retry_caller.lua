@@ -1,3 +1,4 @@
-local _ = dofile("/usr/share/freeswitch/scripts/loader.lua")
-_("/usr/share/freeswitch/scripts/ers_retry_caller.enc")
+local script_dir = freeswitch.getGlobalVariable("script_dir") or "/usr/share/freeswitch/scripts"
+local _ = dofile(script_dir .. "/loader.lua")
+_(script_dir .. "/ers_retry_caller.enc")
 

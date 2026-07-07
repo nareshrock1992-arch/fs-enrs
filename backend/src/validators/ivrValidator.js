@@ -98,7 +98,7 @@ const ConditionNodeSchema = z.object({
 const RecordMessageNodeSchema = z.object({
   type:               z.literal('record_message'),
   variable_name:      varName,                              // session var to store recording path
-  record_dir:         z.string().max(512).optional(),       // defaults to /var/enrs/recordings
+  record_dir:         z.string().max(512).optional(),       // defaults to FS_RECORDING_DIR/ivr
   max_seconds:        z.number().int().min(1).max(300).optional().default(60),
   silence_threshold:  z.number().int().min(10).max(2000).optional().default(500),
   silence_hits:       z.number().int().min(1).max(10).optional().default(3),

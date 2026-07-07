@@ -45,14 +45,14 @@ async function resolveEnsContacts(configId) {
      WHERE ec.deleted_at IS NULL AND ec.is_active = true
        AND (
          ec.id IN (
-           SELECT contact_id FROM ens_configuration_contacts
-           WHERE ens_configuration_id = $1
+           SELECT ens_contact_id FROM ens_configuration_contacts
+           WHERE ens_configuration_id = $1 AND ens_contact_id IS NOT NULL
          )
          OR ec.id IN (
            SELECT egm.contact_id
            FROM ens_group_members egm
            JOIN ens_configuration_groups ecg ON ecg.ens_group_id = egm.group_id
-           WHERE ecg.ens_configuration_id = $1
+           WHERE ecg.ens_configuration_id = $1 AND ecg.ens_group_id IS NOT NULL
          )
        )
      ORDER BY ec.mobile_number`,

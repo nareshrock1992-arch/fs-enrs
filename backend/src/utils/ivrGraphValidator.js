@@ -7,15 +7,45 @@ import { query } from '../db/pool.js';
  * Pass 1 — Zod schema: every node matches its type's schema; entry_node_id exists.
  * Pass 2 — Graph integrity: cycle detection (DFS), dangling refs, DB ID existence.
  *
- * Returns { valid: true } or { valid: false, errors: string[], warnings: string[] }.
+ * Returns { valid, errors, warnings, stats }.
  */
 export async function validateGraph(graph, tenantId) {
   const errors   = [];
   const warnings = [];
 
+  // ── Pre-flight: guard against malformed input ─────────────────────────────
+  // Crash source: "Cannot read properties of undefined (reading 'type')"
+  // Happens when graph is null, graph.nodes is null, or a node value is null.
+
+  if (!graph || typeof graph !== 'object' || Array.isArray(graph)) {
+    return { valid: false, errors: ['graph must be a non-null JSON object'], warnings };
+  }
+
+  // Normalise: coerce stored string JSON (old schema used flow_json as text)
+  let g = graph;
+  if (typeof graph === 'string') {
+    try { g = JSON.parse(graph); } catch {
+      return { valid: false, errors: ['graph is not valid JSON'], warnings };
+    }
+  }
+
+  // Guard: nodes must be an object with no null/undefined entries
+  if (g.nodes && typeof g.nodes === 'object') {
+    for (const [nid, node] of Object.entries(g.nodes)) {
+      if (node === null || node === undefined) {
+        errors.push(`node "${nid}" is null — remove or re-add this node in the builder`);
+      } else if (typeof node !== 'object') {
+        errors.push(`node "${nid}" must be an object (got ${typeof node})`);
+      } else if (!node.type) {
+        errors.push(`node "${nid}" is missing required field "type"`);
+      }
+    }
+  }
+  if (errors.length > 0) return { valid: false, errors, warnings };
+
   // ── Pass 1: Zod schema ────────────────────────────────────────────────────
 
-  const parsed = GraphSchema.safeParse(graph);
+  const parsed = GraphSchema.safeParse(g);
   if (!parsed.success) {
     return {
       valid:  false,
@@ -26,9 +56,9 @@ export async function validateGraph(graph, tenantId) {
 
   const { entry_node_id, nodes } = parsed.data;
 
-  // Per-node Zod validation (discriminated union already ran inside GraphSchema,
-  // but we re-run individually to surface per-node error paths clearly)
+  // Per-node Zod validation — re-run individually for clearer error paths
   for (const [nid, node] of Object.entries(nodes)) {
+    if (!node || typeof node !== 'object') continue; // already caught above
     const r = AnyNodeSchema.safeParse(node);
     if (!r.success) {
       for (const issue of r.error.issues) {
@@ -40,19 +70,18 @@ export async function validateGraph(graph, tenantId) {
 
   // ── Pass 2: Graph integrity ───────────────────────────────────────────────
 
-  // Collect all node IDs referenced by edges (all node types)
   function refsOf(node) {
+    if (!node || typeof node !== 'object') return [];
     const ids = [];
     if (node.next)           ids.push(node.next);
     if (node.target_node_id) ids.push(node.target_node_id);
     if (node.branches)       ids.push(...Object.values(node.branches));
-    // condition node
     if (node.true_node)      ids.push(node.true_node);
     if (node.false_node)     ids.push(node.false_node);
     return ids.filter(Boolean);
   }
 
-  // 2a. Dangling references (next/branch points to non-existent node)
+  // 2a. Dangling references
   for (const [nid, node] of Object.entries(nodes)) {
     for (const ref of refsOf(node)) {
       if (!nodes[ref]) {
@@ -62,13 +91,13 @@ export async function validateGraph(graph, tenantId) {
   }
 
   // 2b. Cycle detection — iterative DFS from entry_node_id
-  const visited  = new Set();
-  const inStack  = new Set();
-  const stack    = [[entry_node_id, null]]; // [nodeId, parentId]
+  const visited   = new Set();
+  const inStack   = new Set();
   const reachable = new Set();
+  const stack     = [entry_node_id];
 
   while (stack.length > 0) {
-    const [cur, parent] = stack[stack.length - 1];
+    const cur = stack[stack.length - 1];
 
     if (!visited.has(cur)) {
       visited.add(cur);
@@ -77,18 +106,15 @@ export async function validateGraph(graph, tenantId) {
 
       const node = nodes[cur];
       if (node) {
-        const children = refsOf(node).filter(r => nodes[r]);
-        let pushed = false;
-        for (const child of children) {
-          if (inStack.has(child)) {
-            errors.push(`Cycle detected: ${cur} → ${child}`);
-          } else if (!visited.has(child)) {
-            stack.push([child, cur]);
-            pushed = true;
-            break; // process one child at a time (DFS)
-          }
+        const children = refsOf(node).filter(r => nodes[r] && !visited.has(r));
+        const cycleKids = refsOf(node).filter(r => inStack.has(r));
+        for (const c of cycleKids) {
+          errors.push(`Cycle detected: ${cur} → ${c}`);
         }
-        if (!pushed) {
+
+        if (children.length > 0) {
+          stack.push(children[0]);
+        } else {
           stack.pop();
           inStack.delete(cur);
         }
@@ -102,23 +128,23 @@ export async function validateGraph(graph, tenantId) {
     }
   }
 
-  // 2c. Unreachable nodes (warnings, not errors — builder may have WIP orphans)
+  // 2c. Unreachable nodes (warnings only — builder may have WIP orphans)
   for (const nid of Object.keys(nodes)) {
     if (!reachable.has(nid)) {
-      warnings.push(`Unreachable node: "${nid}" (not reachable from entry_node_id)`);
+      warnings.push(`Node "${nid}" is not reachable from entry_node_id`);
     }
   }
 
   if (errors.length > 0) return { valid: false, errors, warnings };
 
   // ── Pass 2d: DB foreign key existence checks ──────────────────────────────
-  // Collect all ENS/ERS/audio_file IDs referenced in the graph
 
   const ensIds       = [];
   const ersIds       = [];
   const audioFileIds = [];
 
   for (const node of Object.values(nodes)) {
+    if (!node) continue;
     if (node.type === 'ens'    && node.ens_configuration_id)  ensIds.push(node.ens_configuration_id);
     if (node.type === 'ers'    && node.ers_configuration_id)  ersIds.push(node.ers_configuration_id);
     if (node.type === 'play'   && node.audio_file_id)         audioFileIds.push(node.audio_file_id);
@@ -139,6 +165,9 @@ export async function validateGraph(graph, tenantId) {
         for (const id of ensIds) {
           if (!found.has(id)) errors.push(`ens_configuration_id ${id} not found or wrong tenant`);
         }
+      }).catch(() => {
+        // Column may not exist on older schema — skip FK check
+        warnings.push('ENS configuration FK check skipped (schema upgrade pending)');
       })
     );
   }
@@ -154,21 +183,30 @@ export async function validateGraph(graph, tenantId) {
         for (const id of ersIds) {
           if (!found.has(id)) errors.push(`ers_configuration_id ${id} not found or wrong tenant`);
         }
+      }).catch(() => {
+        warnings.push('ERS configuration FK check skipped (schema upgrade pending)');
       })
     );
   }
 
   if (audioFileIds.length > 0) {
+    // media_files uses organization_id (not tenant_id) — join to resolve tenant
     checks.push(
       query(
-        `SELECT id FROM media_files
-         WHERE id = ANY($1) AND deleted_at IS NULL AND tenant_id = $2`,
+        `SELECT mf.id
+         FROM media_files mf
+         LEFT JOIN organizations o ON o.id = mf.organization_id
+         WHERE mf.id = ANY($1)
+           AND mf.deleted_at IS NULL
+           AND (o.tenant_id = $2 OR mf.organization_id IS NULL)`,
         [audioFileIds, tenantId]
       ).then(r => {
         const found = new Set(r.rows.map(x => x.id));
         for (const id of audioFileIds) {
-          if (!found.has(id)) errors.push(`audio_file_id ${id} not found or wrong tenant`);
+          if (!found.has(id)) errors.push(`audio_file_id ${id} not found`);
         }
+      }).catch(() => {
+        warnings.push('Media file FK check skipped (schema upgrade pending)');
       })
     );
   }

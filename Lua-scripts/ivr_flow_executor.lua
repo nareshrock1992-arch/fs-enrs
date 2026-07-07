@@ -26,7 +26,7 @@
 
 local API_BASE   = os.getenv("ENRS_INTERNAL_API") or "http://127.0.0.1:4100/api/v1/internal"
 local API_KEY    = os.getenv("FS_INTERNAL_KEY")   or ""
-local REC_DIR    = os.getenv("ENRS_REC_DIR")      or "/var/enrs/recordings"
+local REC_DIR    = os.getenv("ENRS_REC_DIR")      or "/var/lib/freeswitch/recordings"
 local TTS_ENGINE = os.getenv("ENRS_TTS_ENGINE")   or "flite"
 local TTS_VOICE  = os.getenv("ENRS_TTS_VOICE")    or "slt"
 local MAX_LOOP   = 100   -- prevents runaway graphs from looping forever
