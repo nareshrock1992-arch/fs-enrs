@@ -321,25 +321,27 @@ BEGIN
 END $$;
 
 -- ────────────────────────────────────────────────────────────
--- S11: migration_log — track which migrations have been applied
---      Used by the new sequential migration runner (migrate.js)
+-- S11: schema_migrations — track which migrations have been applied
+--      Used by the sequential migration runner (migrate.js).
+--      Renamed from migration_log; migrate.js copies data from
+--      migration_log automatically for backward compatibility.
 -- ────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS migration_log (
-  id         SERIAL      PRIMARY KEY,
-  filename   VARCHAR(256) NOT NULL UNIQUE,
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version    VARCHAR(256) PRIMARY KEY,
   applied_at TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
--- Record all previously applied migrations so the new runner
--- does not re-apply them on the next deploy
-INSERT INTO migration_log (filename) VALUES
+-- Record all previously applied migrations so the runner
+-- does not re-apply them on the next deploy.
+-- ON CONFLICT DO NOTHING makes this safe to re-run.
+INSERT INTO schema_migrations (version) VALUES
   ('schema.sql'),
   ('002_phase6_bugfixes.sql'),
   ('003_sprint_b1_internal_api.sql'),
   ('004_sprint_b3_ivr_engine.sql'),
   ('005_stabilization.sql')
-ON CONFLICT (filename) DO NOTHING;
+ON CONFLICT (version) DO NOTHING;
 
 -- ────────────────────────────────────────────────────────────
 -- Rollback notes (manual — run carefully):

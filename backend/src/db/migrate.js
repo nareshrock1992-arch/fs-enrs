@@ -1,99 +1,186 @@
-// Sequential migration runner
-// Usage: node src/db/migrate.js
-//
-// Applies schema.sql then all numbered migrations in order.
-// Tracks applied migrations in the migration_log table.
-// Safe to run multiple times — skips already-applied migrations.
+/**
+ * fs-enrs database migration runner
+ *
+ * Usage:  node src/db/migrate.js
+ *
+ * Behaviour
+ * ─────────
+ * Fresh database (tenants table does not exist):
+ *   1. Apply schema.sql  — creates all tables in their final state.
+ *   2. Mark every numbered migration file as already applied so they
+ *      never run again (schema.sql already covers them).
+ *
+ * Existing database (tenants table exists):
+ *   1. Skip schema.sql entirely — never replay DDL against existing tables.
+ *   2. Apply only numbered migration files that have not been recorded yet.
+ *
+ * In both cases:
+ *   • schema_migrations tracks every applied filename.
+ *   • Each migration file manages its own transaction (BEGIN/COMMIT inside
+ *     the SQL file).  The runner does NOT add an outer transaction.
+ *   • All migrations must be idempotent (IF NOT EXISTS, ON CONFLICT, etc.).
+ *   • If a migration fails the error is printed and the process exits 1.
+ *     The migration file's ROLLBACK (if any) fires automatically.
+ *     Fix the file and re-run — already-applied migrations are skipped.
+ */
 
 import { readFileSync, readdirSync } from 'fs';
-import { join, dirname }  from 'path';
-import { fileURLToPath }  from 'url';
-import { pool, testConnection } from './pool.js';
+import { join, dirname }             from 'path';
+import { fileURLToPath }             from 'url';
+import { pool, testConnection }      from './pool.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dir, 'migrations');
 
-async function ensureMigrationLog(client) {
+// ── schema_migrations table ───────────────────────────────────────────────────
+
+async function ensureMigrationsTable(client) {
+  // Create the tracking table using the standard name.
   await client.query(`
-    CREATE TABLE IF NOT EXISTS migration_log (
-      id         SERIAL       PRIMARY KEY,
-      filename   VARCHAR(256) NOT NULL UNIQUE,
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version    VARCHAR(256) PRIMARY KEY,
       applied_at TIMESTAMPTZ  NOT NULL DEFAULT now()
     )
+  `);
+
+  // One-time backward-compat copy from the old migration_log table (Sprint B6).
+  // Safe to run repeatedly — ON CONFLICT DO NOTHING is idempotent.
+  await client.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'migration_log'
+      ) THEN
+        INSERT INTO schema_migrations (version, applied_at)
+        SELECT filename, applied_at FROM migration_log
+        ON CONFLICT (version) DO NOTHING;
+      END IF;
+    END $$
   `);
 }
 
 async function getApplied(client) {
   const { rows } = await client.query(
-    `SELECT filename FROM migration_log ORDER BY applied_at`
+    `SELECT version FROM schema_migrations ORDER BY applied_at`
   );
-  return new Set(rows.map(r => r.filename));
+  return new Set(rows.map(r => r.version));
 }
 
-async function applyFile(client, filename, sql) {
-  console.log(`[migrate] Applying: ${filename}`);
-  await client.query(sql);
+async function recordApplied(client, version) {
   await client.query(
-    `INSERT INTO migration_log (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING`,
-    [filename]
+    `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [version]
   );
+}
+
+// ── Fresh-database detection ──────────────────────────────────────────────────
+
+// Returns true when no application tables exist (brand-new / empty database).
+// Uses the 'tenants' table as the sentinel — it is always the first table
+// created by schema.sql.
+async function isFreshDatabase(client) {
+  const { rows } = await client.query(`
+    SELECT NOT EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name   = 'tenants'
+    ) AS is_fresh
+  `);
+  return rows[0].is_fresh;
+}
+
+// ── Apply helpers ─────────────────────────────────────────────────────────────
+
+async function applySchema(client, sqlPath) {
+  console.log('[migrate] Fresh database — applying schema.sql');
+  const sql = readFileSync(sqlPath, 'utf8');
+  await client.query(sql);
+  await recordApplied(client, 'schema.sql');
+  console.log('[migrate]  ✓ schema.sql');
+}
+
+async function applyMigration(client, filename, sql) {
+  console.log(`[migrate] Applying: ${filename}`);
+  // The migration file owns its own BEGIN/COMMIT — do not wrap.
+  await client.query(sql);
+  await recordApplied(client, filename);
   console.log(`[migrate]  ✓ ${filename}`);
 }
 
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 async function migrate() {
   const ok = await testConnection();
-  if (!ok) process.exit(1);
+  if (!ok) {
+    console.error('[migrate] Cannot connect to database — check DB_* env vars.');
+    process.exit(1);
+  }
 
   const client = await pool.connect();
   try {
-    // Step 1: Ensure migration_log exists (outside any transaction — DDL is fine here)
-    await ensureMigrationLog(client);
+    // Step 1 — Ensure tracking table exists (and migrate from migration_log).
+    await ensureMigrationsTable(client);
     const applied = await getApplied(client);
 
-    // Step 2: Apply schema.sql (idempotent — all IF NOT EXISTS)
-    const schemaFile = 'schema.sql';
-    if (!applied.has(schemaFile)) {
-      const sql = readFileSync(join(__dir, schemaFile), 'utf8');
-      await client.query('BEGIN');
-      try {
-        await applyFile(client, schemaFile, sql);
-        await client.query('COMMIT');
-      } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-      }
-    } else {
-      console.log(`[migrate] Skip (already applied): ${schemaFile}`);
-    }
-
-    // Step 3: Apply numbered migrations in sort order
+    // Step 2 — Collect numbered migration files in sort order.
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter(f => f.endsWith('.sql'))
-      .sort();  // lexicographic sort: 002_... < 003_... < 004_... < 005_...
+      .sort();   // lexicographic: 002_ < 003_ < 004_ < 005_
+
+    // Step 3 — Handle schema.sql.
+    if (!applied.has('schema.sql')) {
+      const fresh = await isFreshDatabase(client);
+
+      if (fresh) {
+        // Fresh install: schema.sql is the canonical full state.
+        await applySchema(client, join(__dir, 'schema.sql'));
+
+        // Mark all existing numbered migrations as already applied —
+        // schema.sql already includes everything they add.
+        for (const f of migrationFiles) {
+          await recordApplied(client, f);
+          console.log(`[migrate]  ✓ Skipped (covered by schema.sql): ${f}`);
+        }
+
+        console.log('[migrate] Fresh install complete.');
+        return;
+
+      } else {
+        // Existing database: record schema.sql as "done" without running it.
+        await recordApplied(client, 'schema.sql');
+        console.log('[migrate] Existing database — schema.sql skipped, running migrations only.');
+      }
+    }
+
+    // Step 4 — Apply pending numbered migrations.
+    const currentApplied = await getApplied(client);   // refresh after step 3
+    let pendingCount = 0;
 
     for (const filename of migrationFiles) {
-      if (applied.has(filename)) {
+      if (currentApplied.has(filename)) {
         console.log(`[migrate] Skip (already applied): ${filename}`);
         continue;
       }
 
       const sql = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
-
-      // Each migration runs in its own transaction.
-      // Migrations that contain their own BEGIN/COMMIT are fine —
-      // pg sends them as nested which Postgres handles correctly when
-      // the outer is a single-statement execution. However since each
-      // migration file already has BEGIN/COMMIT, we run them directly.
       try {
-        await applyFile(client, filename, sql);
+        await applyMigration(client, filename, sql);
+        pendingCount++;
       } catch (err) {
-        console.error(`[migrate] FAILED: ${filename} — ${err.message}`);
-        console.error('[migrate] Fix the migration file and re-run. Database may be in partial state.');
+        console.error(`[migrate] FAILED: ${filename}`);
+        console.error(`[migrate] ${err.message}`);
+        console.error('[migrate] Fix the migration file and re-run.');
         process.exit(1);
       }
     }
 
-    console.log('[migrate] All migrations applied successfully.');
+    if (pendingCount === 0) {
+      console.log('[migrate] Database is already up to date.');
+    } else {
+      console.log(`[migrate] Applied ${pendingCount} migration(s) successfully.`);
+    }
+
   } finally {
     client.release();
     await pool.end();

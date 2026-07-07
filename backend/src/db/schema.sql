@@ -13,9 +13,10 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ── Migration tracking ───────────────────────────────────────
-CREATE TABLE IF NOT EXISTS migration_log (
-  id         SERIAL       PRIMARY KEY,
-  filename   VARCHAR(256) NOT NULL UNIQUE,
+-- NOTE: migrate.js creates this table before running schema.sql,
+-- so the IF NOT EXISTS here is a safe no-op on fresh installs.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version    VARCHAR(256) PRIMARY KEY,
   applied_at TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
@@ -482,6 +483,4 @@ INSERT INTO system_settings (key, value, description) VALUES
   ('default_retry_count', '3',       'Default ENS retry count')
 ON CONFLICT (key) DO NOTHING;
 
--- Mark schema.sql as applied so migrate.js doesn't re-run it
-INSERT INTO migration_log (filename) VALUES ('schema.sql')
-ON CONFLICT (filename) DO NOTHING;
+-- Tracking is handled by migrate.js — no INSERT needed here.
