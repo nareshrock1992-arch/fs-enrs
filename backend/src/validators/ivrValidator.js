@@ -14,13 +14,14 @@ const varName = z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'va
 
 // ── Per-type node schemas ─────────────────────────────────────────────────────
 
+// Plain ZodObject — no .refine() here.
+// Cross-field check (audio_file_id OR audio_url required) is enforced
+// by the .superRefine() on AnyNodeSchema below.
 const PlayNodeSchema = z.object({
-  type:              z.literal('play'),
-  next:              nodeId,
-  audio_file_id:     z.number().int().positive().optional(),
-  audio_url:         localAudioUrl.optional(),
-}).refine(d => d.audio_file_id !== undefined || d.audio_url !== undefined, {
-  message: 'play node requires audio_file_id or audio_url',
+  type:          z.literal('play'),
+  next:          nodeId,
+  audio_file_id: z.number().int().positive().optional(),
+  audio_url:     localAudioUrl.optional(),
 });
 
 const SayNodeSchema = z.object({
@@ -55,16 +56,16 @@ const GotoNodeSchema = z.object({
 
 // ens node: either hardcoded ens_configuration_id OR ens_config_var (session var)
 // recording_file_var: session variable holding the recorded file path (from record_message node)
+// Plain ZodObject — no .refine() here.
+// Cross-field check (ens_configuration_id OR ens_config_var required)
+// is enforced by the .superRefine() on AnyNodeSchema below.
 const EnsNodeSchema = z.object({
-  type:                  z.literal('ens'),
-  ens_configuration_id:  z.number().int().positive().optional(),
-  ens_config_var:        varName.optional(),
-  recording_file_var:    varName.optional(),
-  next:                  nodeId.optional(),
-}).refine(
-  d => (d.ens_configuration_id !== undefined) || (d.ens_config_var !== undefined && d.ens_config_var !== ''),
-  { message: 'ens node requires ens_configuration_id or ens_config_var' }
-);
+  type:                 z.literal('ens'),
+  ens_configuration_id: z.number().int().positive().optional(),
+  ens_config_var:       varName.optional(),
+  recording_file_var:   varName.optional(),
+  next:                 nodeId.optional(),
+});
 
 const ErsNodeSchema = z.object({
   type:                  z.literal('ers'),
@@ -128,20 +129,45 @@ const TransferNodeSchema = z.object({
 });
 
 // ── Discriminated union — validates any node by its type field ────────────────
+//
+// All members MUST be plain ZodObject instances.
+// ZodEffects (from .refine() on the outer object) causes a TypeError during
+// discriminatedUnion construction in Zod 3.x:
+//   "Cannot read properties of undefined (reading 'type')"
+//
+// Cross-field rules that required .refine() on individual schemas are moved
+// here into a single .superRefine() so the union still enforces them.
 
 export const AnyNodeSchema = z.discriminatedUnion('type', [
-  PlayNodeSchema,
-  SayNodeSchema,
-  GatherNodeSchema,
-  GotoNodeSchema,
-  EnsNodeSchema,
-  ErsNodeSchema,
-  HangupNodeSchema,
-  ConditionNodeSchema,
-  RecordMessageNodeSchema,
-  SetVariableNodeSchema,
-  TransferNodeSchema,
-]);
+  PlayNodeSchema,         // ZodObject ✓
+  SayNodeSchema,          // ZodObject ✓
+  GatherNodeSchema,       // ZodObject ✓  (refine is on the branches field, not the outer object)
+  GotoNodeSchema,         // ZodObject ✓
+  EnsNodeSchema,          // ZodObject ✓
+  ErsNodeSchema,          // ZodObject ✓
+  HangupNodeSchema,       // ZodObject ✓
+  ConditionNodeSchema,    // ZodObject ✓
+  RecordMessageNodeSchema,// ZodObject ✓
+  SetVariableNodeSchema,  // ZodObject ✓
+  TransferNodeSchema,     // ZodObject ✓
+]).superRefine((node, ctx) => {
+  if (node.type === 'play' && node.audio_file_id === undefined && node.audio_url === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'play node requires audio_file_id or audio_url',
+    });
+  }
+  if (
+    node.type === 'ens' &&
+    node.ens_configuration_id === undefined &&
+    (node.ens_config_var === undefined || node.ens_config_var === '')
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'ens node requires ens_configuration_id or ens_config_var',
+    });
+  }
+});
 
 // ── Full graph schema ─────────────────────────────────────────────────────────
 
