@@ -6,6 +6,12 @@ const router = Router();
 // Number → config lookup (blast_call.lua first call)
 router.get('/lookup', ctrl.ensLookup);
 
+// PIN authentication — Lua calls this after collecting DTMF, before recording
+router.post('/verify-pin', ctrl.verifyPin);
+
+// Campaign engine — Lua triggers after recording message
+router.post('/campaign/start', ctrl.startCampaign);
+
 // Blast state management
 router.get('/notifications/queue-status',         ctrl.ensQueueStatus);
 router.post('/notifications',                     ctrl.ensCreateNotification);

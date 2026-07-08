@@ -24,6 +24,8 @@ import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
 import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
+import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
+import CampaignDashboard   from './pages/ens/CampaignDashboard.jsx';
 
 function RequireAuth({ children }) {
   const token = useAuthStore(s => s.token);
@@ -54,8 +56,12 @@ export default function App() {
         <Route index                        element={<Dashboard />} />
         <Route path="monitoring"            element={<Monitoring />} />
 
+        {/* Service Registry */}
+        <Route path="services"              element={<ServiceRegistry />} />
+
         {/* Emergency Config */}
         <Route path="ens"                   element={<EnsList />} />
+        <Route path="ens/campaigns"         element={<CampaignDashboard />} />
         <Route path="ers"                   element={<ErsConfigList />} />
         <Route path="ers/live"              element={<ErsLive />} />
 

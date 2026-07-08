@@ -47,9 +47,10 @@ export const config = {
 
   freeswitch: {
     // URL that FreeSWITCH Lua scripts use to reach this backend
-    // Usually http://127.0.0.1:<PORT> when FS and backend are on the same host
-    apiUrl:     process.env.ENRS_API_URL  || `http://127.0.0.1:${Number(process.env.PORT) || 4100}`,
+    apiUrl:         process.env.ENRS_API_URL       || `http://127.0.0.1:${Number(process.env.PORT) || 4100}`,
     // TTS engine string passed to FreeSWITCH speak application: "engine|voice"
-    ttsEngine:  process.env.FS_TTS_ENGINE || 'flite|kal',
+    ttsEngine:      process.env.FS_TTS_ENGINE       || 'flite|kal',
+    // SIP gateway name in FreeSWITCH for outbound ENS campaign calls
+    defaultGateway: process.env.FS_DEFAULT_GATEWAY  || 'default',
   },
 };

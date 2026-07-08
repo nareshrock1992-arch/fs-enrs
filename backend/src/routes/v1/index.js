@@ -12,6 +12,8 @@ import mediaRoutes      from './media.js';
 import settingRoutes    from './settings.js';
 import ivrRoutes        from './ivr.js';
 import deploymentRoutes from './deployment.js';
+import serviceRoutes    from './services.js';
+import campaignRoutes   from './campaigns.js';
 
 const router = Router();
 
@@ -24,6 +26,8 @@ router.use('/ens',           ensRoutes);
 router.use('/ers',           ersRoutes);
 router.use('/ivr/flows',     ivrRoutes);
 router.use('/deployment',    deploymentRoutes);
+router.use('/services',      serviceRoutes);
+router.use('/campaigns',     campaignRoutes);
 router.use('/dashboard',     dashRoutes);
 router.use('/reports',       reportRoutes);
 router.use('/media',         mediaRoutes);

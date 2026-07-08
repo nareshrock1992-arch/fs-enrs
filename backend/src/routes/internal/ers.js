@@ -16,4 +16,7 @@ router.post('/incidents/:uuid/observer',   ctrl.ersLogObserver);
 router.get('/incidents/rejoin',            ctrl.ersRejoinLookup);
 router.get('/incidents/open-join',         ctrl.ersOpenJoin);
 
+// Queue poll — Lua calls this every ~3 s while holding caller; joins when ACTIVE
+router.get('/incidents/:uuid/status',      ctrl.ersIncidentStatus);
+
 export default router;

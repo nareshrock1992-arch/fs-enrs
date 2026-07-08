@@ -135,6 +135,10 @@ export const api = {
     update:     (id, d)  => request('PUT',    `/ers/configurations/${id}`, d),
     toggle:     (id)     => request('PATCH',  `/ers/configurations/${id}/toggle`),
     remove:     (id)     => request('DELETE', `/ers/configurations/${id}`),
+    tierGroups:       (id)            => request('GET', `/ers/configurations/${id}/tier-groups`),
+    updateTierGroups: (id, primary, secondary) =>
+      request('PUT', `/ers/configurations/${id}/tier-groups`,
+        { primary_group_ids: primary, secondary_group_ids: secondary }),
     incidents:        (q)    => request('GET',  `/ers/incidents?${new URLSearchParams(q || {})}`),
     queue:            ()     => request('GET',  '/ers/queue'),
     completeIncident: (uuid) => request('POST', `/ers/incidents/${uuid}/complete`),
@@ -172,6 +176,25 @@ export const api = {
     unbind:           (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/unbind`, { emergency_number_id: numId }),
     listTemplates:    ()            => request('GET',    '/ivr/flows/templates'),
     createFromTemplate: (id, name) => request('POST',   `/ivr/flows/templates/${id}/create`, name ? { name } : {}),
+  },
+
+  // Service Registry (unified ERS + ENS view)
+  services: {
+    list:   (q)      => request('GET',   `/services?${new URLSearchParams(q || {})}`),
+    get:    (id)     => request('GET',   `/services/${id}`),
+    update: (id, d)  => request('PATCH', `/services/${id}`, d),
+  },
+
+  // ENS Campaigns
+  campaigns: {
+    list:         (q)      => request('GET',  `/campaigns?${new URLSearchParams(q || {})}`),
+    get:          (id)     => request('GET',  `/campaigns/${id}`),
+    destinations: (id, q)  => request('GET',  `/campaigns/${id}/destinations?${new URLSearchParams(q || {})}`),
+    trigger:      (d)      => request('POST', '/campaigns', d),
+    pause:        (id)     => request('POST', `/campaigns/${id}/pause`),
+    resume:       (id)     => request('POST', `/campaigns/${id}/resume`),
+    cancel:       (id)     => request('POST', `/campaigns/${id}/cancel`),
+    engineStats:  ()       => request('GET',  '/campaigns/engine/stats'),
   },
 
   // Media

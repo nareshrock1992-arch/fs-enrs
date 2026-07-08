@@ -8,8 +8,9 @@ import rateLimit       from 'express-rate-limit';
 
 import { config }      from './src/config/index.js';
 import { testConnection } from './src/db/pool.js';
-import { connect as eslConnect } from './src/services/eslService.js';
+import { connect as eslConnect, eslEvents } from './src/services/eslService.js';
 import { initSocket }  from './src/services/socketService.js';
+import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/services/campaignEngine.js';
 import v1Routes        from './src/routes/v1/index.js';
 import internalRoutes  from './src/routes/internal/index.js';
 import { internalAuth, internalRateLimit } from './src/middleware/internalAuth.js';
@@ -84,6 +85,20 @@ async function start() {
   // Connect to FreeSWITCH (non-fatal — app works without ESL)
   try { eslConnect(); }
   catch (err) { console.warn('[boot] ESL connect failed (will retry):', err.message); }
+
+  // Wire ESL events → campaign engine
+  eslEvents.on('CHANNEL_ANSWER', ({ uuid }) => {
+    onCallAnswer(uuid).catch(e => console.error('[campaign] answer error:', e.message));
+  });
+  eslEvents.on('CHANNEL_HANGUP', ({ uuid, cause }) => {
+    onCallHangup(uuid, cause).catch(e => console.error('[campaign] hangup error:', e.message));
+  });
+
+  // Start outbound campaign engine
+  startEngine();
+
+  process.on('SIGTERM', () => { stopEngine(); });
+  process.on('SIGINT',  () => { stopEngine(); });
 }
 
 // Export server for supertest in test environment

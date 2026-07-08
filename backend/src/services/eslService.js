@@ -1,10 +1,14 @@
 // FreeSWITCH ESL (Event Socket Library) service
 // Maintains a persistent connection; auto-reconnects; fires events to Socket.IO
+import { EventEmitter } from 'events';
 import esl from 'modesl';
 import { config } from '../config/index.js';
 import { query }  from '../db/pool.js';
 
 const { Connection } = esl;
+
+// Internal event bus — campaign engine subscribes here (avoids circular imports)
+export const eslEvents = new EventEmitter();
 
 let conn            = null;     // active ESL connection
 let io              = null;     // Socket.IO instance (injected after boot)
@@ -61,18 +65,20 @@ function handleEvent(evt) {
 
   // Channel hangup
   if (name === 'CHANNEL_HANGUP') {
-    const uuid    = evt.getHeader('Unique-ID');
-    const cause   = evt.getHeader('Hangup-Cause');
+    const uuid      = evt.getHeader('Unique-ID');
+    const cause     = evt.getHeader('Hangup-Cause');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
     emit('channel.hangup', { uuid, cause, callerNum });
+    eslEvents.emit('CHANNEL_HANGUP', { uuid, cause, callerNum });
     return;
   }
 
   // Channel answer
   if (name === 'CHANNEL_ANSWER') {
-    const uuid    = evt.getHeader('Unique-ID');
+    const uuid      = evt.getHeader('Unique-ID');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
     emit('channel.answer', { uuid, callerNum });
+    eslEvents.emit('CHANNEL_ANSWER', { uuid, callerNum });
     return;
   }
 
@@ -225,6 +231,37 @@ export async function originateCall({
 
   const cmd = `originate {${varStr}}${dialStr} ${app}`;
   return eslCommand(cmd);
+}
+
+// ─── Originate a campaign outbound call ─────────────────────
+//
+// Uses a pre-assigned UUID (origination_uuid) so we know the
+// call ID before the CHANNEL_ANSWER / CHANNEL_HANGUP events fire.
+// playbackFile is the absolute FS path to the recording to play.
+// If null, the call is put in park — backend can send media later.
+export async function originateCampaignCall({
+  callUuid,
+  campaignId,
+  destId,
+  number,
+  clid,
+  gateway = 'default',
+  playbackFile,
+  timeout = 30,
+}) {
+  const varParts = {
+    origination_uuid:             callUuid,
+    origination_caller_id_number: clid || number,
+    origination_caller_id_name:   'Emergency',
+    ignore_early_media:           'true',
+    originate_timeout:            String(timeout),
+    enrs_campaign_id:             String(campaignId),
+    enrs_dest_id:                 String(destId),
+  };
+  const varStr  = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
+  const dialStr = `sofia/gateway/${gateway}/${number}`;
+  const app     = playbackFile ? `&playback(${playbackFile})` : '&park()';
+  return eslCommand(`originate {${varStr}}${dialStr} ${app}`);
 }
 
 // ─── Play audio in a conference ─────────────────────────────

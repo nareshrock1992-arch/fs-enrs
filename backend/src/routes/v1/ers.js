@@ -15,6 +15,10 @@ router.put('/configurations/:id',           adminOnly,  ctrl.updateConfiguration
 router.patch('/configurations/:id/toggle',  adminOnly,  ctrl.toggleActive);
 router.delete('/configurations/:id',        adminOnly,  ctrl.deleteConfiguration);
 
+// Tier group management (multi-group per tier)
+router.get('/configurations/:id/tier-groups',  adminOrOp, ctrl.getTierGroups);
+router.put('/configurations/:id/tier-groups',  adminOnly,  ctrl.updateTierGroups);
+
 // Incidents
 router.get('/incidents',                adminOrOp, ctrl.listIncidents);
 router.get('/incidents/:id/responders', adminOrOp, ctrl.listResponders);

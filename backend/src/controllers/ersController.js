@@ -9,14 +9,46 @@ const ErsConfigSchema = z.object({
   organization_id:            z.number().int().positive(),
   name:                       z.string().min(1).max(128),
   pin:                        emptyToNull,
+  // Multi-tier group arrays (migration 009)
+  primary_group_ids:          z.array(z.number().int().positive()).default([]),
+  secondary_group_ids:        z.array(z.number().int().positive()).default([]),
+  // Legacy single FKs — kept for backward compat; ignored when *_group_ids provided
   primary_group_id:           z.number().int().positive().optional().nullable(),
   secondary_group_id:         z.number().int().positive().optional().nullable(),
   max_concurrent_conferences: z.number().int().min(1).max(10).default(2),
   queue_enabled:              z.boolean().default(true),
+  record_conferences:         z.boolean().default(false),
+  queue_hold_audio:           z.string().max(512).optional().nullable(),
   is_active:                  z.boolean().default(true),
 });
 
 // ── ERS Configurations ────────────────────────────────────────
+
+async function syncTierGroups(configId, tier, groupIds) {
+  await query(`DELETE FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
+  for (const gid of groupIds) {
+    await query(
+      `INSERT INTO ers_tier_groups (ers_configuration_id, tier, group_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [configId, tier, gid]
+    );
+  }
+}
+
+async function loadTierGroups(configId) {
+  const { rows } = await query(
+    `SELECT etg.tier, rg.id AS group_id, rg.name AS group_name,
+            (SELECT COUNT(*) FROM responder_group_members WHERE responder_group_id = rg.id)::INT AS member_count
+     FROM ers_tier_groups etg
+     JOIN responder_groups rg ON rg.id = etg.group_id
+     WHERE etg.ers_configuration_id = $1
+     ORDER BY etg.tier, rg.name`,
+    [configId]
+  );
+  return {
+    primary_groups:   rows.filter(r => r.tier === 'primary'),
+    secondary_groups: rows.filter(r => r.tier === 'secondary'),
+  };
+}
 
 // B13: listConfigurations was returning a plain array with no pagination
 export const listConfigurations = asyncHandler(async (req, res) => {
@@ -27,19 +59,15 @@ export const listConfigurations = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `SELECT e.*,
-       o.name  AS organization_name,
-       pg.name AS primary_group_name,
-       sg.name AS secondary_group_name,
+       o.name AS organization_name,
+       (SELECT COUNT(*) FROM ers_tier_groups WHERE ers_configuration_id = e.id AND tier = 'primary')::INT   AS primary_group_count,
+       (SELECT COUNT(*) FROM ers_tier_groups WHERE ers_configuration_id = e.id AND tier = 'secondary')::INT AS secondary_group_count,
        (SELECT COUNT(*) FROM ers_incidents i
-        WHERE i.ers_configuration_id = e.id
-          AND i.status = 'ACTIVE')::INT AS active_incidents,
+        WHERE i.ers_configuration_id = e.id AND i.status = 'ACTIVE')::INT AS active_incidents,
        (SELECT COUNT(*) FROM ers_queues q
-        WHERE q.ers_configuration_id = e.id
-          AND q.status = 'QUEUED')::INT AS queued_count
+        WHERE q.ers_configuration_id = e.id AND q.status = 'QUEUED')::INT AS queued_count
      FROM ers_configurations e
-     LEFT JOIN organizations    o  ON o.id  = e.organization_id
-     LEFT JOIN responder_groups pg ON pg.id = e.primary_group_id
-     LEFT JOIN responder_groups sg ON sg.id = e.secondary_group_id
+     LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
        AND ($1::int IS NULL OR e.organization_id = $1)
      ORDER BY e.name
@@ -56,26 +84,31 @@ export const listConfigurations = asyncHandler(async (req, res) => {
 
 export const getConfiguration = asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT e.*, o.name AS organization_name,
-       pg.name AS primary_group_name, sg.name AS secondary_group_name
+    `SELECT e.*, o.name AS organization_name
      FROM ers_configurations e
-     LEFT JOIN organizations   o  ON o.id  = e.organization_id
-     LEFT JOIN responder_groups pg ON pg.id = e.primary_group_id
-     LEFT JOIN responder_groups sg ON sg.id = e.secondary_group_id
+     LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.id = $1 AND e.deleted_at IS NULL`,
     [req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
 
-  const { rows: active } = await query(
-    `SELECT i.*, COUNT(r.id)::INT AS responder_count
-     FROM ers_incidents i
-     LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
-     WHERE i.ers_configuration_id = $1 AND i.status = 'ACTIVE' AND i.deleted_at IS NULL
-     GROUP BY i.id ORDER BY i.started_at DESC`, [req.params.id]
-  );
+  const [tierGroups, activeResult] = await Promise.all([
+    loadTierGroups(req.params.id),
+    query(
+      `SELECT i.*, COUNT(r.id)::INT AS responder_count
+       FROM ers_incidents i
+       LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
+       WHERE i.ers_configuration_id = $1 AND i.status = 'ACTIVE' AND i.deleted_at IS NULL
+       GROUP BY i.id ORDER BY i.started_at DESC`,
+      [req.params.id]
+    ),
+  ]);
 
-  res.json({ ...rows[0], active_incidents: active });
+  res.json({
+    ...rows[0],
+    ...tierGroups,
+    active_incidents: activeResult.rows,
+  });
 });
 
 export const createConfiguration = asyncHandler(async (req, res) => {
@@ -83,12 +116,19 @@ export const createConfiguration = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `INSERT INTO ers_configurations
        (organization_id, name, pin, primary_group_id, secondary_group_id,
-        max_concurrent_conferences, queue_enabled, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [d.organization_id, d.name, d.pin, d.primary_group_id, d.secondary_group_id,
-     d.max_concurrent_conferences, d.queue_enabled, d.is_active]
+        max_concurrent_conferences, queue_enabled, record_conferences, queue_hold_audio, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [d.organization_id, d.name, d.pin,
+     d.primary_group_ids[0] ?? d.primary_group_id ?? null,
+     d.secondary_group_ids[0] ?? d.secondary_group_id ?? null,
+     d.max_concurrent_conferences, d.queue_enabled,
+     d.record_conferences ?? false, d.queue_hold_audio ?? null, d.is_active]
   );
-  res.status(201).json(rows[0]);
+  const cfg = rows[0];
+  await syncTierGroups(cfg.id, 'primary',   d.primary_group_ids.length   ? d.primary_group_ids   : (d.primary_group_id   ? [d.primary_group_id]   : []));
+  await syncTierGroups(cfg.id, 'secondary', d.secondary_group_ids.length ? d.secondary_group_ids : (d.secondary_group_id ? [d.secondary_group_id] : []));
+  const tierGroups = await loadTierGroups(cfg.id);
+  res.status(201).json({ ...cfg, ...tierGroups });
 });
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
@@ -97,18 +137,27 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
     `UPDATE ers_configurations SET
        name                       = COALESCE($2,  name),
        pin                        = COALESCE($3,  pin),
-       primary_group_id           = COALESCE($4,  primary_group_id),
-       secondary_group_id         = COALESCE($5,  secondary_group_id),
-       max_concurrent_conferences = COALESCE($6,  max_concurrent_conferences),
-       queue_enabled              = COALESCE($7,  queue_enabled),
+       max_concurrent_conferences = COALESCE($4,  max_concurrent_conferences),
+       queue_enabled              = COALESCE($5,  queue_enabled),
+       record_conferences         = COALESCE($6,  record_conferences),
+       queue_hold_audio           = COALESCE($7,  queue_hold_audio),
        is_active                  = COALESCE($8,  is_active),
        updated_at                 = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.pin, d.primary_group_id, d.secondary_group_id,
-     d.max_concurrent_conferences, d.queue_enabled, d.is_active]
+    [req.params.id, d.name, d.pin,
+     d.max_concurrent_conferences, d.queue_enabled,
+     d.record_conferences, d.queue_hold_audio, d.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
-  res.json(rows[0]);
+
+  if (d.primary_group_ids !== undefined) {
+    await syncTierGroups(req.params.id, 'primary', d.primary_group_ids);
+  }
+  if (d.secondary_group_ids !== undefined) {
+    await syncTierGroups(req.params.id, 'secondary', d.secondary_group_ids);
+  }
+  const tierGroups = await loadTierGroups(req.params.id);
+  res.json({ ...rows[0], ...tierGroups });
 });
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
@@ -124,6 +173,24 @@ export const toggleActive = asyncHandler(async (req, res) => {
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
   res.json(rows[0]);
+});
+
+// GET /api/v1/ers/configurations/:id/tier-groups
+export const getTierGroups = asyncHandler(async (req, res) => {
+  const tierGroups = await loadTierGroups(req.params.id);
+  res.json(tierGroups);
+});
+
+// PUT /api/v1/ers/configurations/:id/tier-groups
+// Body: { primary_group_ids: [1,2,3], secondary_group_ids: [4,5] }
+export const updateTierGroups = asyncHandler(async (req, res) => {
+  const { primary_group_ids = [], secondary_group_ids = [] } = req.body;
+  await Promise.all([
+    syncTierGroups(req.params.id, 'primary',   primary_group_ids.map(Number)),
+    syncTierGroups(req.params.id, 'secondary', secondary_group_ids.map(Number)),
+  ]);
+  const tierGroups = await loadTierGroups(req.params.id);
+  res.json(tierGroups);
 });
 
 // GET /api/v1/ers/lookup?pin=  — Lua API

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Bell, ShieldAlert, Building2,
   MapPin, Layers, Contact, Group, FileBarChart2,
   Settings, ChevronDown, ChevronRight, Radio, Workflow,
-  Music, Rocket
+  Music, Rocket, PhoneCall
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -14,7 +14,9 @@ const NAV = [
 
   {
     label: 'Emergency Config', icon: ShieldAlert, children: [
+      { label: 'Service Registry',   to: '/services' },
       { label: 'ENS Configurations', to: '/ens' },
+      { label: 'ENS Campaigns',      to: '/ens/campaigns' },
       { label: 'ERS Configurations', to: '/ers' },
       { label: 'ERS Live View',      to: '/ers/live' },
     ]

@@ -39,21 +39,33 @@ const ObserverSchema = z.object({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Resolve responder mobile numbers for a given ERS configuration group.
+// Resolve responder mobile numbers for a given ERS configuration tier.
 //
-// Migration 002 B15 adds primary_ers_group_id / secondary_ers_group_id to
-// ers_configurations, pointing to the new ers_responder_groups / ers_responders
-// tables. If that data path is populated, use it. Otherwise fall back to the
-// original responder_groups / emergency_contacts path via primary_group_id /
-// secondary_group_id so that systems that haven't migrated responder data yet
-// continue to return correct numbers.
+// Priority (first non-empty wins):
+//   1. ers_tier_groups junction table (migration 009) — many groups per tier
+//   2. ers_responder_group_members path (migration 002 B15)
+//   3. Original responder_group_members path (legacy FKs)
 async function resolveResponders(configId, groupField) {
   if (groupField !== 'primary' && groupField !== 'secondary') return [];
 
-  const ersGroupCol  = `${groupField}_ers_group_id`;    // primary_ers_group_id | secondary_ers_group_id
-  const origGroupCol = `${groupField}_group_id`;         // primary_group_id     | secondary_group_id
+  // Tier-groups path (migration 009) — supports multiple groups per tier
+  const { rows: tierPath } = await query(
+    `SELECT DISTINCT ec.mobile_number
+     FROM emergency_contacts ec
+     JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
+     JOIN ers_tier_groups etg ON etg.group_id = rgm.responder_group_id
+     WHERE etg.ers_configuration_id = $1
+       AND etg.tier = $2
+       AND ec.deleted_at IS NULL AND ec.is_active = true
+     ORDER BY ec.mobile_number`,
+    [configId, groupField]
+  );
+  if (tierPath.length > 0) return tierPath.map(r => r.mobile_number);
 
-  // Try new path: ers_responders via ers_responder_group_members
+  const ersGroupCol  = `${groupField}_ers_group_id`;
+  const origGroupCol = `${groupField}_group_id`;
+
+  // ERS-specific responders path (migration 002 B15)
   const { rows: newPath } = await query(
     `SELECT DISTINCT r.mobile_number
      FROM ers_responders r
@@ -66,7 +78,7 @@ async function resolveResponders(configId, groupField) {
   );
   if (newPath.length > 0) return newPath.map(r => r.mobile_number);
 
-  // Fall back to original path: emergency_contacts via responder_group_members
+  // Legacy emergency_contacts path
   const { rows: oldPath } = await query(
     `SELECT DISTINCT ec.mobile_number
      FROM emergency_contacts ec
@@ -120,7 +132,8 @@ export const ersLookup = asyncHandler(async (req, res) => {
   const { rows: [cfg] } = await query(
     `SELECT ec.id AS configuration_id, ec.name,
             ec.max_concurrent_conferences, ec.queue_enabled,
-            ec.record_conferences, ec.conference_room_prefix
+            ec.record_conferences, ec.conference_room_prefix,
+            ec.queue_hold_audio
      FROM emergency_numbers en
      JOIN ers_configurations ec
        ON ec.id = en.ers_configuration_id
@@ -136,10 +149,23 @@ export const ersLookup = asyncHandler(async (req, res) => {
 
   if (!cfg) return res.status(404).json({ success: false, error: 'ERS number not found' });
 
-  const [primaryResponders, secondaryResponders] = await Promise.all([
+  const [primaryResponders, secondaryResponders, activeResult] = await Promise.all([
     resolveResponders(cfg.configuration_id, 'primary'),
     resolveResponders(cfg.configuration_id, 'secondary'),
+    query(
+      `SELECT COUNT(*)::INT AS active_count
+       FROM ers_incidents
+       WHERE ers_configuration_id = $1
+         AND status = 'ACTIVE'
+         AND deleted_at IS NULL`,
+      [cfg.configuration_id]
+    ),
   ]);
+
+  const activeConferences = activeResult.rows[0]?.active_count ?? 0;
+  const slot              = activeConferences + 1;               // 1 = primary, 2 = secondary
+  const groupType         = activeConferences === 0 ? 'primary' : 'secondary';
+  const canAccept         = activeConferences < cfg.max_concurrent_conferences;
 
   res.json({
     success: true,
@@ -152,6 +178,12 @@ export const ersLookup = asyncHandler(async (req, res) => {
       queue_enabled:              cfg.queue_enabled,
       record_conferences:         cfg.record_conferences,
       conference_room_prefix:     cfg.conference_room_prefix,
+      queue_hold_audio:           cfg.queue_hold_audio,   // Lua plays this while caller waits
+      // Slot-assignment fields — Lua uses these to avoid querying active count separately
+      active_conferences:         activeConferences,
+      slot,          // which conference slot this call fills (1=primary, 2=secondary, etc.)
+      group_type:    groupType,  // which responder group to invoke
+      can_accept:    canAccept,  // false → queue this call if queue_enabled, else reject
     },
   });
 });
@@ -547,4 +579,30 @@ export const ersLogObserver = asyncHandler(async (req, res) => {
   });
 
   res.json({ ok: true });
+});
+
+// ── Incident Status (queue poll) ──────────────────────────────────────────────
+
+// GET /api/v1/internal/ers/incidents/:uuid/status
+// Lua calls this every ~3 s while holding a queued caller.
+// When status flips from QUEUED → ACTIVE, Lua joins the conference room.
+export const ersIncidentStatus = asyncHandler(async (req, res) => {
+  const { uuid } = req.params;
+
+  const { rows: [incident] } = await query(
+    `SELECT status, conference_room, group_type, started_at, dequeued_at
+     FROM ers_incidents
+     WHERE incident_uuid = $1 AND deleted_at IS NULL`,
+    [uuid]
+  );
+
+  if (!incident) return res.status(404).json({ success: false, error: 'Incident not found' });
+
+  res.json({
+    success:         true,
+    status:          incident.status,   // QUEUED | ACTIVE | COMPLETED
+    conference_room: incident.conference_room,
+    group_type:      incident.group_type,
+    dequeued_at:     incident.dequeued_at,
+  });
 });

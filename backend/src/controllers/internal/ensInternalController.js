@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
+import { createCampaign } from '../../services/campaignEngine.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,99 @@ async function resolveEnsContacts(configId) {
   return rows.map(r => r.mobile_number);
 }
 
+// ── PIN Verification ──────────────────────────────────────────────────────────
+
+// POST /api/v1/internal/ens/verify-pin
+// Lua calls this after collecting DTMF digits, before recording the blast.
+// { trigger_number, pin }
+// → { authorized: true } or 401 { authorized: false, error }
+export const verifyPin = asyncHandler(async (req, res) => {
+  const { trigger_number, pin } = req.body;
+
+  if (!trigger_number) {
+    return res.status(400).json({ success: false, error: 'trigger_number required' });
+  }
+
+  const { rows: [cfg] } = await query(
+    `SELECT ec.pin
+     FROM emergency_numbers en
+     JOIN ens_configurations ec
+       ON ec.id = en.ens_configuration_id
+      AND ec.deleted_at IS NULL
+      AND ec.is_active = true
+     WHERE en.number = $1
+       AND en.type = 'ENS'
+       AND en.deleted_at IS NULL
+       AND en.is_active = true
+     LIMIT 1`,
+    [trigger_number]
+  );
+
+  if (!cfg) {
+    return res.status(404).json({ success: false, error: 'ENS service not found' });
+  }
+
+  // No PIN configured on this service — always authorized
+  if (!cfg.pin) {
+    return res.json({ success: true, authorized: true, pin_required: false });
+  }
+
+  if (cfg.pin !== String(pin || '').trim()) {
+    return res.status(401).json({ success: false, authorized: false, pin_required: true, error: 'Invalid PIN' });
+  }
+
+  res.json({ success: true, authorized: true, pin_required: true });
+});
+
+// ── Campaign Start (Lua calls this after recording message) ──────────────────
+
+// POST /api/v1/internal/ens/campaign/start
+// Lua sends: { trigger_number, recording_file, caller_number, pin }
+// If the ENS service has a PIN configured, pin must be supplied and correct.
+export const startCampaign = asyncHandler(async (req, res) => {
+  const { trigger_number, recording_file, caller_number, message_text, pin } = req.body;
+
+  if (!trigger_number) {
+    return res.status(400).json({ success: false, error: 'trigger_number required' });
+  }
+  if (!recording_file && !message_text) {
+    return res.status(400).json({ success: false, error: 'recording_file or message_text required' });
+  }
+
+  // PIN guard — defense-in-depth (Lua should call verify-pin first, but also
+  // checked here so the endpoint cannot be bypassed directly)
+  const { rows: [cfg] } = await query(
+    `SELECT ec.pin
+     FROM emergency_numbers en
+     JOIN ens_configurations ec
+       ON ec.id = en.ens_configuration_id
+      AND ec.deleted_at IS NULL AND ec.is_active = true
+     WHERE en.number = $1 AND en.type = 'ENS'
+       AND en.deleted_at IS NULL AND en.is_active = true
+     LIMIT 1`,
+    [trigger_number]
+  );
+
+  if (cfg?.pin && cfg.pin !== String(pin || '').trim()) {
+    return res.status(401).json({ success: false, error: 'PIN required or invalid' });
+  }
+
+  const campaign = await createCampaign({
+    triggerNumber:  trigger_number,
+    triggeredVia:   'PHONE',
+    triggeredBy:    null,
+    recordingFile:  recording_file || null,
+    messageText:    message_text   || null,
+  });
+
+  res.status(201).json({
+    success:     true,
+    campaign_id: campaign.id,
+    status:      campaign.status,
+    total_destinations: campaign.total_destinations,
+  });
+});
+
 // ── ENS Lookup ────────────────────────────────────────────────────────────────
 
 // GET /api/v1/internal/ens/lookup?number=<dest>
@@ -102,7 +196,9 @@ export const ensLookup = asyncHandler(async (req, res) => {
       name:                      cfg.name,
       blast_clid:                cfg.blast_clid,
       reply_clid:                cfg.reply_clid,
-      pin:                       cfg.pin,
+      // pin_required tells Lua to collect DTMF before recording.
+      // The actual PIN value is never sent to Lua — verification goes through verify-pin.
+      pin_required:              Boolean(cfg.pin),
       retry_count:               cfg.retry_count,
       retry_delay_seconds:       cfg.retry_delay_seconds,
       max_concurrent:            cfg.max_concurrent,
