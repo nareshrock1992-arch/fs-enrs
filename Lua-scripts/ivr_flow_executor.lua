@@ -27,10 +27,36 @@
 local API_BASE   = os.getenv("ENRS_INTERNAL_API") or "http://127.0.0.1:4100/api/v1/internal"
 local API_KEY    = os.getenv("FS_INTERNAL_KEY")   or ""
 local REC_DIR    = os.getenv("ENRS_REC_DIR")      or "/var/lib/freeswitch/recordings"
-local TTS_ENGINE = os.getenv("ENRS_TTS_ENGINE")   or "flite"
-local TTS_VOICE  = os.getenv("ENRS_TTS_VOICE")    or "slt"
-local MAX_LOOP   = 100   -- prevents runaway graphs from looping forever
-local HTTP_TIMEOUT = 8   -- curl timeout in seconds
+
+-- TTS provider: flite | piper | google | azure | polly
+local TTS_PROVIDER   = os.getenv("ENRS_TTS_PROVIDER")  or "flite"
+local TTS_CACHE_DIR  = os.getenv("ENRS_TTS_CACHE_DIR") or "/var/lib/freeswitch/sounds/enrs_tts"
+
+-- Fallback native FreeSWITCH speak (used only when provider=native)
+local TTS_ENGINE     = os.getenv("ENRS_TTS_ENGINE") or "flite"
+local TTS_VOICE      = os.getenv("ENRS_TTS_VOICE")  or "slt"
+
+-- Piper TTS
+local PIPER_BIN      = os.getenv("PIPER_BIN")   or "piper"
+local PIPER_MODEL    = os.getenv("PIPER_MODEL")  or "/usr/share/piper-voices/en_US-lessac-medium.onnx"
+
+-- Google Cloud TTS
+local GOOGLE_API_KEY = os.getenv("GOOGLE_TTS_API_KEY") or ""
+local GOOGLE_TTS_VOICE  = os.getenv("GOOGLE_TTS_VOICE") or "en-US-Neural2-C"
+local GOOGLE_TTS_LANG   = os.getenv("GOOGLE_TTS_LANG")  or "en-US"
+
+-- Azure Cognitive Services TTS
+local AZURE_TTS_KEY     = os.getenv("AZURE_TTS_KEY")      or ""
+local AZURE_TTS_REGION  = os.getenv("AZURE_TTS_REGION")   or "eastus"
+local AZURE_TTS_VOICE   = os.getenv("AZURE_TTS_VOICE")    or "en-US-JennyNeural"
+
+-- Amazon Polly (via AWS CLI — must be pre-configured on the server)
+local POLLY_VOICE       = os.getenv("POLLY_VOICE")     or "Joanna"
+local POLLY_ENGINE      = os.getenv("POLLY_ENGINE")    or "neural"
+local POLLY_REGION      = os.getenv("POLLY_REGION")    or "us-east-1"
+
+local MAX_LOOP     = 100  -- prevents runaway graphs from looping forever
+local HTTP_TIMEOUT = 8    -- curl timeout in seconds
 
 -- ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -138,11 +164,202 @@ local function resolve(session, s)
   end)
 end
 
--- ── TTS helper ────────────────────────────────────────────────────────────────
+-- ── TTS provider abstraction ──────────────────────────────────────────────────
+--
+--  ENRS_TTS_PROVIDER controls which backend generates speech audio:
+--    flite   — local Flite TTS (default, no API key required)
+--    piper   — local Piper TTS (offline, high quality)
+--    google  — Google Cloud Text-to-Speech REST API
+--    azure   — Azure Cognitive Services Speech REST API
+--    polly   — Amazon Polly via AWS CLI
+--    native  — FreeSWITCH native speak application (legacy)
+--
+--  Generated audio files are cached in ENRS_TTS_CACHE_DIR keyed by an MD5
+--  of the provider + text, so identical phrases are synthesized only once.
 
+-- Simple MD5 via md5sum shell command (available on Linux/FreeSWITCH servers)
+local function md5(s)
+  local h = io.popen('echo -n ' .. string.format('%q', s) .. ' | md5sum')
+  local result = h and h:read('*a') or ''
+  if h then h:close() end
+  -- md5sum output: "d41d8cd98f00b204e9800998ecf8427e  -\n"
+  return result:match('^(%x+)')
+end
+
+-- Ensure TTS cache directory exists (idempotent)
+local _tts_dir_created = false
+local function ensure_tts_dir()
+  if not _tts_dir_created then
+    os.execute('mkdir -p ' .. TTS_CACHE_DIR)
+    _tts_dir_created = true
+  end
+end
+
+-- Synthesize text → wav file using the configured provider.
+-- Returns the file path on success, or nil on failure.
+local function tts_to_file(text)
+  if not text or text == '' then return nil end
+
+  ensure_tts_dir()
+
+  local cache_key  = md5(TTS_PROVIDER .. '|' .. TTS_VOICE .. '|' .. text) or
+                     tostring(os.time())
+  local cache_path = TTS_CACHE_DIR .. '/' .. cache_key .. '.wav'
+
+  -- Return cached file if it already exists and is non-empty
+  local f = io.open(cache_path, 'rb')
+  if f then
+    local size = f:seek('end')
+    f:close()
+    if size and size > 0 then
+      log('DEBUG', 'tts cache hit: ' .. cache_path)
+      return cache_path
+    end
+    -- Remove zero-byte file from a previous failed synthesis
+    os.remove(cache_path)
+  end
+
+  local ok = false
+  local safe_text = text:gsub("'", "'\\''")  -- single-quote escape for shell
+
+  if TTS_PROVIDER == 'piper' then
+    -- Piper: echo text | piper --model <model> --output_file <path>
+    local cmd = string.format(
+      "echo '%s' | %s --model %s --output_file '%s' 2>/dev/null",
+      safe_text, PIPER_BIN, PIPER_MODEL, cache_path
+    )
+    log('DEBUG', 'piper: ' .. cmd)
+    ok = (os.execute(cmd) == 0)
+
+  elseif TTS_PROVIDER == 'flite' then
+    -- Flite: flite -t "text" -o path
+    local cmd = string.format("flite -t '%s' -o '%s' 2>/dev/null", safe_text, cache_path)
+    log('DEBUG', 'flite: ' .. cmd)
+    ok = (os.execute(cmd) == 0)
+
+  elseif TTS_PROVIDER == 'google' then
+    -- Google Cloud TTS REST API — returns base64-encoded WAV
+    local tmp_json = TTS_CACHE_DIR .. '/' .. cache_key .. '_req.json'
+    local tmp_b64  = TTS_CACHE_DIR .. '/' .. cache_key .. '_b64.txt'
+
+    -- Write JSON request body
+    local jf = io.open(tmp_json, 'w')
+    if jf then
+      jf:write(string.format([[
+{
+  "input": {"text": "%s"},
+  "voice": {"languageCode": "%s", "name": "%s"},
+  "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": 8000}
+}]], text:gsub('"', '\\"'), GOOGLE_TTS_LANG, GOOGLE_TTS_VOICE))
+      jf:close()
+    end
+
+    local url = 'https://texttospeech.googleapis.com/v1/text:synthesize?key=' .. GOOGLE_API_KEY
+    local cmd = string.format(
+      "curl -s -m %d -X POST -H 'Content-Type: application/json' " ..
+      "--data @'%s' '%s' 2>/dev/null | python3 -c " ..
+      "\"import sys,json,base64; d=json.load(sys.stdin); " ..
+      "open('%s','wb').write(base64.b64decode(d['audioContent']))\" 2>/dev/null",
+      HTTP_TIMEOUT, tmp_json, url, cache_path
+    )
+    ok = (os.execute(cmd) == 0)
+    os.remove(tmp_json)
+    os.remove(tmp_b64)
+
+  elseif TTS_PROVIDER == 'azure' then
+    -- Azure Cognitive Services TTS REST API — returns WAV directly
+    local ssml = string.format(
+      "<speak version='1.0' xml:lang='en-US'>" ..
+      "<voice name='%s'>%s</voice></speak>",
+      AZURE_TTS_VOICE, text:gsub('[<>&]', { ['<']='&lt;', ['>']='&gt;', ['&']='&amp;' })
+    )
+    local safe_ssml = ssml:gsub("'", "'\\''")
+    local token_url = string.format(
+      'https://%s.api.cognitive.microsoft.com/sts/v1.0/issueToken',
+      AZURE_TTS_REGION
+    )
+    -- Get auth token (FreeSWITCH server must have internet access)
+    local token_cmd = string.format(
+      "curl -s -m %d -X POST '%s' -H 'Ocp-Apim-Subscription-Key: %s' 2>/dev/null",
+      HTTP_TIMEOUT, token_url, AZURE_TTS_KEY
+    )
+    local th = io.popen(token_cmd)
+    local token = th and th:read('*a'):gsub('%s+','') or ''
+    if th then th:close() end
+
+    if token ~= '' then
+      local tts_url = string.format(
+        'https://%s.tts.speech.microsoft.com/cognitiveservices/v1',
+        AZURE_TTS_REGION
+      )
+      local cmd = string.format(
+        "curl -s -m %d -X POST '%s' " ..
+        "-H 'Authorization: Bearer %s' " ..
+        "-H 'Content-Type: application/ssml+xml' " ..
+        "-H 'X-Microsoft-OutputFormat: riff-8khz-16bit-mono-pcm' " ..
+        "-d '%s' --output '%s' 2>/dev/null",
+        HTTP_TIMEOUT, tts_url, token, safe_ssml, cache_path
+      )
+      ok = (os.execute(cmd) == 0)
+    else
+      log('ERR', 'azure TTS: failed to obtain auth token')
+    end
+
+  elseif TTS_PROVIDER == 'polly' then
+    -- Amazon Polly via AWS CLI (must be pre-configured with IAM credentials)
+    local cmd = string.format(
+      "aws polly synthesize-speech " ..
+      "--region '%s' " ..
+      "--engine '%s' " ..
+      "--output-format pcm " ..
+      "--sample-rate 8000 " ..
+      "--voice-id '%s' " ..
+      "--text '%s' " ..
+      "'%s' >/dev/null 2>&1 && " ..
+      -- Polly outputs raw PCM; wrap in WAV header via sox
+      "sox -t raw -r 8000 -e signed -b 16 -c 1 '%s' '%s.wav' 2>/dev/null && " ..
+      "mv '%s.wav' '%s'",
+      POLLY_REGION, POLLY_ENGINE, POLLY_VOICE, safe_text, cache_path,
+      cache_path, cache_path, cache_path, cache_path
+    )
+    ok = (os.execute(cmd) == 0)
+  end
+
+  -- Verify the output file was created and is non-empty
+  local vf = io.open(cache_path, 'rb')
+  if vf then
+    local sz = vf:seek('end')
+    vf:close()
+    if sz and sz > 0 then
+      log('INFO', 'tts synthesized (' .. TTS_PROVIDER .. '): ' .. cache_path)
+      return cache_path
+    end
+  end
+
+  -- Synthesis failed — clean up and return nil so caller can fall back
+  os.remove(cache_path)
+  log('ERR', 'tts_to_file: synthesis failed for provider=' .. TTS_PROVIDER)
+  return nil
+end
+
+-- Speak text via TTS.
+-- Uses synthesized audio file when possible; falls back to FreeSWITCH native speak.
 local function speak(session, text)
-  if text and text ~= "" and session:ready() then
-    session:execute("speak", TTS_ENGINE .. "|" .. TTS_VOICE .. "|" .. text)
+  if not text or text == '' or not session:ready() then return end
+
+  if TTS_PROVIDER == 'native' then
+    -- Direct FreeSWITCH native TTS (no caching)
+    session:execute('speak', TTS_ENGINE .. '|' .. TTS_VOICE .. '|' .. text)
+    return
+  end
+
+  local path = tts_to_file(text)
+  if path then
+    session:streamFile(path)
+  else
+    -- Fall back to FreeSWITCH native speak so the caller still hears something
+    log('WARN', 'speak: falling back to native TTS for: ' .. text)
+    session:execute('speak', 'flite|slt|' .. text)
   end
 end
 

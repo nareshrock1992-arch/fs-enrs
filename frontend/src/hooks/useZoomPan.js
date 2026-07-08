@@ -57,5 +57,5 @@ export function useZoomPan() {
 
   const cssTransform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
 
-  return { transform, cssTransform, onWheel, pan, reset, toCanvas };
+  return { transform, setTransform, cssTransform, onWheel, pan, reset, toCanvas };
 }

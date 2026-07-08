@@ -168,8 +168,10 @@ export const api = {
     publish:  (uuid, notes) => request('POST',   `/ivr/flows/${uuid}/publish`, { change_notes: notes || undefined }),
     versions: (uuid)        => request('GET',    `/ivr/flows/${uuid}/versions`),
     getVersion: (uuid, v)   => request('GET',    `/ivr/flows/${uuid}/versions/${v}`),
-    bind:     (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/bind`, { emergency_number_id: numId }),
-    unbind:   (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/unbind`, { emergency_number_id: numId }),
+    bind:             (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/bind`, { emergency_number_id: numId }),
+    unbind:           (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/unbind`, { emergency_number_id: numId }),
+    listTemplates:    ()            => request('GET',    '/ivr/flows/templates'),
+    createFromTemplate: (id, name) => request('POST',   `/ivr/flows/templates/${id}/create`, name ? { name } : {}),
   },
 
   // Media

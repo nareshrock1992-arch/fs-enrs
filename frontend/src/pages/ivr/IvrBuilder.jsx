@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 import { useIvrGraph } from '../../hooks/useIvrGraph.js';
 import { api } from '../../api/client.js';
@@ -110,27 +110,7 @@ export default function IvrBuilder() {
             onAddNode={graph.addNode}
           />
 
-          {/* Zoom controls */}
-          <div className="absolute bottom-4 left-4 flex flex-col gap-1 z-10">
-            <button className="btn-ghost p-2 bg-surface-panel border border-surface-border rounded-lg shadow"
-                    title="Zoom in (scroll up)">
-              <ZoomIn size={13} />
-            </button>
-            <button className="btn-ghost p-2 bg-surface-panel border border-surface-border rounded-lg shadow"
-                    title="Zoom out (scroll down)">
-              <ZoomOut size={13} />
-            </button>
-            <button className="btn-ghost p-2 bg-surface-panel border border-surface-border rounded-lg shadow"
-                    title="Fit view">
-              <Maximize2 size={13} />
-            </button>
-          </div>
-
-          {/* Node count badge */}
-          <div className="absolute bottom-4 right-4 text-[10px] text-text-muted
-                          bg-surface-panel border border-surface-border rounded-lg px-2.5 py-1.5 z-10">
-            {Object.keys(graph.nodes).length} nodes · {graph.edges.length} edges
-          </div>
+          {/* Zoom controls and stats are rendered by FlowCanvas */}
         </div>
 
         {/* Right — Property Panel */}

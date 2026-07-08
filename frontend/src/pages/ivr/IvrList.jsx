@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Workflow, Plus, Pencil, Trash2, Search, Phone } from 'lucide-react';
+import { Workflow, Plus, Pencil, Trash2, Search, Phone, LayoutTemplate } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -16,10 +16,12 @@ function fmt(iso) {
 }
 
 export default function IvrList() {
-  const [flows,   setFlows]   = useState([]);
-  const [total,   setTotal]   = useState(0);
-  const [search,  setSearch]  = useState('');
-  const [loading, setLoading] = useState(true);
+  const [flows,     setFlows]     = useState([]);
+  const [total,     setTotal]     = useState(0);
+  const [search,    setSearch]    = useState('');
+  const [loading,   setLoading]   = useState(true);
+  const [templates, setTemplates] = useState([]);
+  const [tplLoading, setTplLoading] = useState(false);
   const navigate = useNavigate();
   const user = useAuthStore(s => s.user);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
@@ -39,6 +41,13 @@ export default function IvrList() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (!canEdit) return;
+    api.ivr.listTemplates()
+      .then(r => setTemplates(r.templates || []))
+      .catch(() => {});
+  }, [canEdit]);
+
   async function createFlow() {
     const name = window.prompt('Flow name:');
     if (!name?.trim()) return;
@@ -47,6 +56,20 @@ export default function IvrList() {
       navigate(`/ivr/${flow.flow_uuid}`);
     } catch (e) {
       alert(e.message);
+    }
+  }
+
+  async function createFromTemplate(tpl) {
+    const name = window.prompt(`Flow name for "${tpl.name}":`, tpl.name);
+    if (name === null) return;
+    setTplLoading(true);
+    try {
+      const r = await api.ivr.createFromTemplate(tpl.id, name.trim() || tpl.name);
+      navigate(`/ivr/${r.flow_uuid}`);
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setTplLoading(false);
     }
   }
 
@@ -95,11 +118,37 @@ export default function IvrList() {
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       )}
 
-      {!loading && flows.length === 0 && (
+      {!loading && flows.length === 0 && !search && canEdit && templates.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-text-muted text-xs mb-3">
+            <LayoutTemplate size={12} />
+            <span>Start from a template</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {templates.map(tpl => (
+              <button
+                key={tpl.id}
+                disabled={tplLoading}
+                onClick={() => createFromTemplate(tpl)}
+                className="card text-left hover:bg-surface-hover transition-colors p-4 disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <LayoutTemplate size={13} className="text-brand shrink-0" />
+                  <span className="text-xs font-semibold text-text-primary truncate">{tpl.name}</span>
+                </div>
+                <p className="text-[10px] text-text-muted line-clamp-2">{tpl.description}</p>
+                <p className="text-[9px] text-text-muted mt-2">{tpl.node_count} nodes</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && flows.length === 0 && (search || !canEdit || templates.length === 0) && (
         <div className="card text-center py-12">
           <Workflow size={32} className="mx-auto text-text-muted mb-3" />
-          <p className="text-sm text-text-muted">No IVR flows yet</p>
-          {canEdit && (
+          <p className="text-sm text-text-muted">{search ? 'No flows match your search' : 'No IVR flows yet'}</p>
+          {canEdit && !search && (
             <button onClick={createFlow}
                     className="mt-3 text-xs text-brand hover:underline">
               Create your first flow
