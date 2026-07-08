@@ -19,19 +19,35 @@ pool.on('error', (err) => {
   console.error('[db] Pool error:', err.message);
 });
 
-// Convenience wrapper — use `query(sql, params)` everywhere
-export async function query(sql, params) {
-  const res = await pool.query(sql, params);
-  return res;
+// Annotate a pg error with the originating SQL and params so the error
+// handler can log them without a separate call stack inspection.
+function annotateDbError(err, sql, params) {
+  if (err && typeof err === 'object') {
+    err._sql    = sql;
+    err._params = params;
+  }
+  return err;
 }
 
-// Transaction helper — fn receives a client bound query function
+// Convenience wrapper — use `query(sql, params)` everywhere
+export async function query(sql, params) {
+  try {
+    return await pool.query(sql, params);
+  } catch (err) {
+    throw annotateDbError(err, sql, params);
+  }
+}
+
+// Transaction helper — fn receives a client-bound query function
 // Usage: withTransaction(async (tq) => { await tq(sql, params); })
 export async function withTransaction(fn) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await fn((sql, params) => client.query(sql, params));
+    const tq = (sql, params) => client.query(sql, params).catch(err => {
+      throw annotateDbError(err, sql, params);
+    });
+    const result = await fn(tq);
     await client.query('COMMIT');
     return result;
   } catch (err) {

@@ -123,6 +123,7 @@ export default function IvrBuilder() {
             onUpdate={graph.updateNode}
             onDelete={graph.deleteNode}
             onSetEntry={graph.setEntry}
+            nodes={graph.nodes}
           />
         </div>
       </div>

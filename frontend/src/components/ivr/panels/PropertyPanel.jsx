@@ -1,4 +1,4 @@
-import { Trash2, Star } from 'lucide-react';
+import { Trash2, Star, Link } from 'lucide-react';
 import { NODE_CONFIG } from '../canvas/FlowNode.jsx';
 
 // ── Field components ──────────────────────────────────────────────────────────
@@ -72,9 +72,35 @@ function Select({ value, onChange, options }) {
   );
 }
 
+// NodePicker — dropdown to pick a target node instead of typing a raw ID.
+// `nodes` is the graph nodes map { [id]: node }.
+// `excludeId` prevents self-loops.
+function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'None (end here)' }) {
+  const nodeList = Object.values(nodes).filter(n => n.id !== excludeId);
+  return (
+    <select
+      value={value || ''}
+      onChange={e => onChange(e.target.value)}
+      className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                 text-xs text-text-primary focus:outline-none focus:border-brand"
+    >
+      <option value="">{placeholder}</option>
+      {nodeList.map(n => {
+        const cfg = NODE_CONFIG[n.type] || NODE_CONFIG.play;
+        const label = n.label || (n.text?.slice(0, 24)) || (n.audio_url?.split('/').pop()) || n.type;
+        return (
+          <option key={n.id} value={n.id}>
+            {cfg.icon} {cfg.label} — {String(label).slice(0, 30)}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
 // ── Per-type property panels ──────────────────────────────────────────────────
 
-function PlayFields({ node, onChange }) {
+function PlayFields({ node, onChange, nodes }) {
   return (
     <>
       <Field label="Audio URL (local /media/ path)">
@@ -83,14 +109,14 @@ function PlayFields({ node, onChange }) {
       <Field label="Audio File ID (alternative)">
         <NumberInput value={node.audio_file_id} onChange={v => onChange({ audio_file_id: v })} min={1} />
       </Field>
-      <Field label="Next Node ID">
-        <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_2" mono />
+      <Field label="Next Node" hint="Node to go to after playing audio">
+        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
       </Field>
     </>
   );
 }
 
-function SayFields({ node, onChange }) {
+function SayFields({ node, onChange, nodes }) {
   return (
     <>
       <Field label="Text to speak">
@@ -106,14 +132,14 @@ function SayFields({ node, onChange }) {
       <Field label="Voice (optional)">
         <TextInput value={node.voice} onChange={v => onChange({ voice: v })} placeholder="Joanna" />
       </Field>
-      <Field label="Next Node ID">
-        <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_2" mono />
+      <Field label="Next Node" hint="Node to go to after speaking">
+        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
       </Field>
     </>
   );
 }
 
-function GatherFields({ node, onChange }) {
+function GatherFields({ node, onChange, nodes }) {
   const branches = node.branches || {};
   const branchKeys = Object.keys(branches);
 
@@ -147,21 +173,22 @@ function GatherFields({ node, onChange }) {
       <Field label="Prompt Text (TTS fallback)">
         <TextInput value={node.prompt_text} onChange={v => onChange({ prompt_text: v })} placeholder="Please enter your PIN" />
       </Field>
-      <Field label="Branches (key → node ID)" hint="Use _default to catch any input not matched above">
+      <Field label="Branches (key → target node)" hint="Use _default to catch any input not matched above">
         <div className="space-y-1.5">
           {branchKeys.map(k => (
             <div key={k} className="flex gap-1.5 items-center">
               <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-16 text-center shrink-0">
                 {k}
               </span>
-              <input
-                type="text"
-                value={branches[k] || ''}
-                onChange={e => updateBranch(k, e.target.value)}
-                placeholder="node_id"
-                className="flex-1 bg-surface border border-surface-border rounded px-2 py-1
-                           text-[11px] font-mono text-text-primary focus:outline-none focus:border-brand"
-              />
+              <div className="flex-1">
+                <NodePicker
+                  value={branches[k]}
+                  onChange={v => updateBranch(k, v)}
+                  nodes={nodes}
+                  excludeId={node.id}
+                  placeholder="Select target node…"
+                />
+              </div>
               {!['timeout','invalid','_default'].includes(k) && (
                 <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
                   <Trash2 size={11} />
@@ -186,15 +213,15 @@ function GatherFields({ node, onChange }) {
   );
 }
 
-function GotoFields({ node, onChange }) {
+function GotoFields({ node, onChange, nodes }) {
   return (
-    <Field label="Target Node ID">
-      <TextInput value={node.target_node_id} onChange={v => onChange({ target_node_id: v })} placeholder="node_3" mono />
+    <Field label="Jump to Node" hint="The node this Go To routes to">
+      <NodePicker value={node.target_node_id} onChange={v => onChange({ target_node_id: v })} nodes={nodes} excludeId={node.id} placeholder="Select target node…" />
     </Field>
   );
 }
 
-function EnsFields({ node, onChange }) {
+function EnsFields({ node, onChange, nodes }) {
   return (
     <>
       <Field label="ENS Configuration ID" hint="Leave blank if using ens_config_var">
@@ -206,8 +233,8 @@ function EnsFields({ node, onChange }) {
       <Field label="Recording File Variable" hint="Session var holding recorded file path (from record_message node)">
         <TextInput value={node.recording_file_var} onChange={v => onChange({ recording_file_var: v })} placeholder="recorded_file_path" mono />
       </Field>
-      <Field label="Next Node ID (optional — post-blast)">
-        <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_hangup" mono />
+      <Field label="Next Node (optional — after blast)" hint="Where to go after ENS fires">
+        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
       </Field>
     </>
   );
@@ -240,7 +267,7 @@ const OPERATOR_OPTIONS = [
   { value: 'ens_callback_valid', label: 'ENS callback valid (recording replay)' },
 ];
 
-function ConditionFields({ node, onChange }) {
+function ConditionFields({ node, onChange, nodes }) {
   const isEnsPinOp = node.operator === 'ens_pin_valid';
   return (
     <>
@@ -270,11 +297,11 @@ function ConditionFields({ node, onChange }) {
           <code className="font-mono">ens_blast_clid</code> as session variables for downstream ENS node.
         </div>
       )}
-      <Field label="True → Node ID" hint="Route here when condition is met">
-        <TextInput value={node.true_node} onChange={v => onChange({ true_node: v })} placeholder="node_success" mono />
+      <Field label="True → Node" hint="Route here when condition is met">
+        <NodePicker value={node.true_node} onChange={v => onChange({ true_node: v })} nodes={nodes} excludeId={node.id} placeholder="Select node for TRUE branch…" />
       </Field>
-      <Field label="False → Node ID" hint="Route here when condition fails">
-        <TextInput value={node.false_node} onChange={v => onChange({ false_node: v })} placeholder="node_retry" mono />
+      <Field label="False → Node" hint="Route here when condition fails">
+        <NodePicker value={node.false_node} onChange={v => onChange({ false_node: v })} nodes={nodes} excludeId={node.id} placeholder="Select node for FALSE branch…" />
       </Field>
     </>
   );
@@ -282,7 +309,7 @@ function ConditionFields({ node, onChange }) {
 
 // ── NEW: RecordMessageFields ──────────────────────────────────────────────────
 
-function RecordMessageFields({ node, onChange }) {
+function RecordMessageFields({ node, onChange, nodes }) {
   return (
     <>
       <Field label="Variable name" hint="Session var that stores the recorded file path">
@@ -306,8 +333,8 @@ function RecordMessageFields({ node, onChange }) {
       <Field label="Record directory" hint="Default: /var/lib/freeswitch/recordings">
         <TextInput value={node.record_dir} onChange={v => onChange({ record_dir: v })} placeholder="/var/lib/freeswitch/recordings" mono />
       </Field>
-      <Field label="Next Node ID">
-        <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_blast" mono />
+      <Field label="Next Node" hint="Node to proceed to after recording">
+        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
       </Field>
     </>
   );
@@ -315,7 +342,7 @@ function RecordMessageFields({ node, onChange }) {
 
 // ── NEW: SetVariableFields ────────────────────────────────────────────────────
 
-function SetVariableFields({ node, onChange }) {
+function SetVariableFields({ node, onChange, nodes }) {
   return (
     <>
       <Field label="Variable name" hint="FreeSWITCH channel variable to set">
@@ -324,8 +351,8 @@ function SetVariableFields({ node, onChange }) {
       <Field label="Value" hint="Static text or ${other_var} interpolation">
         <TextInput value={node.value} onChange={v => onChange({ value: v })} placeholder="${destination_number}" mono />
       </Field>
-      <Field label="Next Node ID">
-        <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_next" mono />
+      <Field label="Next Node" hint="Node to proceed to after setting variable">
+        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
       </Field>
     </>
   );
@@ -378,7 +405,7 @@ const FIELD_COMPONENTS = {
 
 // ── PropertyPanel ─────────────────────────────────────────────────────────────
 
-export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry }) {
+export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry, nodes = {} }) {
   if (!node) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center p-6">
@@ -417,7 +444,7 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
 
       {/* Fields */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        <FieldsComp node={node} onChange={patch => onUpdate(node.id, patch)} />
+        <FieldsComp node={node} onChange={patch => onUpdate(node.id, patch)} nodes={nodes} />
       </div>
 
       {/* Actions */}

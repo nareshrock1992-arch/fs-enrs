@@ -22,10 +22,12 @@ const IncidentCompleteSchema = z.object({
   recording_file: z.string().max(512).optional().nullable(),
 });
 
+// migration 002 B9 expanded CHECK to include REJOINED and OBSERVER
 const ResponderUpdateSchema = z.object({
   responder_number: z.string().min(7).max(32),
   status:           z.enum(['JOINED', 'MISSED', 'REJOINED']),
   joined_at:        z.string().datetime({ offset: true }).optional().nullable(),
+  joined_via:       z.string().max(32).optional().nullable(),
   role:             z.enum(['primary', 'secondary']).optional(),
 });
 
@@ -37,21 +39,74 @@ const ObserverSchema = z.object({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Resolve responder mobile numbers from an ERS configuration's primary or secondary group
+// Resolve responder mobile numbers for a given ERS configuration group.
+//
+// Migration 002 B15 adds primary_ers_group_id / secondary_ers_group_id to
+// ers_configurations, pointing to the new ers_responder_groups / ers_responders
+// tables. If that data path is populated, use it. Otherwise fall back to the
+// original responder_groups / emergency_contacts path via primary_group_id /
+// secondary_group_id so that systems that haven't migrated responder data yet
+// continue to return correct numbers.
 async function resolveResponders(configId, groupField) {
-  const { rows } = await query(
+  if (groupField !== 'primary' && groupField !== 'secondary') return [];
+
+  const ersGroupCol  = `${groupField}_ers_group_id`;    // primary_ers_group_id | secondary_ers_group_id
+  const origGroupCol = `${groupField}_group_id`;         // primary_group_id     | secondary_group_id
+
+  // Try new path: ers_responders via ers_responder_group_members
+  const { rows: newPath } = await query(
     `SELECT DISTINCT r.mobile_number
      FROM ers_responders r
      JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
-     JOIN ers_responder_groups rg ON rg.id = rgm.group_id
-     JOIN ers_configurations ec ON ec.${groupField} = rg.id
+     JOIN ers_configurations ec ON ec.${ersGroupCol} = rgm.group_id
      WHERE ec.id = $1
        AND r.deleted_at IS NULL AND r.is_active = true
-       AND rg.deleted_at IS NULL AND rg.is_active = true
      ORDER BY r.mobile_number`,
     [configId]
   );
-  return rows.map(r => r.mobile_number);
+  if (newPath.length > 0) return newPath.map(r => r.mobile_number);
+
+  // Fall back to original path: emergency_contacts via responder_group_members
+  const { rows: oldPath } = await query(
+    `SELECT DISTINCT ec.mobile_number
+     FROM emergency_contacts ec
+     JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
+     JOIN ers_configurations e ON e.${origGroupCol} = rgm.responder_group_id
+     WHERE e.id = $1
+       AND ec.deleted_at IS NULL AND ec.is_active = true
+     ORDER BY ec.mobile_number`,
+    [configId]
+  );
+  return oldPath.map(r => r.mobile_number);
+}
+
+// Resolve emergency_contact_id from a mobile number (last-9-digit fuzzy match).
+// emergency_contact_id is NOT NULL on ers_incident_responders so every INSERT
+// must supply it. Returns null if no matching active contact found.
+async function resolveContactId(mobileNumber) {
+  const last9 = String(mobileNumber).replace(/\D/g, '').slice(-9);
+  const { rows: [contact] } = await query(
+    `SELECT id FROM emergency_contacts
+     WHERE RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $1
+       AND deleted_at IS NULL AND is_active = true
+     LIMIT 1`,
+    [last9]
+  );
+  return contact?.id ?? null;
+}
+
+// Resolve ers_responder_id from a mobile number (migration 002 B15 — nullable).
+// Returns null if no matching active ERS responder found.
+async function resolveResponderId(mobileNumber) {
+  const last9 = String(mobileNumber).replace(/\D/g, '').slice(-9);
+  const { rows: [responder] } = await query(
+    `SELECT id FROM ers_responders
+     WHERE RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $1
+       AND deleted_at IS NULL AND is_active = true
+     LIMIT 1`,
+    [last9]
+  );
+  return responder?.id ?? null;
 }
 
 // ── ERS Lookup ────────────────────────────────────────────────────────────────
@@ -61,16 +116,14 @@ export const ersLookup = asyncHandler(async (req, res) => {
   const number = String(req.query.number || '').trim();
   if (!number) return res.status(400).json({ success: false, error: 'number param required' });
 
-  // Resolve via emergency_numbers table — tenant scoped through the number record
+  // emergency_numbers table added by migration 002 B14 — routes number to config
   const { rows: [cfg] } = await query(
     `SELECT ec.id AS configuration_id, ec.name,
-            ec.retry_count, ec.max_concurrent_conferences,
-            ec.queue_enabled, ec.record_conferences,
-            ec.conference_room_prefix
+            ec.max_concurrent_conferences, ec.queue_enabled,
+            ec.record_conferences, ec.conference_room_prefix
      FROM emergency_numbers en
      JOIN ers_configurations ec
        ON ec.id = en.ers_configuration_id
-      AND ec.tenant_id = en.tenant_id
       AND ec.deleted_at IS NULL
       AND ec.is_active = true
      WHERE en.number = $1
@@ -84,22 +137,21 @@ export const ersLookup = asyncHandler(async (req, res) => {
   if (!cfg) return res.status(404).json({ success: false, error: 'ERS number not found' });
 
   const [primaryResponders, secondaryResponders] = await Promise.all([
-    resolveResponders(cfg.configuration_id, 'primary_ers_group_id'),
-    resolveResponders(cfg.configuration_id, 'secondary_ers_group_id'),
+    resolveResponders(cfg.configuration_id, 'primary'),
+    resolveResponders(cfg.configuration_id, 'secondary'),
   ]);
 
   res.json({
     success: true,
     data: {
-      configuration_id:         cfg.configuration_id,
-      name:                     cfg.name,
-      primary_responders:       primaryResponders,
-      secondary_responders:     secondaryResponders,
-      retry_count:              cfg.retry_count,
+      configuration_id:          cfg.configuration_id,
+      name:                       cfg.name,
+      primary_responders:         primaryResponders,
+      secondary_responders:       secondaryResponders,
       max_concurrent_conferences: cfg.max_concurrent_conferences,
-      queue_enabled:            cfg.queue_enabled,
-      record_conferences:       cfg.record_conferences,
-      conference_room_prefix:   cfg.conference_room_prefix,
+      queue_enabled:              cfg.queue_enabled,
+      record_conferences:         cfg.record_conferences,
+      conference_room_prefix:     cfg.conference_room_prefix,
     },
   });
 });
@@ -154,41 +206,46 @@ export const ersCompleteIncident = asyncHandler(async (req, res) => {
   const { uuid } = req.params;
   const d = IncidentCompleteSchema.parse(req.body);
 
-  const { rows } = await withTransaction(async (tq) => {
+  const result = await withTransaction(async (tq) => {
     const { rows: updated } = await tq(
       `UPDATE ers_incidents
        SET status = 'COMPLETED', ended_at = now(),
-           recording_path = COALESCE($2, recording_path),
-           updated_at = now()
+           recording_path = COALESCE($2, recording_path)
        WHERE incident_uuid = $1 AND deleted_at IS NULL
        RETURNING id, ers_configuration_id`,
       [uuid, d.recording_file]
     );
 
-    if (!updated[0]) return { rows: [] };
+    if (!updated[0]) return null;
 
-    // If queue is enabled, promote the next QUEUED entry to PROCESSING
+    // Promote next queued entry — lock the row first to prevent races
     const { rows: [queueEntry] } = await tq(
-      `SELECT q.id FROM ers_queues q
-       JOIN ers_configurations ec ON ec.id = q.ers_configuration_id
-       WHERE q.ers_configuration_id = $1
-         AND q.status = 'QUEUED'
-       ORDER BY q.position ASC LIMIT 1`,
+      `SELECT q.id, q.incident_id FROM ers_queues q
+       WHERE q.ers_configuration_id = $1 AND q.status = 'QUEUED'
+       ORDER BY q.position ASC LIMIT 1
+       FOR UPDATE`,
       [updated[0].ers_configuration_id]
     );
 
     if (queueEntry) {
+      // dequeued_at added to ers_queues by migration 002 B10
       await tq(
-        `UPDATE ers_queues SET status = 'PROCESSING', updated_at = now()
+        `UPDATE ers_queues
+         SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()
          WHERE id = $1`,
         [queueEntry.id]
       );
+      await tq(
+        `UPDATE ers_incidents SET status = 'ACTIVE', dequeued_at = now()
+         WHERE id = $1`,
+        [queueEntry.incident_id]
+      );
     }
 
-    return { rows: updated };
+    return updated[0];
   });
 
-  if (!rows[0]) return res.status(404).json({ error: 'Incident not found' });
+  if (!result) return res.status(404).json({ error: 'Incident not found' });
 
   emitInternal('enrs::ers_incident_ended', {
     incident_uuid: uuid,
@@ -201,6 +258,9 @@ export const ersCompleteIncident = asyncHandler(async (req, res) => {
 // ── Update Responder ──────────────────────────────────────────────────────────
 
 // PATCH /api/v1/internal/ers/incidents/:uuid/responder
+//
+// migration 002 B9 added REJOINED / OBSERVER statuses and joined_via / rejoin_count
+// columns to ers_incident_responders. Use them directly — no mapping needed.
 export const ersUpdateResponder = asyncHandler(async (req, res) => {
   const { uuid } = req.params;
   const d = ResponderUpdateSchema.parse(req.body);
@@ -211,50 +271,52 @@ export const ersUpdateResponder = asyncHandler(async (req, res) => {
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
-  // Resolve ers_responder_id from mobile number (best-effort)
-  const { rows: [responder] } = await query(
-    `SELECT id FROM ers_responders
-     WHERE mobile_number = $1 AND deleted_at IS NULL LIMIT 1`,
-    [d.responder_number]
-  );
+  // Resolve both IDs: emergency_contact_id (NOT NULL) and ers_responder_id (nullable)
+  const [contactId, responderId] = await Promise.all([
+    resolveContactId(d.responder_number),
+    resolveResponderId(d.responder_number),
+  ]);
 
-  await withTransaction(async (tq) => {
-    const existing = await tq(
-      `SELECT id, rejoin_count FROM ers_incident_responders
-       WHERE ers_incident_id = $1 AND mobile_number = $2`,
-      [incident.id, d.responder_number]
+  if (!contactId) {
+    console.warn(
+      `[ersUpdateResponder] No emergency_contact for mobile ${d.responder_number}` +
+      ` on incident ${uuid} — responder record skipped`
     );
+    return res.json({ ok: true, skipped: true });
+  }
 
-    if (existing.rows[0]) {
-      const newRejoinCount = d.status === 'REJOINED'
-        ? existing.rows[0].rejoin_count + 1
-        : existing.rows[0].rejoin_count;
-
-      await tq(
-        `UPDATE ers_incident_responders
-         SET status = $3, joined_at = COALESCE($4, now()),
-             rejoin_count = $5, updated_at = now()
-         WHERE id = $1 AND ers_incident_id = $2`,
-        [existing.rows[0].id, incident.id,
-         d.status, d.joined_at, newRejoinCount]
-      );
-    } else {
-      await tq(
-        `INSERT INTO ers_incident_responders
-           (ers_incident_id, ers_responder_id, mobile_number,
-            status, joined_at, joined_via)
-         VALUES ($1, $2, $3, $4, COALESCE($5, now()), $6)`,
-        [incident.id, responder?.id ?? null, d.responder_number,
-         d.status, d.joined_at, d.role ?? 'direct']
-      );
-    }
-  });
+  // migration 003 B1-3 adds mobile_number + UNIQUE (ers_incident_id, mobile_number)
+  // Use ON CONFLICT upsert so concurrent calls from the same responder are idempotent.
+  await query(
+    `INSERT INTO ers_incident_responders
+       (ers_incident_id, emergency_contact_id, ers_responder_id,
+        mobile_number, status, join_time, joined_via)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()), $7)
+     ON CONFLICT (ers_incident_id, mobile_number) DO UPDATE SET
+       status           = EXCLUDED.status,
+       join_time        = COALESCE(EXCLUDED.join_time, ers_incident_responders.join_time),
+       joined_via       = COALESCE(EXCLUDED.joined_via, ers_incident_responders.joined_via),
+       rejoin_count     = CASE WHEN EXCLUDED.status = 'REJOINED'
+                               THEN ers_incident_responders.rejoin_count + 1
+                               ELSE ers_incident_responders.rejoin_count END,
+       ers_responder_id = COALESCE(EXCLUDED.ers_responder_id, ers_incident_responders.ers_responder_id)`,
+    [
+      incident.id,
+      contactId,
+      responderId,
+      d.responder_number,
+      d.status,
+      d.joined_at ?? null,
+      d.joined_via ?? null,
+    ]
+  );
 
   emitInternal('enrs::ers_responder_update', {
     incident_uuid:    uuid,
     responder_number: d.responder_number,
     status:           d.status,
     joined_at:        d.joined_at,
+    joined_via:       d.joined_via,
     role:             d.role,
   });
 
@@ -272,7 +334,8 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'rejoin_number and caller params required' });
   }
 
-  // Find ERS config by rejoin_number (emergency_numbers table OR direct column)
+  // rejoin_number is a direct column on ers_configurations (migration 002 B7).
+  // Also check emergency_numbers with type='REJOIN' (migration 002 B14) as fallback.
   const { rows: [cfg] } = await query(
     `SELECT ec.id FROM ers_configurations ec
      WHERE ec.deleted_at IS NULL AND ec.is_active = true
@@ -290,7 +353,6 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
 
   if (!cfg) return res.json({ authorized: false, reason: 'no_active_incident' });
 
-  // Find active incident for this config
   const { rows: [incident] } = await query(
     `SELECT id, incident_uuid, conference_room FROM ers_incidents
      WHERE ers_configuration_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL
@@ -300,50 +362,82 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
 
   if (!incident) return res.json({ authorized: false, reason: 'no_active_incident' });
 
-  // Determine role: check primary group, secondary group, then original caller
   const callerLast9 = caller.replace(/\D/g, '').slice(-9);
 
-  // Is caller a primary responder?
+  // Check primary responders (try ers_responders path, fall back to emergency_contacts)
   const { rows: [primaryMatch] } = await query(
-    `SELECT r.id FROM ers_responders r
+    `SELECT 1
+     FROM ers_responders r
      JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
      JOIN ers_configurations ec ON ec.primary_ers_group_id = rgm.group_id
      WHERE ec.id = $1
        AND RIGHT(REGEXP_REPLACE(r.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-       AND r.deleted_at IS NULL LIMIT 1`,
+       AND r.deleted_at IS NULL
+     LIMIT 1`,
     [cfg.id, callerLast9]
-  );
+  ).then(async ({ rows }) => {
+    if (rows[0]) return rows[0];
+    // Fall back to emergency_contacts / primary_group_id
+    const { rows: fb } = await query(
+      `SELECT 1
+       FROM emergency_contacts ec2
+       JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec2.id
+       JOIN ers_configurations e ON e.primary_group_id = rgm.responder_group_id
+       WHERE e.id = $1
+         AND RIGHT(REGEXP_REPLACE(ec2.mobile_number, '[^0-9]', '', 'g'), 9) = $2
+         AND ec2.deleted_at IS NULL
+       LIMIT 1`,
+      [cfg.id, callerLast9]
+    );
+    return fb[0] ?? null;
+  });
 
   if (primaryMatch) {
     return res.json({
-      authorized:    true,
-      incident_uuid: incident.incident_uuid,
+      authorized:      true,
+      incident_uuid:   incident.incident_uuid,
       conference_room: incident.conference_room,
-      role:          'primary',
+      role:            'primary',
     });
   }
 
-  // Is caller a secondary responder?
+  // Check secondary responders
   const { rows: [secondaryMatch] } = await query(
-    `SELECT r.id FROM ers_responders r
+    `SELECT 1
+     FROM ers_responders r
      JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
      JOIN ers_configurations ec ON ec.secondary_ers_group_id = rgm.group_id
      WHERE ec.id = $1
        AND RIGHT(REGEXP_REPLACE(r.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-       AND r.deleted_at IS NULL LIMIT 1`,
+       AND r.deleted_at IS NULL
+     LIMIT 1`,
     [cfg.id, callerLast9]
-  );
+  ).then(async ({ rows }) => {
+    if (rows[0]) return rows[0];
+    const { rows: fb } = await query(
+      `SELECT 1
+       FROM emergency_contacts ec2
+       JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec2.id
+       JOIN ers_configurations e ON e.secondary_group_id = rgm.responder_group_id
+       WHERE e.id = $1
+         AND RIGHT(REGEXP_REPLACE(ec2.mobile_number, '[^0-9]', '', 'g'), 9) = $2
+         AND ec2.deleted_at IS NULL
+       LIMIT 1`,
+      [cfg.id, callerLast9]
+    );
+    return fb[0] ?? null;
+  });
 
   if (secondaryMatch) {
     return res.json({
-      authorized:    true,
-      incident_uuid: incident.incident_uuid,
+      authorized:      true,
+      incident_uuid:   incident.incident_uuid,
       conference_room: incident.conference_room,
-      role:          'secondary',
+      role:            'secondary',
     });
   }
 
-  // Is caller the original incident initiator?
+  // Check if caller was the original incident initiator
   const { rows: [initiatorMatch] } = await query(
     `SELECT id FROM ers_incidents
      WHERE id = $1
@@ -353,10 +447,10 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
 
   if (initiatorMatch) {
     return res.json({
-      authorized:    true,
-      incident_uuid: incident.incident_uuid,
+      authorized:      true,
+      incident_uuid:   incident.incident_uuid,
       conference_room: incident.conference_room,
-      role:          'initiator',
+      role:            'initiator',
     });
   }
 
@@ -365,11 +459,13 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
 
 // ── Open-Access Join ──────────────────────────────────────────────────────────
 
-// GET /api/v1/internal/ers/incidents/open-join?number=<n>&caller=<number>
+// GET /api/v1/internal/ers/incidents/open-join?number=<n>
 export const ersOpenJoin = asyncHandler(async (req, res) => {
   const number = String(req.query.number || '').trim();
   if (!number) return res.status(400).json({ error: 'number param required' });
 
+  // open_access_number is a direct column on ers_configurations (migration 002 B7).
+  // Also check emergency_numbers with type='OPEN_ACCESS' (migration 002 B14) as fallback.
   const { rows: [cfg] } = await query(
     `SELECT ec.id FROM ers_configurations ec
      WHERE ec.deleted_at IS NULL AND ec.is_active = true
@@ -409,6 +505,9 @@ export const ersOpenJoin = asyncHandler(async (req, res) => {
 // ── Log Observer ──────────────────────────────────────────────────────────────
 
 // POST /api/v1/internal/ers/incidents/:uuid/observer
+//
+// migration 002 B9 added OBSERVER as a valid status — use it directly.
+// joined_via column also added by B9.
 export const ersLogObserver = asyncHandler(async (req, res) => {
   const { uuid } = req.params;
   const d = ObserverSchema.parse(req.body);
@@ -419,13 +518,27 @@ export const ersLogObserver = asyncHandler(async (req, res) => {
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
-  await query(
-    `INSERT INTO ers_incident_responders
-       (ers_incident_id, mobile_number, status, joined_at, joined_via)
-     VALUES ($1, $2, 'OBSERVER', COALESCE($3, now()), 'open_access')
-     ON CONFLICT DO NOTHING`,
-    [incident.id, d.observer_number, d.joined_at]
-  );
+  const [contactId, responderId] = await Promise.all([
+    resolveContactId(d.observer_number),
+    resolveResponderId(d.observer_number),
+  ]);
+
+  if (contactId) {
+    // ON CONFLICT on (ers_incident_id, mobile_number) — idempotent if observer calls twice
+    await query(
+      `INSERT INTO ers_incident_responders
+         (ers_incident_id, emergency_contact_id, ers_responder_id,
+          mobile_number, status, join_time, joined_via)
+       VALUES ($1, $2, $3, $4, 'OBSERVER', COALESCE($5, now()), $6)
+       ON CONFLICT (ers_incident_id, mobile_number) DO NOTHING`,
+      [incident.id, contactId, responderId, d.observer_number, d.joined_at, d.joined_via]
+    );
+  } else {
+    console.warn(
+      `[ersLogObserver] No emergency_contact for mobile ${d.observer_number}` +
+      ` on incident ${uuid} — observer record skipped`
+    );
+  }
 
   emitInternal('enrs::ers_observer_joined', {
     incident_uuid:   uuid,

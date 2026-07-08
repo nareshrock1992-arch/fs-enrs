@@ -233,6 +233,7 @@ export const createIncident = asyncHandler(async (req, res) => {
          FROM ers_queues WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,
         [ers_configuration_id]
       );
+      // caller_number, queued_reason added to ers_queues by migration 002 B10
       await tq(
         `INSERT INTO ers_queues
            (ers_configuration_id, incident_id, position, status, caller_number, queued_reason)
@@ -293,6 +294,7 @@ export const completeIncident = asyncHandler(async (req, res) => {
          WHERE id = $1`,
         [nextQ[0].incident_id]
       );
+      // dequeued_at added to ers_queues by migration 002 B10
       const { rows: dq } = await tq(
         `UPDATE ers_queues
          SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()

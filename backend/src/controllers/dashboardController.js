@@ -34,8 +34,21 @@ export const getMetrics = asyncHandler(async (req, res) => {
        WHERE n.deleted_at IS NULL AND n.created_at >= CURRENT_DATE AND ec.tenant_id = $1`,
       [tid]
     ),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE status = 'ACTIVE' AND deleted_at IS NULL AND tenant_id = $1`, [tid]),
+    // ers_incidents has no direct tenant_id on existing databases — scope via ers_configurations
+    query(
+      `SELECT COUNT(i.id)::INT AS n
+       FROM ers_incidents i
+       JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
+       WHERE i.deleted_at IS NULL AND i.created_at >= CURRENT_DATE AND ec.tenant_id = $1`,
+      [tid]
+    ),
+    query(
+      `SELECT COUNT(i.id)::INT AS n
+       FROM ers_incidents i
+       JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
+       WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND ec.tenant_id = $1`,
+      [tid]
+    ),
     // ers_queues has no tenant_id — scope via ers_configurations join
     query(
       `SELECT COUNT(q.id)::INT AS n
@@ -71,7 +84,7 @@ export const getActive = asyncHandler(async (req, res) => {
        EXTRACT(EPOCH FROM (now() - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND i.tenant_id = $1
+     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND e.tenant_id = $1
      ORDER BY i.started_at`,
     [tid]
   );
@@ -153,10 +166,12 @@ export const getChartData = asyncHandler(async (req, res) => {
        GROUP BY bucket ORDER BY bucket`,
       [trunc, interval, tid]
     ),
+    // scope via ers_configurations — ers_incidents has no direct tenant_id on existing DBs
     query(
-      `SELECT date_trunc($1, started_at) AS bucket, COUNT(*)::INT AS count
-       FROM ers_incidents
-       WHERE started_at >= now() - $2::interval AND deleted_at IS NULL AND tenant_id = $3
+      `SELECT date_trunc($1, i.started_at) AS bucket, COUNT(*)::INT AS count
+       FROM ers_incidents i
+       JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
+       WHERE i.started_at >= now() - $2::interval AND i.deleted_at IS NULL AND ec.tenant_id = $3
        GROUP BY bucket ORDER BY bucket`,
       [trunc, interval, tid]
     ),
