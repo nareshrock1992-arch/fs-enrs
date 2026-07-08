@@ -186,4 +186,27 @@ export const api = {
     },
     remove: (id)  => request('DELETE', `/media/${id}`),
   },
+
+  // Audio Library + Deployment
+  deployment: {
+    // Audio Library
+    listAudio:      (q)       => request('GET',    `/deployment/audio?${new URLSearchParams(q || {})}`),
+    listCategories: ()        => request('GET',    '/deployment/audio/categories'),
+    uploadAudio:    (formData) => request('POST',  '/deployment/audio/upload', formData),
+    deployAudio:    (id)      => request('POST',   `/deployment/audio/${id}/deploy`),
+    deleteAudio:    (id)      => request('DELETE', `/deployment/audio/${id}`),
+
+    // Flow Deployment
+    listFlows:      ()        => request('GET',    '/deployment/flows'),
+    previewDeploy:  (uuid)    => request('GET',    `/deployment/flows/${uuid}/preview`),
+    deploy:         (uuid)    => request('POST',   `/deployment/flows/${uuid}/deploy`),
+    flowHistory:    (uuid, n) => request('GET',    `/deployment/flows/${uuid}/history${n ? `?limit=${n}` : ''}`),
+    redeployAll:    ()        => request('POST',   '/deployment/redeploy-all'),
+
+    // Diagnostics
+    diagnostics:    ()        => request('GET',    '/deployment/diagnostics'),
+    reloadXml:      ()        => request('POST',   '/deployment/diagnostics/reloadxml'),
+    paths:          ()        => request('GET',    '/deployment/diagnostics/paths'),
+    eslStatus:      ()        => request('GET',    '/deployment/diagnostics/esl'),
+  },
 };

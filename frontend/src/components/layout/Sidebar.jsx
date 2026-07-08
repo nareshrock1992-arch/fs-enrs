@@ -3,7 +3,8 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Bell, ShieldAlert, Building2,
   MapPin, Layers, Contact, Group, FileBarChart2,
-  Settings, ChevronDown, ChevronRight, Radio, Workflow
+  Settings, ChevronDown, ChevronRight, Radio, Workflow,
+  Music, Rocket
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -19,7 +20,13 @@ const NAV = [
     ]
   },
 
-  { label: 'IVR Flows', icon: Workflow, to: '/ivr' },
+  {
+    label: 'IVR Builder', icon: Workflow, children: [
+      { label: 'IVR Flows',    to: '/ivr' },
+      { label: 'Audio Library', to: '/audio' },
+      { label: 'Deployment',   to: '/deployment' },
+    ]
+  },
 
   {
     label: 'Organization', icon: Building2, children: [

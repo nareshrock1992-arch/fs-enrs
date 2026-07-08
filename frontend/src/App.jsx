@@ -21,7 +21,9 @@ import IvrBuilder    from './pages/ivr/IvrBuilder.jsx';
 import ReportNotifications from './pages/reports/ReportNotifications.jsx';
 import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
-import SettingsPage  from './pages/settings/SettingsPage.jsx';
+import SettingsPage        from './pages/settings/SettingsPage.jsx';
+import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
+import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
 
 function RequireAuth({ children }) {
   const token = useAuthStore(s => s.token);
@@ -60,6 +62,10 @@ export default function App() {
         {/* IVR */}
         <Route path="ivr"                   element={<IvrList />} />
         <Route path="ivr/:uuid"             element={<IvrBuilder />} />
+
+        {/* Audio + Deployment */}
+        <Route path="audio"                 element={<AudioLibrary />} />
+        <Route path="deployment"            element={<DeploymentDashboard />} />
 
         {/* Organization */}
         <Route path="organizations"         element={<OrgList />} />
