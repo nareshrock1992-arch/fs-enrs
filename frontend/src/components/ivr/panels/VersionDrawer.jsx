@@ -7,7 +7,7 @@ function fmt(iso) {
   return new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
 }
 
-export default function VersionDrawer({ flowUuid, currentVersion, onClose, onRestore }) {
+export default function VersionDrawer({ flowUuid, currentVersion, restoreLoading, onClose, onRestore }) {
   const [versions, setVersions] = useState([]);
   const [loading,  setLoading]  = useState(true);
 
@@ -76,11 +76,14 @@ export default function VersionDrawer({ flowUuid, currentVersion, onClose, onRes
                 {!isCurrent && (
                   <button
                     onClick={() => onRestore?.(v)}
+                    disabled={restoreLoading}
                     className="mt-2 w-full flex items-center justify-center gap-1 text-[10px]
                                py-1 rounded-lg border border-surface-border text-text-muted
-                               hover:bg-surface-hover hover:text-text-primary transition-colors"
+                               hover:bg-surface-hover hover:text-text-primary transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <RotateCcw size={10} /> View / Restore
+                    <RotateCcw size={10} className={restoreLoading ? 'animate-spin' : ''} />
+                    {restoreLoading ? 'Restoring…' : 'View / Restore'}
                   </button>
                 )}
               </div>

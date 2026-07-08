@@ -90,11 +90,16 @@ export async function validateGraph(graph, tenantId) {
     }
   }
 
-  // 2b. Cycle detection — iterative DFS from entry_node_id
-  const visited   = new Set();
-  const inStack   = new Set();
-  const reachable = new Set();
-  const stack     = [entry_node_id];
+  // 2b. Cycle detection — iterative DFS, primary-path only
+  //
+  // Follows only the FIRST outgoing edge per node. This is intentional:
+  // IVR flows often contain intentional retry loops (e.g. PIN retry branches)
+  // where the retry path eventually reaches an exit via a different branch.
+  // Following all branches would flag those as cycles and block valid flows.
+  // The Lua executor's MAX_LOOP=100 guard prevents runaway execution regardless.
+  const visited = new Set();
+  const inStack = new Set();
+  const stack   = [entry_node_id];
 
   while (stack.length > 0) {
     const cur = stack[stack.length - 1];
@@ -102,22 +107,21 @@ export async function validateGraph(graph, tenantId) {
     if (!visited.has(cur)) {
       visited.add(cur);
       inStack.add(cur);
-      reachable.add(cur);
 
-      const node = nodes[cur];
-      if (node) {
-        const children = refsOf(node).filter(r => nodes[r] && !visited.has(r));
-        const cycleKids = refsOf(node).filter(r => inStack.has(r));
-        for (const c of cycleKids) {
-          errors.push(`Cycle detected: ${cur} → ${c}`);
-        }
+      const node    = nodes[cur];
+      const allRefs = node ? refsOf(node) : [];
 
-        if (children.length > 0) {
-          stack.push(children[0]);
-        } else {
-          stack.pop();
-          inStack.delete(cur);
+      // Check ALL refs for back-edges (cycle detection)
+      for (const r of allRefs) {
+        if (inStack.has(r)) {
+          errors.push(`Cycle detected: ${cur} → ${r}`);
         }
+      }
+
+      // Only follow the first unvisited ref to avoid triggering on retry branches
+      const firstUnvisited = allRefs.find(r => nodes[r] && !visited.has(r) && !inStack.has(r));
+      if (firstUnvisited) {
+        stack.push(firstUnvisited);
       } else {
         stack.pop();
         inStack.delete(cur);
@@ -128,7 +132,27 @@ export async function validateGraph(graph, tenantId) {
     }
   }
 
-  // 2c. Unreachable nodes (warnings only — builder may have WIP orphans)
+  // 2c. Reachability — BFS exploring all outgoing edges
+  //
+  // Run separately from cycle detection so all nodes reachable via any branch
+  // are correctly identified, avoiding false "unreachable" warnings for nodes
+  // that are only reachable via non-primary branches (e.g. gather timeout/invalid).
+  const reachable = new Set([entry_node_id]);
+  const bfsQueue  = [entry_node_id];
+
+  while (bfsQueue.length > 0) {
+    const cur  = bfsQueue.shift();
+    const node = nodes[cur];
+    if (!node) continue;
+    for (const ref of refsOf(node)) {
+      if (nodes[ref] && !reachable.has(ref)) {
+        reachable.add(ref);
+        bfsQueue.push(ref);
+      }
+    }
+  }
+
+  // 2d. Unreachable nodes (warnings only — builder may have WIP orphans)
   for (const nid of Object.keys(nodes)) {
     if (!reachable.has(nid)) {
       warnings.push(`Node "${nid}" is not reachable from entry_node_id`);
@@ -137,7 +161,7 @@ export async function validateGraph(graph, tenantId) {
 
   if (errors.length > 0) return { valid: false, errors, warnings };
 
-  // ── Pass 2d: DB foreign key existence checks ──────────────────────────────
+  // ── Pass 2e: DB foreign key existence checks ──────────────────────────────
 
   const ensIds       = [];
   const ersIds       = [];

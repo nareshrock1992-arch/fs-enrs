@@ -21,8 +21,9 @@ export default function IvrBuilder() {
 
   const graph = useIvrGraph(uuid);
 
-  const [showHistory, setShowHistory] = useState(false);
-  const [showBind,    setShowBind]    = useState(false);
+  const [showHistory,   setShowHistory]   = useState(false);
+  const [showBind,      setShowBind]      = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
 
   // Add node at canvas centre when clicking palette chip
   const handlePaletteAdd = useCallback((nodeType) => {
@@ -151,11 +152,19 @@ export default function IvrBuilder() {
         <VersionDrawer
           flowUuid={uuid}
           currentVersion={graph.flowMeta?.latest_version?.version_number}
+          restoreLoading={restoreLoading}
           onClose={() => setShowHistory(false)}
-          onRestore={(v) => {
-            if (window.confirm(`Restore v${v.version_number}? This will overwrite the current draft.`)) {
-              graph.dispatch({ type: 'SEED', flow: { ...graph.flowMeta, graph: v.graph } });
+          onRestore={async (v) => {
+            if (!window.confirm(`Restore v${v.version_number}? This will overwrite the current draft.`)) return;
+            setRestoreLoading(true);
+            try {
+              const { version: full } = await api.ivr.getVersion(uuid, v.version_number);
+              graph.dispatch({ type: 'SEED', flow: { ...graph.flowMeta, graph: full.graph } });
               setShowHistory(false);
+            } catch (e) {
+              alert('Failed to load version ' + v.version_number + ': ' + (e.message || 'Unknown error'));
+            } finally {
+              setRestoreLoading(false);
             }
           }}
         />

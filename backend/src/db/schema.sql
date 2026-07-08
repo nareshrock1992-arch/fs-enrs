@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash      VARCHAR(255) NOT NULL,
   full_name          VARCHAR(128) NOT NULL,
   role               VARCHAR(32)  NOT NULL DEFAULT 'OPERATOR'
-                       CHECK (role IN ('ADMIN','OPERATOR','VIEWER')),
+                       CHECK (role IN ('ADMIN','SUPERVISOR','OPERATOR','VIEWER')),
   is_active          BOOLEAN      NOT NULL DEFAULT true,
   refresh_token_hash VARCHAR(255),
   last_login_at      TIMESTAMPTZ,
@@ -321,19 +321,27 @@ CREATE INDEX IF NOT EXISTS idx_ers_tenant ON ers_configurations (tenant_id)     
 CREATE TABLE IF NOT EXISTS ers_incidents (
   id                    SERIAL       PRIMARY KEY,
   ers_configuration_id  INT          NOT NULL REFERENCES ers_configurations(id) ON DELETE CASCADE,
+  tenant_id             INT          REFERENCES tenants(id) ON DELETE SET NULL,
   incident_uuid         UUID         NOT NULL DEFAULT gen_random_uuid() UNIQUE,
   emergency_call_number VARCHAR(32),
   conference_id         VARCHAR(128),
+  caller_number         VARCHAR(32),
+  caller_name           VARCHAR(128),
+  conference_room       VARCHAR(128),
+  group_type            VARCHAR(16)  CHECK (group_type IN ('primary','secondary')),
+  recording_path        VARCHAR(512),
   status                VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE'
-                          CHECK (status IN ('ACTIVE','COMPLETED','QUEUED','FAILED')),
+                          CHECK (status IN ('ACTIVE','COMPLETED','QUEUED','FAILED','CANCELLED')),
   started_at            TIMESTAMPTZ  NOT NULL DEFAULT now(),
   ended_at              TIMESTAMPTZ,
   queued_at             TIMESTAMPTZ,
   dequeued_at           TIMESTAMPTZ,
+  cancelled_at          TIMESTAMPTZ,
   deleted_at            TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_incident_cfg    ON ers_incidents (ers_configuration_id);
 CREATE INDEX IF NOT EXISTS idx_incident_status ON ers_incidents (status) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_incident_tenant ON ers_incidents (tenant_id) WHERE deleted_at IS NULL;
 
 -- ── 22. ERS Incident Responders ─────────────────────────────
 CREATE TABLE IF NOT EXISTS ers_incident_responders (
@@ -401,7 +409,7 @@ CREATE TABLE IF NOT EXISTS emergency_numbers (
   organization_id      INT          REFERENCES organizations(id)     ON DELETE SET NULL,
   number               VARCHAR(32)  NOT NULL UNIQUE,
   type                 VARCHAR(16)  NOT NULL DEFAULT 'ENS'
-                         CHECK (type IN ('ENS','ERS','IVR')),
+                         CHECK (type IN ('ENS','ERS','IVR','REJOIN','OPEN_ACCESS')),
   ens_configuration_id INT          REFERENCES ens_configurations(id) ON DELETE SET NULL,
   ers_configuration_id INT          REFERENCES ers_configurations(id) ON DELETE SET NULL,
   ivr_flow_id          BIGINT       REFERENCES ivr_flows(id)          ON DELETE SET NULL,

@@ -7,6 +7,7 @@ import {
   PublishFlowSchema,
   BindFlowSchema,
   UnbindFlowSchema,
+  GraphSchema,
 } from '../validators/ivrValidator.js';
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -146,21 +147,37 @@ export const updateFlow = asyncHandler(async (req, res) => {
 
   const { name, description, graph } = parsed.data;
 
-  // Structural-only validation on save (DB ID checks run only on publish)
-  if (graph) {
-    const result = await validateGraph(graph, req.user.tenantId);
-    const structural = (result.errors || []).filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
-    if (structural.length > 0) {
-      return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
+  // Structural-only validation on save (skip on empty canvas; DB ID checks run only on publish)
+  if (graph && Object.keys(graph.nodes || {}).length > 0) {
+    // Only run full structural checks when there are actual nodes to validate.
+    // An empty graph (nodes:{}) is accepted — it represents a cleared canvas draft.
+    const fullCheck = GraphSchema.safeParse(graph);
+    if (fullCheck.success) {
+      const result = await validateGraph(graph, req.user.tenantId);
+      const structural = (result.errors || []).filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
+      if (structural.length > 0) {
+        return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
+      }
+    } else {
+      const structural = fullCheck.error.issues.map(i => `${i.path.join('.') || 'graph'}: ${i.message}`)
+        .filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
+      if (structural.length > 0) {
+        return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
+      }
     }
   }
 
   const sets   = ['updated_at = now()', 'updated_by = $1'];
   const params = [req.user.id];
 
-  if (name !== undefined)        { params.push(name);                  sets.push(`name = $${params.length}`); }
-  if (description !== undefined) { params.push(description);           sets.push(`description = $${params.length}`); }
-  if (graph !== undefined)       { params.push(JSON.stringify(graph)); sets.push(`graph = $${params.length}`); }
+  if (name !== undefined)        { params.push(name);                           sets.push(`name = $${params.length}`); }
+  if (description !== undefined) { params.push(description);                    sets.push(`description = $${params.length}`); }
+  if (graph !== undefined) {
+    // Strip _layout (frontend position hints) — never stored in the graph column
+    const { _layout: _ignored, ...graphToStore } = graph;
+    params.push(JSON.stringify(graphToStore));
+    sets.push(`graph = $${params.length}`);
+  }
 
   params.push(flow.id);
   const { rows: [updated] } = await query(
@@ -235,7 +252,8 @@ export const publishFlow = asyncHandler(async (req, res) => {
       `INSERT INTO ivr_flow_versions
          (ivr_flow_id, version_number, graph, published_by, change_notes)
        VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
+       RETURNING *,
+         (SELECT email FROM users WHERE id = $4) AS published_by_email`,
       [flow.id, next_ver, JSON.stringify(flow.graph), req.user.id, parsed.data.change_notes || null]
     );
   });

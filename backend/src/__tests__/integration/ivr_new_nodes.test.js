@@ -204,7 +204,8 @@ const ENS_MISSING_CONFIG = {
 beforeAll(async () => {
   // Create isolated tenant
   const { rows: [t] } = await query(
-    `INSERT INTO tenants (name, domain) VALUES ('B5TestTenant', 'b5test.local') RETURNING id`
+    `INSERT INTO tenants (name, code) VALUES ('B5TestTenant', $1) RETURNING id`,
+    [`b5test-${Date.now()}`]
   );
   tenantId = t.id;
 

@@ -232,11 +232,12 @@ function HangupFields({ node, onChange }) {
 // ── NEW: ConditionFields ──────────────────────────────────────────────────────
 
 const OPERATOR_OPTIONS = [
-  { value: '==',           label: '== equals' },
-  { value: '!=',           label: '!= not equals' },
-  { value: 'contains',     label: 'contains' },
-  { value: 'starts_with',  label: 'starts_with' },
-  { value: 'ens_pin_valid',label: 'ENS PIN valid (lookup + validate)' },
+  { value: '==',                 label: '== equals' },
+  { value: '!=',                 label: '!= not equals' },
+  { value: 'contains',           label: 'contains' },
+  { value: 'starts_with',        label: 'starts_with' },
+  { value: 'ens_pin_valid',      label: 'ENS PIN valid (lookup + validate)' },
+  { value: 'ens_callback_valid', label: 'ENS callback valid (recording replay)' },
 ];
 
 function ConditionFields({ node, onChange }) {
@@ -302,8 +303,8 @@ function RecordMessageFields({ node, onChange }) {
       <Field label="Silence hits" hint="How many silence chunks before stopping">
         <NumberInput value={node.silence_hits} onChange={v => onChange({ silence_hits: v })} min={1} max={10} />
       </Field>
-      <Field label="Record directory" hint="Default: /var/enrs/recordings">
-        <TextInput value={node.record_dir} onChange={v => onChange({ record_dir: v })} placeholder="/var/enrs/recordings" mono />
+      <Field label="Record directory" hint="Default: /var/lib/freeswitch/recordings">
+        <TextInput value={node.record_dir} onChange={v => onChange({ record_dir: v })} placeholder="/var/lib/freeswitch/recordings" mono />
       </Field>
       <Field label="Next Node ID">
         <TextInput value={node.next} onChange={v => onChange({ next: v })} placeholder="node_blast" mono />

@@ -48,7 +48,8 @@ export const ivrLookup = asyncHandler(async (req, res) => {
         WHERE ivr_flow_id = f.id
       )
      WHERE en.number = $1
-       AND en.deleted_at IS NULL`,
+       AND en.deleted_at IS NULL
+       AND en.is_active = true`,
     [number]
   );
 

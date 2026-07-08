@@ -169,7 +169,7 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   }
 });
 
-// ── Full graph schema ─────────────────────────────────────────────────────────
+// ── Full graph schema (used for publish — requires ≥1 node) ──────────────────
 
 export const GraphSchema = z.object({
   entry_node_id: nodeId,
@@ -182,6 +182,16 @@ export const GraphSchema = z.object({
   { message: 'entry_node_id must reference an existing node', path: ['entry_node_id'] }
 );
 
+// ── Draft graph schema (used for save — allows empty canvas) ─────────────────
+// Accepts entry_node_id = '' and nodes = {} so the user can save after deleting
+// all nodes without the backend rejecting an otherwise-valid empty draft.
+
+export const DraftGraphSchema = z.object({
+  entry_node_id: z.string().max(64),
+  nodes:         z.record(z.string().max(64), AnyNodeSchema),
+  _layout:       z.record(z.any()).optional(), // stripped by backend, not stored
+}).passthrough();  // ignore any extra top-level keys the frontend might add
+
 // ── Request body schemas ──────────────────────────────────────────────────────
 
 export const CreateFlowSchema = z.object({
@@ -193,7 +203,7 @@ export const CreateFlowSchema = z.object({
 export const UpdateFlowSchema = z.object({
   name:        z.string().min(1).max(128).trim().optional(),
   description: z.string().max(1000).optional(),
-  graph:       GraphSchema.optional(),
+  graph:       DraftGraphSchema.optional(),
 });
 
 export const PublishFlowSchema = z.object({

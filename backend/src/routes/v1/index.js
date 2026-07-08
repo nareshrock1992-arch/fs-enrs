@@ -21,7 +21,7 @@ router.use('/contacts',      contactRoutes);
 router.use('/groups',        groupRoutes);
 router.use('/ens',           ensRoutes);
 router.use('/ers',           ersRoutes);
-router.use('/ivr',           ivrRoutes);
+router.use('/ivr/flows',      ivrRoutes);
 router.use('/dashboard',     dashRoutes);
 router.use('/reports',       reportRoutes);
 router.use('/media',         mediaRoutes);

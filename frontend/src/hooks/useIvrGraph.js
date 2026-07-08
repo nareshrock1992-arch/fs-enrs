@@ -243,6 +243,9 @@ function reducer(state, action) {
     case 'MARK_SAVED':
       return { ...state, saving: false, dirty: false };
 
+    case 'MARK_SAVE_ERROR':
+      return { ...state, saving: false };
+
     case 'UPDATE_META':
       return { ...state, flowMeta: { ...state.flowMeta, ...action.patch } };
 
@@ -288,7 +291,7 @@ export function useIvrGraph(flowUuid) {
         dispatch({ type: 'MARK_SAVED' });
       } catch (e) {
         console.error('[ivr] auto-save failed', e);
-        dispatch({ type: 'MARK_SAVED' }); // clear saving state even on error
+        dispatch({ type: 'MARK_SAVE_ERROR' });
       }
     }, 800);
 

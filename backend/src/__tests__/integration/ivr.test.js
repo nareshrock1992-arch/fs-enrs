@@ -59,7 +59,8 @@ const DANGLING_GRAPH = {
 beforeAll(async () => {
   // Create tenant
   const t = await query(
-    `INSERT INTO tenants (name, slug) VALUES ('IVR Test Tenant', 'ivr-test-${Date.now()}') RETURNING id`
+    `INSERT INTO tenants (name, code) VALUES ('IVR Test Tenant', $1) RETURNING id`,
+    [`ivr-test-${Date.now()}`]
   );
   tenantId = t.rows[0].id;
 
@@ -73,16 +74,16 @@ beforeAll(async () => {
   // Admin user
   const hash = await bcrypt.hash('Admin1234!', 12);
   const u = await query(
-    `INSERT INTO users (email, password_hash, role, tenant_id, is_active)
-     VALUES ('ivr-admin@test.local', $1, 'ADMIN', $2, true) RETURNING id`,
+    `INSERT INTO users (email, password_hash, role, tenant_id, is_active, full_name)
+     VALUES ('ivr-admin@test.local', $1, 'ADMIN', $2, true, 'IVR Admin') RETURNING id`,
     [hash, tenantId]
   );
   adminUserId = u.rows[0].id;
 
   const viewerHash = await bcrypt.hash('Viewer1234!', 12);
   await query(
-    `INSERT INTO users (email, password_hash, role, tenant_id, is_active)
-     VALUES ('ivr-viewer@test.local', $1, 'VIEWER', $2, true) RETURNING id`,
+    `INSERT INTO users (email, password_hash, role, tenant_id, is_active, full_name)
+     VALUES ('ivr-viewer@test.local', $1, 'VIEWER', $2, true, 'IVR Viewer') RETURNING id`,
     [viewerHash, tenantId]
   );
 
