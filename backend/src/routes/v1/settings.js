@@ -1,19 +1,31 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { adminOnly } from '../../middleware/rbac.js';
+import { adminOnly, adminOrSuper } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
 import { eslStatus } from '../../services/eslService.js';
 
 const router = Router();
-router.use(requireAuth, adminOnly);
+router.use(requireAuth);
 
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', adminOnly, asyncHandler(async (req, res) => {
   const { rows } = await query(`SELECT * FROM system_settings ORDER BY key`);
   res.json(rows);
 }));
 
-router.put('/:key', asyncHandler(async (req, res) => {
+// Available to ADMIN and SUPERVISOR — consumed by BindNumbersModal in IVR Builder
+router.get('/emergency-numbers', adminOrSuper, asyncHandler(async (req, res) => {
+  const { rows: numbers } = await query(
+    `SELECT id, number, type, description, is_active
+     FROM emergency_numbers
+     WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active = true
+     ORDER BY number`,
+    [req.user.tenantId]
+  );
+  res.json({ numbers });
+}));
+
+router.put('/:key', adminOnly, asyncHandler(async (req, res) => {
   const { value } = req.body;
   const { rows } = await query(
     `INSERT INTO system_settings (key, value, updated_at) VALUES ($1,$2,now())
@@ -24,16 +36,16 @@ router.put('/:key', asyncHandler(async (req, res) => {
   res.json(rows[0]);
 }));
 
-router.get('/esl/status', asyncHandler(async (req, res) => {
+router.get('/esl/status', adminOnly, asyncHandler(async (req, res) => {
   res.json(eslStatus());
 }));
 
-router.get('/feature-flags', asyncHandler(async (req, res) => {
+router.get('/feature-flags', adminOnly, asyncHandler(async (req, res) => {
   const { rows } = await query(`SELECT * FROM feature_flags ORDER BY key`);
   res.json(rows);
 }));
 
-router.patch('/feature-flags/:key', asyncHandler(async (req, res) => {
+router.patch('/feature-flags/:key', adminOnly, asyncHandler(async (req, res) => {
   const { is_enabled } = req.body;
   const { rows } = await query(
     `UPDATE feature_flags SET is_enabled = $2, updated_at = now() WHERE key = $1 RETURNING *`,

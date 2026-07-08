@@ -7,15 +7,43 @@ export const getMetrics = asyncHandler(async (req, res) => {
   const tid = req.user.tenantId;
   const [contacts, groups, orgs, ensConfigs, ersConfigs,
          notifications, incidents, activeConfs, queuedCalls] = await Promise.all([
-    query(`SELECT COUNT(*)::INT AS n FROM emergency_contacts WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM responder_groups WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    // emergency_contacts has no tenant_id — scope via organizations join
+    query(
+      `SELECT COUNT(ec.id)::INT AS n
+       FROM emergency_contacts ec
+       JOIN organizations o ON o.id = ec.organization_id
+       WHERE ec.deleted_at IS NULL AND ec.is_active = true AND o.tenant_id = $1`,
+      [tid]
+    ),
+    // responder_groups has no tenant_id — scope via organizations join
+    query(
+      `SELECT COUNT(rg.id)::INT AS n
+       FROM responder_groups rg
+       JOIN organizations o ON o.id = rg.organization_id
+       WHERE rg.deleted_at IS NULL AND rg.is_active = true AND o.tenant_id = $1`,
+      [tid]
+    ),
     query(`SELECT COUNT(*)::INT AS n FROM organizations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
     query(`SELECT COUNT(*)::INT AS n FROM ens_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
     query(`SELECT COUNT(*)::INT AS n FROM ers_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM ens_notifications WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE AND tenant_id = $1`, [tid]),
+    // ens_notifications has no tenant_id — scope via ens_configurations join
+    query(
+      `SELECT COUNT(n.id)::INT AS n
+       FROM ens_notifications n
+       JOIN ens_configurations ec ON ec.id = n.ens_configuration_id
+       WHERE n.deleted_at IS NULL AND n.created_at >= CURRENT_DATE AND ec.tenant_id = $1`,
+      [tid]
+    ),
     query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE deleted_at IS NULL AND created_at >= CURRENT_DATE AND tenant_id = $1`, [tid]),
     query(`SELECT COUNT(*)::INT AS n FROM ers_incidents WHERE status = 'ACTIVE' AND deleted_at IS NULL AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_queues WHERE status = 'QUEUED' AND tenant_id = $1`, [tid]),
+    // ers_queues has no tenant_id — scope via ers_configurations join
+    query(
+      `SELECT COUNT(q.id)::INT AS n
+       FROM ers_queues q
+       JOIN ers_configurations ec ON ec.id = q.ers_configuration_id
+       WHERE q.status = 'QUEUED' AND ec.tenant_id = $1`,
+      [tid]
+    ),
   ]);
 
   res.json({
@@ -49,13 +77,16 @@ export const getActive = asyncHandler(async (req, res) => {
   );
 
   // Attach responders to each incident
+  // ers_incident_responders has no mobile_number — join emergency_contacts
+  // CHECK constraint only allows: 'INVITED','JOINED','MISSED' (no 'REJOINED')
   const incidentIds = incidents.map(i => i.id);
   let responderRows = [];
   if (incidentIds.length > 0) {
     const { rows } = await query(
-      `SELECT ers_incident_id, mobile_number AS responder_number, status
-       FROM ers_incident_responders
-       WHERE ers_incident_id = ANY($1) AND status IN ('JOINED','REJOINED')`,
+      `SELECT ir.ers_incident_id, ec.mobile_number AS responder_number, ir.status
+       FROM ers_incident_responders ir
+       JOIN emergency_contacts ec ON ec.id = ir.emergency_contact_id
+       WHERE ir.ers_incident_id = ANY($1) AND ir.status = 'JOINED'`,
       [incidentIds]
     );
     responderRows = rows;
@@ -72,23 +103,31 @@ export const getActive = asyncHandler(async (req, res) => {
     member_count:  (responderMap[i.id] || []).length,
   }));
 
+  // ers_queues has no caller_number, queued_at, or tenant_id
+  // caller_number comes from the linked incident; queued_at aliases created_at
+  // tenant scoped via ers_configurations join
   const { rows: queued } = await query(
-    `SELECT q.id, q.position, q.caller_number, q.queued_at, q.status,
+    `SELECT q.id, q.position, q.status,
+       COALESCE(i.caller_number, '') AS caller_number,
+       q.created_at AS queued_at,
        e.name AS ers_name,
-       EXTRACT(EPOCH FROM (now() - q.queued_at))::INT AS wait_seconds
+       EXTRACT(EPOCH FROM (now() - q.created_at))::INT AS wait_seconds
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
-     WHERE q.status = 'QUEUED' AND q.tenant_id = $1
+     LEFT JOIN ers_incidents i ON i.id = q.incident_id
+     WHERE q.status = 'QUEUED' AND e.tenant_id = $1
      ORDER BY q.position`,
     [tid]
   );
 
+  // ens_notifications has no tenant_id — scope via ens_configurations join
+  // column is total_answered (not total_success)
   const { rows: recent_notifs } = await query(
-    `SELECT n.notification_uuid, n.status, n.total_targets, n.total_success,
+    `SELECT n.notification_uuid, n.status, n.total_targets, n.total_answered,
        n.created_at, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     WHERE n.deleted_at IS NULL AND n.tenant_id = $1
+     WHERE n.deleted_at IS NULL AND e.tenant_id = $1
      ORDER BY n.created_at DESC LIMIT 5`,
     [tid]
   );
@@ -105,10 +144,12 @@ export const getChartData = asyncHandler(async (req, res) => {
 
   const tid = req.user.tenantId;
   const [notifRows, incidentRows] = await Promise.all([
+    // ens_notifications has no tenant_id — scope via ens_configurations join
     query(
-      `SELECT date_trunc($1, created_at) AS bucket, COUNT(*)::INT AS count
-       FROM ens_notifications
-       WHERE created_at >= now() - $2::interval AND deleted_at IS NULL AND tenant_id = $3
+      `SELECT date_trunc($1, n.created_at) AS bucket, COUNT(*)::INT AS count
+       FROM ens_notifications n
+       JOIN ens_configurations ec ON ec.id = n.ens_configuration_id
+       WHERE n.created_at >= now() - $2::interval AND n.deleted_at IS NULL AND ec.tenant_id = $3
        GROUP BY bucket ORDER BY bucket`,
       [trunc, interval, tid]
     ),
