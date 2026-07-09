@@ -53,10 +53,14 @@ export const getOrganization = asyncHandler(async (req, res) => {
 
 export const createOrganization = asyncHandler(async (req, res) => {
   const data = OrgSchema.parse(req.body);
+  // tenant_id always comes from the authenticated user — the UI never sends it,
+  // and trusting the body would allow NULL-tenant orgs whose services become
+  // invisible to every tenant-scoped query.
+  const tenantId = req.user.tenantId ?? data.tenant_id ?? null;
   const { rows } = await query(
     `INSERT INTO organizations (name, code, description, address, phone, email, is_active, tenant_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active, data.tenant_id]
+    [data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active, tenantId]
   );
   res.status(201).json(rows[0]);
 });

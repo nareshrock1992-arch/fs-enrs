@@ -120,7 +120,9 @@ export const getService = asyncHandler(async (req, res) => {
 export const createService = asyncHandler(async (req, res) => {
   const d = ServiceSchema.parse(req.body);
 
-  // Determine tenant_id from organization if provided
+  // Determine tenant_id from organization if provided; fall back to the
+  // authenticated user's tenant so a NULL-tenant org can never produce an
+  // invisible (unscoped) emergency number.
   let tenantId = null;
   if (d.organization_id) {
     const { rows: [org] } = await query(
@@ -128,9 +130,8 @@ export const createService = asyncHandler(async (req, res) => {
       [d.organization_id]
     );
     tenantId = org?.tenant_id ?? null;
-  } else if (req.user?.tenantId) {
-    tenantId = req.user.tenantId;
   }
+  tenantId = tenantId ?? req.user?.tenantId ?? null;
 
   const { rows: [row] } = await query(
     `INSERT INTO emergency_numbers (
