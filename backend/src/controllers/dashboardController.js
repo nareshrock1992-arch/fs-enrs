@@ -39,7 +39,7 @@ export const getMetrics = asyncHandler(async (req, res) => {
       `SELECT COUNT(i.id)::INT AS n
        FROM ers_incidents i
        JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
-       WHERE i.deleted_at IS NULL AND i.created_at >= CURRENT_DATE AND ec.tenant_id = $1`,
+       WHERE i.deleted_at IS NULL AND i.started_at >= CURRENT_DATE AND ec.tenant_id = $1`,
       [tid]
     ),
     query(
