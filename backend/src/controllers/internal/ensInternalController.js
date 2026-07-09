@@ -38,25 +38,35 @@ const CallbackLogSchema = z.object({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Resolve all contact mobile numbers for an ENS config (groups + direct contacts)
+// Resolve all contact mobile numbers for an ENS config (groups + direct contacts).
+// Reads from emergency_contacts / responder_groups — the same tables the public
+// controller writes to when saving ENS configurations.
 async function resolveEnsContacts(configId) {
   const { rows } = await query(
-    `SELECT DISTINCT ec.mobile_number
-     FROM ens_contacts ec
-     WHERE ec.deleted_at IS NULL AND ec.is_active = true
+    `SELECT DISTINCT c.mobile_number
+     FROM emergency_contacts c
+     WHERE c.deleted_at IS NULL AND c.is_active = true
+       AND c.mobile_number IS NOT NULL
        AND (
-         ec.id IN (
-           SELECT ens_contact_id FROM ens_configuration_contacts
-           WHERE ens_configuration_id = $1 AND ens_contact_id IS NOT NULL
+         -- Direct contact mapping (emergency_contact_id path)
+         c.id IN (
+           SELECT emergency_contact_id
+           FROM   ens_configuration_contacts
+           WHERE  ens_configuration_id = $1
+             AND  emergency_contact_id IS NOT NULL
          )
-         OR ec.id IN (
-           SELECT egm.contact_id
-           FROM ens_group_members egm
-           JOIN ens_configuration_groups ecg ON ecg.ens_group_id = egm.group_id
-           WHERE ecg.ens_configuration_id = $1 AND ecg.ens_group_id IS NOT NULL
+         OR
+         -- Group mapping via responder_groups (responder_group_id path)
+         c.id IN (
+           SELECT rgm.emergency_contact_id
+           FROM   responder_group_members rgm
+           JOIN   ens_configuration_groups ecg
+                  ON ecg.responder_group_id = rgm.responder_group_id
+           WHERE  ecg.ens_configuration_id = $1
+             AND  ecg.responder_group_id IS NOT NULL
          )
        )
-     ORDER BY ec.mobile_number`,
+     ORDER BY c.mobile_number`,
     [configId]
   );
   return rows.map(r => r.mobile_number);
@@ -162,16 +172,24 @@ export const ensLookup = asyncHandler(async (req, res) => {
   const number = String(req.query.number || '').trim();
   if (!number) return res.status(400).json({ success: false, error: 'number param required' });
 
-  // Resolve via emergency_numbers table — tenant scoped through the number record
   const { rows } = await query(
     `SELECT ec.id AS configuration_id, ec.name,
-            ec.blast_clid, ec.reply_clid, ec.pin,
-            ec.retry_count, ec.retry_delay_seconds,
-            ec.max_concurrent, ec.recording_retention_hours
+            ec.blast_clid, ec.reply_clid, ec.sip_caller_id, ec.sip_gateway,
+            ec.pin,
+            COALESCE(ec.max_concurrent_calls, ec.max_concurrent, 30)  AS max_concurrent_calls,
+            COALESCE(ec.calls_per_second, 2)                           AS calls_per_second,
+            COALESCE(ec.batch_size, 30)                                AS batch_size,
+            COALESCE(ec.max_attempts, ec.retry_count, 3)               AS max_attempts,
+            COALESCE(ec.retry_interval_sec, ec.retry_delay_seconds, 60) AS retry_interval_sec,
+            COALESCE(ec.campaign_timeout_min, 60)                      AS campaign_timeout_min,
+            COALESCE(ec.recording_retention_hours, 24)                 AS recording_retention_hours,
+            COALESCE(ec.campaign_priority, 5)                          AS campaign_priority,
+            COALESCE(ec.adaptive_throttling, false)                    AS adaptive_throttling,
+            COALESCE(ec.retry_failed_only, false)                      AS retry_failed_only,
+            ec.playback_number, ec.no_pending_msg, ec.expiry_announcement
      FROM emergency_numbers en
      JOIN ens_configurations ec
        ON ec.id = en.ens_configuration_id
-      AND ec.tenant_id = en.tenant_id
       AND ec.deleted_at IS NULL
       AND ec.is_active = true
      WHERE en.number = $1
@@ -194,15 +212,25 @@ export const ensLookup = asyncHandler(async (req, res) => {
     data: {
       configuration_id:          cfg.configuration_id,
       name:                      cfg.name,
-      blast_clid:                cfg.blast_clid,
+      blast_clid:                cfg.blast_clid || cfg.sip_caller_id,
       reply_clid:                cfg.reply_clid,
+      sip_gateway:               cfg.sip_gateway,
       // pin_required tells Lua to collect DTMF before recording.
       // The actual PIN value is never sent to Lua — verification goes through verify-pin.
       pin_required:              Boolean(cfg.pin),
-      retry_count:               cfg.retry_count,
-      retry_delay_seconds:       cfg.retry_delay_seconds,
-      max_concurrent:            cfg.max_concurrent,
+      max_concurrent_calls:      cfg.max_concurrent_calls,
+      calls_per_second:          cfg.calls_per_second,
+      batch_size:                cfg.batch_size,
+      max_attempts:              cfg.max_attempts,
+      retry_interval_sec:        cfg.retry_interval_sec,
+      campaign_timeout_min:      cfg.campaign_timeout_min,
       recording_retention_hours: cfg.recording_retention_hours,
+      campaign_priority:         cfg.campaign_priority,
+      adaptive_throttling:       cfg.adaptive_throttling,
+      retry_failed_only:         cfg.retry_failed_only,
+      playback_number:           cfg.playback_number,
+      no_pending_msg:            cfg.no_pending_msg,
+      expiry_announcement:       cfg.expiry_announcement,
       contacts,
     },
   });
@@ -452,6 +480,80 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
     recording_file:    notif.recording_file,
     delivery_id:       delivery.id,
   });
+});
+
+// ── Latest Campaign (for playback number) ────────────────────────────────────
+
+// GET /api/v1/internal/ens/campaigns/latest?configuration_id=<id>
+// Called by ENS_retry_playback.lua to get the most recent recording to play back.
+// Returns: { status: "ACTIVE"|"EXPIRED"|"NO_CAMPAIGN", recording_file, campaign_id }
+export const ensLatestCampaign = asyncHandler(async (req, res) => {
+  const configId = parseInt(req.query.configuration_id, 10);
+  if (!configId) return res.status(400).json({ success: false, error: 'configuration_id required' });
+
+  // Get retention hours from config
+  const { rows: [cfg] } = await query(
+    `SELECT COALESCE(recording_retention_hours, 24) AS retention_hours
+     FROM ens_configurations WHERE id = $1 AND deleted_at IS NULL`,
+    [configId]
+  );
+  if (!cfg) return res.status(404).json({ success: false, error: 'ENS configuration not found' });
+
+  const { rows: [latest] } = await query(
+    `SELECT id AS campaign_id, recording_file,
+            status, created_at,
+            created_at + ($2 || ' hours')::interval AS expires_at
+     FROM ens_notifications
+     WHERE ens_configuration_id = $1
+       AND deleted_at IS NULL
+       AND status IN ('IN_PROGRESS', 'COMPLETED')
+     ORDER BY created_at DESC LIMIT 1`,
+    [configId, cfg.retention_hours]
+  );
+
+  if (!latest) {
+    return res.json({ success: true, status: 'NO_CAMPAIGN', recording_file: null, campaign_id: null });
+  }
+
+  if (!latest.recording_file) {
+    return res.json({ success: true, status: 'NO_CAMPAIGN', recording_file: null, campaign_id: latest.campaign_id });
+  }
+
+  const expired = new Date() > new Date(latest.expires_at);
+  if (expired) {
+    return res.json({ success: true, status: 'EXPIRED', recording_file: null, campaign_id: latest.campaign_id });
+  }
+
+  res.json({
+    success:        true,
+    status:         'ACTIVE',
+    campaign_id:    latest.campaign_id,
+    recording_file: latest.recording_file,
+    created_at:     latest.created_at,
+    expires_at:     latest.expires_at,
+  });
+});
+
+// ── Playback Log (called by ENS_retry_playback.lua) ──────────────────────────
+
+// GET /api/v1/internal/ens/campaigns/:id/playback-log?caller=<number>
+export const ensPlaybackLog = asyncHandler(async (req, res) => {
+  const campaignId = parseInt(req.params.id, 10);
+  const caller     = String(req.query.caller || '').trim();
+
+  if (!campaignId || !caller) {
+    return res.status(400).json({ success: false, error: 'id and caller required' });
+  }
+
+  // Increment playback counter (best-effort, non-critical)
+  await query(
+    `UPDATE ens_notifications
+     SET callback_count = callback_count + 1, updated_at = now()
+     WHERE id = $1 AND deleted_at IS NULL`,
+    [campaignId]
+  ).catch(() => {});
+
+  res.json({ success: true });
 });
 
 // ── Log Callback Replay ───────────────────────────────────────────────────────

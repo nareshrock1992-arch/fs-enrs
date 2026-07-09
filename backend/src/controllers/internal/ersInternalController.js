@@ -41,55 +41,72 @@ const ObserverSchema = z.object({
 
 // Resolve responder mobile numbers for a given ERS configuration tier.
 //
-// Priority (first non-empty wins):
-//   1. ers_tier_groups junction table (migration 009) — many groups per tier
-//   2. ers_responder_group_members path (migration 002 B15)
-//   3. Original responder_group_members path (legacy FKs)
-async function resolveResponders(configId, groupField) {
-  if (groupField !== 'primary' && groupField !== 'secondary') return [];
+// Sources (all merged — numbers are deduplicated):
+//   1. ers_tier_contacts (migration 010) — individual contacts per tier
+//   2. ers_tier_groups   (migration 009) — group memberships per tier
+//   3. Legacy ERS-responder paths (backwards compat for old configs)
+async function resolveResponders(configId, tier) {
+  if (tier !== 'primary' && tier !== 'secondary') return [];
 
-  // Tier-groups path (migration 009) — supports multiple groups per tier
-  const { rows: tierPath } = await query(
-    `SELECT DISTINCT ec.mobile_number
+  // Source 1: individual contacts (migration 010)
+  const { rows: contactRows } = await query(
+    `SELECT ec.mobile_number
+     FROM emergency_contacts ec
+     JOIN ers_tier_contacts etc ON etc.contact_id = ec.id
+     WHERE etc.ers_configuration_id = $1
+       AND etc.tier = $2
+       AND ec.deleted_at IS NULL AND ec.is_active = true
+       AND ec.mobile_number IS NOT NULL`,
+    [configId, tier]
+  );
+
+  // Source 2: group members (migration 009)
+  const { rows: groupRows } = await query(
+    `SELECT ec.mobile_number
      FROM emergency_contacts ec
      JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
      JOIN ers_tier_groups etg ON etg.group_id = rgm.responder_group_id
      WHERE etg.ers_configuration_id = $1
        AND etg.tier = $2
        AND ec.deleted_at IS NULL AND ec.is_active = true
-     ORDER BY ec.mobile_number`,
-    [configId, groupField]
+       AND ec.mobile_number IS NOT NULL`,
+    [configId, tier]
   );
-  if (tierPath.length > 0) return tierPath.map(r => r.mobile_number);
 
-  const ersGroupCol  = `${groupField}_ers_group_id`;
-  const origGroupCol = `${groupField}_group_id`;
+  const merged = new Set([
+    ...contactRows.map(r => r.mobile_number),
+    ...groupRows.map(r => r.mobile_number),
+  ]);
 
-  // ERS-specific responders path (migration 002 B15)
-  const { rows: newPath } = await query(
+  if (merged.size > 0) return [...merged].sort();
+
+  // Legacy fallback — old configs that used direct group FK columns
+  const ersGroupCol  = `${tier}_ers_group_id`;
+  const origGroupCol = `${tier}_group_id`;
+
+  const { rows: legacyErs } = await query(
     `SELECT DISTINCT r.mobile_number
      FROM ers_responders r
      JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
      JOIN ers_configurations ec ON ec.${ersGroupCol} = rgm.group_id
-     WHERE ec.id = $1
-       AND r.deleted_at IS NULL AND r.is_active = true
+     WHERE ec.id = $1 AND r.deleted_at IS NULL AND r.is_active = true
      ORDER BY r.mobile_number`,
     [configId]
-  );
-  if (newPath.length > 0) return newPath.map(r => r.mobile_number);
+  ).catch(() => ({ rows: [] }));
 
-  // Legacy emergency_contacts path
-  const { rows: oldPath } = await query(
+  if (legacyErs.length > 0) return legacyErs.map(r => r.mobile_number);
+
+  const { rows: legacyContacts } = await query(
     `SELECT DISTINCT ec.mobile_number
      FROM emergency_contacts ec
      JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
      JOIN ers_configurations e ON e.${origGroupCol} = rgm.responder_group_id
-     WHERE e.id = $1
-       AND ec.deleted_at IS NULL AND ec.is_active = true
+     WHERE e.id = $1 AND ec.deleted_at IS NULL AND ec.is_active = true
      ORDER BY ec.mobile_number`,
     [configId]
-  );
-  return oldPath.map(r => r.mobile_number);
+  ).catch(() => ({ rows: [] }));
+
+  return legacyContacts.map(r => r.mobile_number);
 }
 
 // Resolve emergency_contact_id from a mobile number (last-9-digit fuzzy match).
@@ -124,16 +141,41 @@ async function resolveResponderId(mobileNumber) {
 // ── ERS Lookup ────────────────────────────────────────────────────────────────
 
 // GET /api/v1/internal/ers/lookup?number=<dest>
+// Returns everything Lua needs to manage a conference incident.
 export const ersLookup = asyncHandler(async (req, res) => {
   const number = String(req.query.number || '').trim();
   if (!number) return res.status(400).json({ success: false, error: 'number param required' });
 
-  // emergency_numbers table added by migration 002 B14 — routes number to config
   const { rows: [cfg] } = await query(
-    `SELECT ec.id AS configuration_id, ec.name,
-            ec.max_concurrent_conferences, ec.queue_enabled,
-            ec.record_conferences, ec.conference_room_prefix,
-            ec.queue_hold_audio
+    `SELECT
+       ec.id AS configuration_id,
+       ec.name,
+       ec.description,
+       ec.max_concurrent_conferences,
+       ec.queue_enabled,
+       ec.record_conferences,
+       ec.conference_room_prefix,
+       ec.conference_profile,
+       ec.primary_bridge_number,
+       ec.secondary_bridge_number,
+       ec.queue_hold_audio,
+       ec.queue_announcement_audio,
+       ec.queue_music_path,
+       ec.queue_timeout_sec,
+       ec.queue_priority,
+       ec.recording_directory,
+       ec.retry_ring_count,
+       ec.retry_ring_interval,
+       ec.allow_rejoin,
+       ec.cli_authentication,
+       ec.max_conference_duration_min,
+       ec.primary_retry_count,
+       ec.primary_retry_interval_sec,
+       ec.secondary_retry_count,
+       ec.secondary_retry_interval_sec,
+       ec.pin,
+       en.service_name,
+       en.organization_id
      FROM emergency_numbers en
      JOIN ers_configurations ec
        ON ec.id = en.ers_configuration_id
@@ -163,27 +205,50 @@ export const ersLookup = asyncHandler(async (req, res) => {
   ]);
 
   const activeConferences = activeResult.rows[0]?.active_count ?? 0;
-  const slot              = activeConferences + 1;               // 1 = primary, 2 = secondary
+  const slot              = activeConferences + 1;
   const groupType         = activeConferences === 0 ? 'primary' : 'secondary';
   const canAccept         = activeConferences < cfg.max_concurrent_conferences;
 
   res.json({
     success: true,
     data: {
-      configuration_id:          cfg.configuration_id,
-      name:                       cfg.name,
-      primary_responders:         primaryResponders,
-      secondary_responders:       secondaryResponders,
-      max_concurrent_conferences: cfg.max_concurrent_conferences,
-      queue_enabled:              cfg.queue_enabled,
-      record_conferences:         cfg.record_conferences,
-      conference_room_prefix:     cfg.conference_room_prefix,
-      queue_hold_audio:           cfg.queue_hold_audio,   // Lua plays this while caller waits
-      // Slot-assignment fields — Lua uses these to avoid querying active count separately
-      active_conferences:         activeConferences,
-      slot,          // which conference slot this call fills (1=primary, 2=secondary, etc.)
-      group_type:    groupType,  // which responder group to invoke
-      can_accept:    canAccept,  // false → queue this call if queue_enabled, else reject
+      configuration_id:            cfg.configuration_id,
+      name:                        cfg.name,
+      service_name:                cfg.service_name,
+      // Bridge config
+      primary_bridge_number:       cfg.primary_bridge_number,
+      secondary_bridge_number:     cfg.secondary_bridge_number,
+      conference_profile:          cfg.conference_profile || 'default',
+      conference_room_prefix:      cfg.conference_room_prefix || 'ers',
+      max_concurrent_conferences:  cfg.max_concurrent_conferences,
+      max_conference_duration_min: cfg.max_conference_duration_min ?? 0,
+      // Responders
+      primary_responders:          primaryResponders,
+      secondary_responders:        secondaryResponders,
+      primary_retry_count:         cfg.primary_retry_count ?? 3,
+      primary_retry_interval_sec:  cfg.primary_retry_interval_sec ?? 30,
+      secondary_retry_count:       cfg.secondary_retry_count ?? 3,
+      secondary_retry_interval_sec: cfg.secondary_retry_interval_sec ?? 30,
+      retry_ring_count:            cfg.retry_ring_count ?? 3,
+      retry_ring_interval:         cfg.retry_ring_interval ?? 30,
+      // Queue
+      queue_enabled:               cfg.queue_enabled,
+      queue_announcement_audio:    cfg.queue_announcement_audio,
+      queue_music_path:            cfg.queue_music_path,
+      queue_hold_audio:            cfg.queue_hold_audio,
+      queue_timeout_sec:           cfg.queue_timeout_sec ?? 0,
+      // Recording
+      record_conferences:          cfg.record_conferences,
+      recording_directory:         cfg.recording_directory,
+      // Auth
+      pin_required:                Boolean(cfg.pin),
+      allow_rejoin:                cfg.allow_rejoin ?? true,
+      cli_authentication:          cfg.cli_authentication ?? false,
+      // Slot assignment — Lua uses these directly
+      active_conferences:          activeConferences,
+      slot,
+      group_type:                  groupType,
+      can_accept:                  canAccept,
     },
   });
 });

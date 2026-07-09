@@ -3,26 +3,101 @@ import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+const intDef = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
+const numDef = (def) => z.number().min(0).default(def);
 
-// B5: pin was NOT NULL — CLID-based design makes it optional
 const EnsConfigSchema = z.object({
   organization_id:           z.number().int().positive(),
   name:                      z.string().min(1).max(128),
-  destination_number:        emptyToNull,
+  description:               emptyToNull,
+
+  // Auth
+  pin:                       emptyToNull,
   blast_clid:                emptyToNull,
   reply_clid:                emptyToNull,
-  pin:                       emptyToNull,  // deprecated, nullable
-  retry_count:               z.number().int().min(0).max(10).default(3),
-  retry_delay_seconds:       z.number().int().min(0).default(60),
-  recording_retention_hours: z.number().int().min(1).default(24),
-  max_concurrent:            z.number().int().min(1).default(50),
-  template_id:               z.number().int().positive().optional().nullable(),
-  is_active:                 z.boolean().default(true),
+
+  // Campaign engine settings
+  max_concurrent:            intDef(30, 1),        // max concurrent blast calls
+  max_concurrent_calls:      intDef(30, 1),        // alias used by campaign engine
+  calls_per_second:          numDef(2.0),
+  batch_size:                intDef(30, 1),
+  retry_count:               intDef(3, 0, 10),
+  retry_delay_seconds:       intDef(300, 0),
+  retry_interval_sec:        intDef(300, 0),
+  max_attempts:              intDef(4, 1, 10),
+  campaign_timeout_min:      intDef(60, 1),
+  recording_retention_hours: intDef(24, 1),
+  retry_failed_only:         z.boolean().default(true),
+  adaptive_throttling:       z.boolean().default(true),
+  campaign_priority:         intDef(5, 1, 10),
+  max_active_campaigns:      intDef(1, 1),
+
+  // Gateway
+  sip_gateway:               emptyToNull,
+  sip_caller_id:             emptyToNull,
+
+  // Messages
+  no_pending_msg:            emptyToNull,
+  expiry_announcement:       emptyToNull,
+
+  // Destinations (junction references)
   group_ids:                 z.array(z.number().int().positive()).default([]),
   contact_ids:               z.array(z.number().int().positive()).default([]),
+
+  is_active: z.boolean().default(true),
 });
 
-// B12: listConfigurations returned a plain array — now paginated
+// ── Sync helpers ──────────────────────────────────────────────────────────────
+
+async function syncGroups(configId, groupIds) {
+  await query(`DELETE FROM ens_configuration_groups WHERE ens_configuration_id = $1`, [configId]);
+  for (const gid of groupIds) {
+    await query(
+      `INSERT INTO ens_configuration_groups (ens_configuration_id, responder_group_id)
+       VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [configId, gid]
+    );
+  }
+}
+
+async function syncContacts(configId, contactIds) {
+  await query(`DELETE FROM ens_configuration_contacts WHERE ens_configuration_id = $1`, [configId]);
+  for (const cid of contactIds) {
+    await query(
+      `INSERT INTO ens_configuration_contacts (ens_configuration_id, emergency_contact_id)
+       VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [configId, cid]
+    );
+  }
+}
+
+async function loadMappings(configId) {
+  const [{ rows: groups }, { rows: contacts }] = await Promise.all([
+    query(
+      `SELECT rg.id, rg.name, rg.organization_id,
+              COUNT(m.id)::INT AS member_count
+       FROM responder_groups rg
+       JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rg.id
+       LEFT JOIN responder_group_members m ON m.responder_group_id = rg.id
+       WHERE ecg.ens_configuration_id = $1
+       GROUP BY rg.id
+       ORDER BY rg.name`,
+      [configId]
+    ),
+    query(
+      `SELECT c.id, c.first_name, c.last_name, c.mobile_number, c.role
+       FROM emergency_contacts c
+       JOIN ens_configuration_contacts ecc ON ecc.emergency_contact_id = c.id
+       WHERE ecc.ens_configuration_id = $1
+       ORDER BY c.last_name, c.first_name`,
+      [configId]
+    ),
+  ]);
+  return { groups, contacts };
+}
+
+// ── List ─────────────────────────────────────────────────────────────────────
+
 export const listConfigurations = asyncHandler(async (req, res) => {
   const page   = Math.max(1, Number(req.query.page)  || 1);
   const limit  = Math.min(200, Number(req.query.limit) || 50);
@@ -32,7 +107,9 @@ export const listConfigurations = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT e.*, o.name AS organization_name,
        (SELECT COUNT(*) FROM ens_configuration_groups   WHERE ens_configuration_id = e.id)::INT AS group_count,
-       (SELECT COUNT(*) FROM ens_configuration_contacts WHERE ens_configuration_id = e.id)::INT AS contact_count
+       (SELECT COUNT(*) FROM ens_configuration_contacts WHERE ens_configuration_id = e.id)::INT AS contact_count,
+       (SELECT COUNT(*) FROM ens_campaigns c
+        WHERE c.ens_configuration_id = e.id AND c.status IN ('queued','running'))::INT AS active_campaigns
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
@@ -49,7 +126,8 @@ export const listConfigurations = asyncHandler(async (req, res) => {
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
 
-// GET /api/v1/ens/configurations/:id
+// ── Get ──────────────────────────────────────────────────────────────────────
+
 export const getConfiguration = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT e.*, o.name AS organization_name
@@ -60,92 +138,117 @@ export const getConfiguration = asyncHandler(async (req, res) => {
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
 
-  const { rows: groups } = await query(
-    `SELECT rg.id, rg.name FROM responder_groups rg
-     JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rg.id
-     WHERE ecg.ens_configuration_id = $1`, [req.params.id]
-  );
-  const { rows: contacts } = await query(
-    `SELECT c.id, c.first_name, c.last_name, c.mobile_number FROM emergency_contacts c
-     JOIN ens_configuration_contacts ecc ON ecc.emergency_contact_id = c.id
-     WHERE ecc.ens_configuration_id = $1`, [req.params.id]
-  );
-
-  res.json({ ...rows[0], groups, contacts });
+  const mappings = await loadMappings(req.params.id);
+  res.json({ ...rows[0], ...mappings });
 });
 
-// POST /api/v1/ens/configurations
+// ── Create ───────────────────────────────────────────────────────────────────
+
 export const createConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.parse(req.body);
 
   const { rows } = await query(
-    `INSERT INTO ens_configurations
-       (organization_id, name, destination_number, blast_clid, reply_clid, pin,
-        retry_count, retry_delay_seconds, recording_retention_hours, max_concurrent,
-        template_id, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-    [d.organization_id, d.name, d.destination_number, d.blast_clid, d.reply_clid, d.pin,
-     d.retry_count, d.retry_delay_seconds, d.recording_retention_hours, d.max_concurrent,
-     d.template_id, d.is_active]
+    `INSERT INTO ens_configurations (
+       organization_id, name, description,
+       blast_clid, reply_clid, pin,
+       max_concurrent, max_concurrent_calls, calls_per_second,
+       batch_size, retry_count, retry_delay_seconds, retry_interval_sec,
+       max_attempts, campaign_timeout_min, recording_retention_hours,
+       retry_failed_only, adaptive_throttling, campaign_priority, max_active_campaigns,
+       sip_gateway, sip_caller_id,
+       no_pending_msg, expiry_announcement,
+       is_active
+     ) VALUES (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+       $17,$18,$19,$20,$21,$22,$23,$24,$25
+     ) RETURNING *`,
+    [
+      d.organization_id, d.name, d.description,
+      d.blast_clid, d.reply_clid, d.pin,
+      d.max_concurrent, d.max_concurrent_calls ?? d.max_concurrent,
+      d.calls_per_second,
+      d.batch_size, d.retry_count, d.retry_delay_seconds,
+      d.retry_interval_sec ?? d.retry_delay_seconds,
+      d.max_attempts, d.campaign_timeout_min, d.recording_retention_hours,
+      d.retry_failed_only, d.adaptive_throttling, d.campaign_priority, d.max_active_campaigns,
+      d.sip_gateway, d.sip_caller_id,
+      d.no_pending_msg, d.expiry_announcement,
+      d.is_active,
+    ]
   );
   const cfg = rows[0];
 
-  for (const gid of d.group_ids) {
-    await query(
-      `INSERT INTO ens_configuration_groups (ens_configuration_id, responder_group_id)
-       VALUES ($1,$2) ON CONFLICT DO NOTHING`, [cfg.id, gid]
-    );
-  }
-  for (const cid of d.contact_ids) {
-    await query(
-      `INSERT INTO ens_configuration_contacts (ens_configuration_id, emergency_contact_id)
-       VALUES ($1,$2) ON CONFLICT DO NOTHING`, [cfg.id, cid]
-    );
-  }
+  await Promise.all([
+    syncGroups(cfg.id, d.group_ids),
+    syncContacts(cfg.id, d.contact_ids),
+  ]);
 
-  res.status(201).json(cfg);
+  const mappings = await loadMappings(cfg.id);
+  res.status(201).json({ ...cfg, ...mappings });
 });
 
-// PUT /api/v1/ens/configurations/:id
+// ── Update ───────────────────────────────────────────────────────────────────
+
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.partial().parse(req.body);
+
   const { rows } = await query(
     `UPDATE ens_configurations SET
-       name                       = COALESCE($2,  name),
-       destination_number         = COALESCE($3,  destination_number),
-       blast_clid                 = COALESCE($4,  blast_clid),
-       reply_clid                 = COALESCE($5,  reply_clid),
-       pin                        = COALESCE($6,  pin),
-       retry_count                = COALESCE($7,  retry_count),
-       retry_delay_seconds        = COALESCE($8,  retry_delay_seconds),
-       recording_retention_hours  = COALESCE($9,  recording_retention_hours),
-       max_concurrent             = COALESCE($10, max_concurrent),
-       is_active                  = COALESCE($11, is_active),
-       updated_at                 = now()
+       name                      = COALESCE($2,  name),
+       description               = COALESCE($3,  description),
+       blast_clid                = COALESCE($4,  blast_clid),
+       reply_clid                = COALESCE($5,  reply_clid),
+       pin                       = COALESCE($6,  pin),
+       max_concurrent            = COALESCE($7,  max_concurrent),
+       max_concurrent_calls      = COALESCE($8,  max_concurrent_calls),
+       calls_per_second          = COALESCE($9,  calls_per_second),
+       batch_size                = COALESCE($10, batch_size),
+       retry_count               = COALESCE($11, retry_count),
+       retry_delay_seconds       = COALESCE($12, retry_delay_seconds),
+       retry_interval_sec        = COALESCE($13, retry_interval_sec),
+       max_attempts              = COALESCE($14, max_attempts),
+       campaign_timeout_min      = COALESCE($15, campaign_timeout_min),
+       recording_retention_hours = COALESCE($16, recording_retention_hours),
+       retry_failed_only         = COALESCE($17, retry_failed_only),
+       adaptive_throttling       = COALESCE($18, adaptive_throttling),
+       campaign_priority         = COALESCE($19, campaign_priority),
+       max_active_campaigns      = COALESCE($20, max_active_campaigns),
+       sip_gateway               = COALESCE($21, sip_gateway),
+       sip_caller_id             = COALESCE($22, sip_caller_id),
+       no_pending_msg            = COALESCE($23, no_pending_msg),
+       expiry_announcement       = COALESCE($24, expiry_announcement),
+       is_active                 = COALESCE($25, is_active),
+       updated_at                = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.destination_number, d.blast_clid, d.reply_clid, d.pin,
-     d.retry_count, d.retry_delay_seconds, d.recording_retention_hours, d.max_concurrent,
-     d.is_active]
+    [
+      req.params.id,
+      d.name, d.description,
+      d.blast_clid, d.reply_clid, d.pin,
+      d.max_concurrent,
+      d.max_concurrent_calls ?? d.max_concurrent,
+      d.calls_per_second,
+      d.batch_size, d.retry_count, d.retry_delay_seconds,
+      d.retry_interval_sec ?? d.retry_delay_seconds,
+      d.max_attempts, d.campaign_timeout_min, d.recording_retention_hours,
+      d.retry_failed_only, d.adaptive_throttling, d.campaign_priority, d.max_active_campaigns,
+      d.sip_gateway, d.sip_caller_id,
+      d.no_pending_msg, d.expiry_announcement,
+      d.is_active,
+    ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
 
-  if (d.group_ids !== undefined) {
-    await query(`DELETE FROM ens_configuration_groups WHERE ens_configuration_id = $1`, [req.params.id]);
-    for (const gid of d.group_ids) {
-      await query(`INSERT INTO ens_configuration_groups (ens_configuration_id, responder_group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, gid]);
-    }
-  }
-  if (d.contact_ids !== undefined) {
-    await query(`DELETE FROM ens_configuration_contacts WHERE ens_configuration_id = $1`, [req.params.id]);
-    for (const cid of d.contact_ids) {
-      await query(`INSERT INTO ens_configuration_contacts (ens_configuration_id, emergency_contact_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, cid]);
-    }
-  }
+  const updates = [];
+  if (d.group_ids   !== undefined) updates.push(syncGroups(req.params.id, d.group_ids));
+  if (d.contact_ids !== undefined) updates.push(syncContacts(req.params.id, d.contact_ids));
+  await Promise.all(updates);
 
-  res.json(rows[0]);
+  const mappings = await loadMappings(req.params.id);
+  res.json({ ...rows[0], ...mappings });
 });
 
-// PATCH /api/v1/ens/configurations/:id/toggle
+// ── Toggle / Delete ───────────────────────────────────────────────────────────
+
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE ens_configurations SET is_active = NOT is_active, updated_at = now()
@@ -156,142 +259,53 @@ export const toggleActive = asyncHandler(async (req, res) => {
   res.json(rows[0]);
 });
 
-// DELETE /api/v1/ens/configurations/:id
 export const deleteConfiguration = asyncHandler(async (req, res) => {
   await query(`UPDATE ens_configurations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
   res.status(204).end();
 });
 
-// GET /api/v1/internal/ens/lookup?number=XXX  — primary Lua lookup (CLID-based)
-// Returns config + full contact mobile list for the blast engine.
-export const lookupByNumber = asyncHandler(async (req, res) => {
-  const number = req.query.number;
-  if (!number) return res.status(400).json({ error: 'number required' });
+// ── Notifications (legacy) ─────────────────────────────────────────────────
 
-  const { rows } = await query(
-    `SELECT e.id, e.name, e.destination_number, e.blast_clid, e.reply_clid,
-       e.pin, e.retry_count, e.retry_delay_seconds,
-       e.recording_retention_hours, e.max_concurrent, e.organization_id
-     FROM ens_configurations e
-     WHERE e.destination_number = $1
-       AND e.is_active = true AND e.deleted_at IS NULL LIMIT 1`,
-    [number]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'No ENS configuration for number' });
-
-  const cfg = rows[0];
-
-  // Collect all active contact mobile numbers (groups + direct)
-  const { rows: contacts } = await query(
-    `SELECT DISTINCT c.mobile_number
-     FROM emergency_contacts c
-     WHERE c.deleted_at IS NULL AND c.is_active = true
-       AND (
-         c.id IN (
-           SELECT rgm.emergency_contact_id FROM responder_group_members rgm
-           JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
-           WHERE ecg.ens_configuration_id = $1
-         )
-         OR c.id IN (
-           SELECT ecc.emergency_contact_id FROM ens_configuration_contacts ecc
-           WHERE ecc.ens_configuration_id = $1
-         )
-       )`,
-    [cfg.id]
-  );
-
-  res.json({
-    success: true,
-    data: {
-      configuration_id:           cfg.id,
-      name:                       cfg.name,
-      blast_clid:                 cfg.blast_clid,
-      reply_clid:                 cfg.reply_clid,
-      pin:                        cfg.pin,            // null if CLID-only
-      retry_count:                cfg.retry_count,
-      retry_delay_seconds:        cfg.retry_delay_seconds,
-      recording_retention_hours:  cfg.recording_retention_hours,
-      max_concurrent:             cfg.max_concurrent,
-      contacts:                   contacts.map(r => r.mobile_number),
-    },
-  });
-});
-
-// GET /api/v1/ens/lookup?pin=XXX  — DEPRECATED: kept for backward compat (90 days)
-// Lua scripts should migrate to /internal/ens/lookup?number=
-export const lookupByPin = asyncHandler(async (req, res) => {
-  const pin = req.query.pin;
-  if (!pin) return res.status(400).json({ error: 'pin required' });
-
-  res.setHeader('Deprecation', 'true');
-  res.setHeader('Sunset', 'Mon, 31 Aug 2026 00:00:00 GMT');
-
-  const { rows } = await query(
-    `SELECT e.id, e.name, e.pin, e.blast_clid, e.reply_clid,
-       e.retry_count, e.organization_id
-     FROM ens_configurations e
-     WHERE e.pin = $1 AND e.is_active = true AND e.deleted_at IS NULL LIMIT 1`,
-    [pin]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'No ENS configuration for PIN' });
-  res.json(rows[0]);
-});
-
-// ── Notifications ──────────────────────────────────────────────────────────────
-
-// GET /api/v1/ens/notifications
 export const listNotifications = asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT n.*, e.name AS ens_name, u.full_name AS triggered_by
+    `SELECT n.*, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     LEFT JOIN users u ON u.id = n.triggered_by_user_id
      WHERE n.deleted_at IS NULL
      ORDER BY n.created_at DESC
      LIMIT $1 OFFSET $2`,
-    [Number(req.query.limit) || 50, ((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50)]
+    [
+      Number(req.query.limit) || 50,
+      ((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50),
+    ]
   );
   res.json(rows);
 });
 
-// POST /api/v1/ens/notifications  — create/trigger a notification
 export const createNotification = asyncHandler(async (req, res) => {
   const { ens_configuration_id, recording_reference, triggered_via = 'API' } = req.body;
 
-  // Count targets
   const { rows: tgt } = await query(
     `SELECT COUNT(DISTINCT c.id)::INT AS total
      FROM emergency_contacts c
      WHERE c.deleted_at IS NULL AND c.is_active = true AND (
-       c.id IN (SELECT ecc.emergency_contact_id FROM ens_configuration_contacts ecc WHERE ecc.ens_configuration_id = $1)
-       OR c.id IN (SELECT rgm.emergency_contact_id FROM responder_group_members rgm
-                   JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
-                   WHERE ecg.ens_configuration_id = $1)
+       c.id IN (SELECT emergency_contact_id FROM ens_configuration_contacts WHERE ens_configuration_id = $1)
+       OR c.id IN (
+         SELECT rgm.emergency_contact_id FROM responder_group_members rgm
+         JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
+         WHERE ecg.ens_configuration_id = $1
+       )
      )`,
     [ens_configuration_id]
   );
 
   const { rows } = await query(
     `INSERT INTO ens_notifications
-       (ens_configuration_id, triggered_by_user_id, triggered_via, recording_reference,
-        status, total_targets)
+       (ens_configuration_id, triggered_by_user_id, triggered_via,
+        recording_reference, status, total_targets)
      VALUES ($1,$2,$3,$4,'PENDING',$5) RETURNING *`,
     [ens_configuration_id, req.user?.id, triggered_via, recording_reference, tgt[0].total]
   );
 
   res.status(201).json(rows[0]);
-});
-
-// PATCH /api/v1/ens/notifications/:uuid/status  — used by Lua to update delivery
-export const updateNotificationStatus = asyncHandler(async (req, res) => {
-  const { status, total_success, total_failed } = req.body;
-  const { rows } = await query(
-    `UPDATE ens_notifications SET status = $2, total_success = COALESCE($3, total_success),
-       total_failed = COALESCE($4, total_failed),
-       completed_at = CASE WHEN $2 IN ('COMPLETED','FAILED') THEN now() ELSE completed_at END
-     WHERE notification_uuid = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.uuid, status, total_success, total_failed]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Notification not found' });
-  res.json(rows[0]);
 });

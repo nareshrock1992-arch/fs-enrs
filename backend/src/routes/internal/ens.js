@@ -19,6 +19,10 @@ router.get('/notifications/:uuid/pending-contacts', ctrl.ensPendingContacts);
 router.patch('/notifications/:uuid/delivery',     ctrl.ensUpdateDelivery);
 router.post('/notifications/:uuid/complete',      ctrl.ensCompleteNotification);
 
+// Playback number (1999) — get latest campaign recording
+router.get('/campaigns/latest',         ctrl.ensLatestCampaign);
+router.get('/campaigns/:id/playback-log', ctrl.ensPlaybackLog);
+
 // Callback replay (ENS_retry_playback.lua)
 router.get('/callbacks/authorize', ctrl.ensAuthorizeCallback);
 router.post('/callbacks',          ctrl.ensLogCallback);

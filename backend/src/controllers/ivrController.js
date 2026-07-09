@@ -250,8 +250,8 @@ export const publishFlow = asyncHandler(async (req, res) => {
     );
     return tq(
       `INSERT INTO ivr_flow_versions
-         (ivr_flow_id, version_number, graph, published_by, change_notes)
-       VALUES ($1, $2, $3, $4, $5)
+         (ivr_flow_id, version_number, graph, published_by, published_at, change_notes)
+       VALUES ($1, $2, $3, $4, now(), $5)
        RETURNING *,
          (SELECT email FROM users WHERE id = $4) AS published_by_email`,
       [flow.id, next_ver, JSON.stringify(flow.graph), req.user.id, parsed.data.change_notes || null]

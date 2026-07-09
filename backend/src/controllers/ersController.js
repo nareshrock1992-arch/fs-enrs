@@ -1,56 +1,120 @@
 import { z } from 'zod';
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { eslCommand } from '../services/eslService.js';
 
+const str    = (max) => z.string().max(max).optional().nullable();
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
+const boolDef = (def) => z.boolean().default(def);
+const intDef  = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
 
 const ErsConfigSchema = z.object({
-  organization_id:            z.number().int().positive(),
-  name:                       z.string().min(1).max(128),
-  pin:                        emptyToNull,
-  // Multi-tier group arrays (migration 009)
-  primary_group_ids:          z.array(z.number().int().positive()).default([]),
-  secondary_group_ids:        z.array(z.number().int().positive()).default([]),
-  // Legacy single FKs — kept for backward compat; ignored when *_group_ids provided
-  primary_group_id:           z.number().int().positive().optional().nullable(),
-  secondary_group_id:         z.number().int().positive().optional().nullable(),
-  max_concurrent_conferences: z.number().int().min(1).max(10).default(2),
-  queue_enabled:              z.boolean().default(true),
-  record_conferences:         z.boolean().default(false),
-  queue_hold_audio:           z.string().max(512).optional().nullable(),
-  is_active:                  z.boolean().default(true),
+  organization_id:              z.number().int().positive(),
+  name:                         z.string().min(1).max(128),
+  description:                  emptyToNull,
+
+  // Bridge numbers (FreeSWITCH conference bridge extensions)
+  primary_bridge_number:        emptyToNull,
+  secondary_bridge_number:      emptyToNull,
+  conference_profile:           z.string().max(64).default('default'),
+
+  // Concurrency / duration
+  max_concurrent_conferences:   intDef(2, 1, 10),
+  max_conference_duration_min:  intDef(0),              // 0 = unlimited
+
+  // Queue
+  queue_enabled:                boolDef(true),
+  queue_announcement_audio:     emptyToNull,
+  queue_music_path:             emptyToNull,
+  queue_timeout_sec:            intDef(0),              // 0 = unlimited
+  queue_priority:               intDef(5, 1, 10),
+  queue_hold_audio:             emptyToNull,            // legacy compat
+
+  // Recording
+  record_conferences:           boolDef(false),
+  recording_directory:          emptyToNull,
+
+  // Retry
+  retry_ring_count:             intDef(3),
+  retry_ring_interval:          intDef(30),
+
+  // Auth / access
+  pin:                          emptyToNull,
+  allow_rejoin:                 boolDef(true),
+  cli_authentication:           boolDef(false),
+
+  // Tier-level retry settings
+  primary_retry_count:          intDef(3),
+  primary_retry_interval_sec:   intDef(30),
+  secondary_retry_count:        intDef(3),
+  secondary_retry_interval_sec: intDef(30),
+
+  // Tier group / contact IDs (multi-select)
+  primary_group_ids:            z.array(z.number().int().positive()).default([]),
+  secondary_group_ids:          z.array(z.number().int().positive()).default([]),
+  primary_contact_ids:          z.array(z.number().int().positive()).default([]),
+  secondary_contact_ids:        z.array(z.number().int().positive()).default([]),
+
+  is_active: boolDef(true),
 });
 
-// ── ERS Configurations ────────────────────────────────────────
+// ── Tier group helpers ────────────────────────────────────────────────────────
 
 async function syncTierGroups(configId, tier, groupIds) {
   await query(`DELETE FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
   for (const gid of groupIds) {
     await query(
-      `INSERT INTO ers_tier_groups (ers_configuration_id, tier, group_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      `INSERT INTO ers_tier_groups (ers_configuration_id, tier, group_id)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
       [configId, tier, gid]
     );
   }
 }
 
-async function loadTierGroups(configId) {
-  const { rows } = await query(
-    `SELECT etg.tier, rg.id AS group_id, rg.name AS group_name,
-            (SELECT COUNT(*) FROM responder_group_members WHERE responder_group_id = rg.id)::INT AS member_count
-     FROM ers_tier_groups etg
-     JOIN responder_groups rg ON rg.id = etg.group_id
-     WHERE etg.ers_configuration_id = $1
-     ORDER BY etg.tier, rg.name`,
-    [configId]
-  );
+async function syncTierContacts(configId, tier, contactIds) {
+  await query(`DELETE FROM ers_tier_contacts WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
+  for (const cid of contactIds) {
+    await query(
+      `INSERT INTO ers_tier_contacts (ers_configuration_id, tier, contact_id)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [configId, tier, cid]
+    );
+  }
+}
+
+async function loadTierData(configId) {
+  const [{ rows: gRows }, { rows: cRows }] = await Promise.all([
+    query(
+      `SELECT etg.tier, rg.id AS group_id, rg.name AS group_name,
+              (SELECT COUNT(*) FROM responder_group_members
+               WHERE responder_group_id = rg.id)::INT AS member_count
+       FROM ers_tier_groups etg
+       JOIN responder_groups rg ON rg.id = etg.group_id
+       WHERE etg.ers_configuration_id = $1
+       ORDER BY etg.tier, rg.name`,
+      [configId]
+    ),
+    query(
+      `SELECT etc.tier, c.id AS contact_id,
+              c.first_name, c.last_name, c.mobile_number, c.role,
+              etc.priority
+       FROM ers_tier_contacts etc
+       JOIN emergency_contacts c ON c.id = etc.contact_id
+       WHERE etc.ers_configuration_id = $1
+       ORDER BY etc.tier, etc.priority, c.last_name`,
+      [configId]
+    ),
+  ]);
+
   return {
-    primary_groups:   rows.filter(r => r.tier === 'primary'),
-    secondary_groups: rows.filter(r => r.tier === 'secondary'),
+    primary_groups:    gRows.filter(r => r.tier === 'primary'),
+    secondary_groups:  gRows.filter(r => r.tier === 'secondary'),
+    primary_contacts:  cRows.filter(r => r.tier === 'primary'),
+    secondary_contacts: cRows.filter(r => r.tier === 'secondary'),
   };
 }
 
-// B13: listConfigurations was returning a plain array with no pagination
+// ── List ─────────────────────────────────────────────────────────────────────
+
 export const listConfigurations = asyncHandler(async (req, res) => {
   const page   = Math.max(1, Number(req.query.page)  || 1);
   const limit  = Math.min(200, Number(req.query.limit) || 50);
@@ -60,8 +124,14 @@ export const listConfigurations = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT e.*,
        o.name AS organization_name,
-       (SELECT COUNT(*) FROM ers_tier_groups WHERE ers_configuration_id = e.id AND tier = 'primary')::INT   AS primary_group_count,
-       (SELECT COUNT(*) FROM ers_tier_groups WHERE ers_configuration_id = e.id AND tier = 'secondary')::INT AS secondary_group_count,
+       (SELECT COUNT(*) FROM ers_tier_groups
+        WHERE ers_configuration_id = e.id AND tier = 'primary')::INT   AS primary_group_count,
+       (SELECT COUNT(*) FROM ers_tier_groups
+        WHERE ers_configuration_id = e.id AND tier = 'secondary')::INT AS secondary_group_count,
+       (SELECT COUNT(*) FROM ers_tier_contacts
+        WHERE ers_configuration_id = e.id AND tier = 'primary')::INT   AS primary_contact_count,
+       (SELECT COUNT(*) FROM ers_tier_contacts
+        WHERE ers_configuration_id = e.id AND tier = 'secondary')::INT AS secondary_contact_count,
        (SELECT COUNT(*) FROM ers_incidents i
         WHERE i.ers_configuration_id = e.id AND i.status = 'ACTIVE')::INT AS active_incidents,
        (SELECT COUNT(*) FROM ers_queues q
@@ -82,6 +152,8 @@ export const listConfigurations = asyncHandler(async (req, res) => {
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
 
+// ── Get ──────────────────────────────────────────────────────────────────────
+
 export const getConfiguration = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT e.*, o.name AS organization_name
@@ -92,8 +164,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
 
-  const [tierGroups, activeResult] = await Promise.all([
-    loadTierGroups(req.params.id),
+  const [tierData, activeResult] = await Promise.all([
+    loadTierData(req.params.id),
     query(
       `SELECT i.*, COUNT(r.id)::INT AS responder_count
        FROM ers_incidents i
@@ -104,66 +176,127 @@ export const getConfiguration = asyncHandler(async (req, res) => {
     ),
   ]);
 
-  res.json({
-    ...rows[0],
-    ...tierGroups,
-    active_incidents: activeResult.rows,
-  });
+  res.json({ ...rows[0], ...tierData, active_incidents: activeResult.rows });
 });
+
+// ── Create ───────────────────────────────────────────────────────────────────
 
 export const createConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.parse(req.body);
+
   const { rows } = await query(
-    `INSERT INTO ers_configurations
-       (organization_id, name, pin, primary_group_id, secondary_group_id,
-        max_concurrent_conferences, queue_enabled, record_conferences, queue_hold_audio, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [d.organization_id, d.name, d.pin,
-     d.primary_group_ids[0] ?? d.primary_group_id ?? null,
-     d.secondary_group_ids[0] ?? d.secondary_group_id ?? null,
-     d.max_concurrent_conferences, d.queue_enabled,
-     d.record_conferences ?? false, d.queue_hold_audio ?? null, d.is_active]
+    `INSERT INTO ers_configurations (
+       organization_id, name, description,
+       primary_bridge_number, secondary_bridge_number, conference_profile,
+       max_concurrent_conferences, max_conference_duration_min,
+       queue_enabled, queue_announcement_audio, queue_music_path,
+       queue_timeout_sec, queue_priority, queue_hold_audio,
+       record_conferences, recording_directory,
+       retry_ring_count, retry_ring_interval,
+       pin, allow_rejoin, cli_authentication,
+       primary_retry_count, primary_retry_interval_sec,
+       secondary_retry_count, secondary_retry_interval_sec,
+       is_active
+     ) VALUES (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+     ) RETURNING *`,
+    [
+      d.organization_id, d.name, d.description,
+      d.primary_bridge_number, d.secondary_bridge_number, d.conference_profile,
+      d.max_concurrent_conferences, d.max_conference_duration_min,
+      d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
+      d.queue_timeout_sec, d.queue_priority, d.queue_hold_audio ?? null,
+      d.record_conferences, d.recording_directory,
+      d.retry_ring_count, d.retry_ring_interval,
+      d.pin, d.allow_rejoin, d.cli_authentication,
+      d.primary_retry_count, d.primary_retry_interval_sec,
+      d.secondary_retry_count, d.secondary_retry_interval_sec,
+      d.is_active,
+    ]
   );
   const cfg = rows[0];
-  await syncTierGroups(cfg.id, 'primary',   d.primary_group_ids.length   ? d.primary_group_ids   : (d.primary_group_id   ? [d.primary_group_id]   : []));
-  await syncTierGroups(cfg.id, 'secondary', d.secondary_group_ids.length ? d.secondary_group_ids : (d.secondary_group_id ? [d.secondary_group_id] : []));
-  const tierGroups = await loadTierGroups(cfg.id);
-  res.status(201).json({ ...cfg, ...tierGroups });
+
+  await Promise.all([
+    syncTierGroups(cfg.id, 'primary',   d.primary_group_ids),
+    syncTierGroups(cfg.id, 'secondary', d.secondary_group_ids),
+    syncTierContacts(cfg.id, 'primary',   d.primary_contact_ids),
+    syncTierContacts(cfg.id, 'secondary', d.secondary_contact_ids),
+  ]);
+
+  const tierData = await loadTierData(cfg.id);
+  res.status(201).json({ ...cfg, ...tierData });
 });
+
+// ── Update ───────────────────────────────────────────────────────────────────
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.partial().parse(req.body);
+
   const { rows } = await query(
     `UPDATE ers_configurations SET
-       name                       = COALESCE($2,  name),
-       pin                        = COALESCE($3,  pin),
-       max_concurrent_conferences = COALESCE($4,  max_concurrent_conferences),
-       queue_enabled              = COALESCE($5,  queue_enabled),
-       record_conferences         = COALESCE($6,  record_conferences),
-       queue_hold_audio           = COALESCE($7,  queue_hold_audio),
-       is_active                  = COALESCE($8,  is_active),
-       updated_at                 = now()
+       name                         = COALESCE($2,  name),
+       description                  = COALESCE($3,  description),
+       primary_bridge_number        = COALESCE($4,  primary_bridge_number),
+       secondary_bridge_number      = COALESCE($5,  secondary_bridge_number),
+       conference_profile           = COALESCE($6,  conference_profile),
+       max_concurrent_conferences   = COALESCE($7,  max_concurrent_conferences),
+       max_conference_duration_min  = COALESCE($8,  max_conference_duration_min),
+       queue_enabled                = COALESCE($9,  queue_enabled),
+       queue_announcement_audio     = COALESCE($10, queue_announcement_audio),
+       queue_music_path             = COALESCE($11, queue_music_path),
+       queue_timeout_sec            = COALESCE($12, queue_timeout_sec),
+       queue_priority               = COALESCE($13, queue_priority),
+       queue_hold_audio             = COALESCE($14, queue_hold_audio),
+       record_conferences           = COALESCE($15, record_conferences),
+       recording_directory          = COALESCE($16, recording_directory),
+       retry_ring_count             = COALESCE($17, retry_ring_count),
+       retry_ring_interval          = COALESCE($18, retry_ring_interval),
+       pin                          = COALESCE($19, pin),
+       allow_rejoin                 = COALESCE($20, allow_rejoin),
+       cli_authentication           = COALESCE($21, cli_authentication),
+       primary_retry_count          = COALESCE($22, primary_retry_count),
+       primary_retry_interval_sec   = COALESCE($23, primary_retry_interval_sec),
+       secondary_retry_count        = COALESCE($24, secondary_retry_count),
+       secondary_retry_interval_sec = COALESCE($25, secondary_retry_interval_sec),
+       is_active                    = COALESCE($26, is_active),
+       updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.pin,
-     d.max_concurrent_conferences, d.queue_enabled,
-     d.record_conferences, d.queue_hold_audio, d.is_active]
+    [
+      req.params.id,
+      d.name, d.description,
+      d.primary_bridge_number, d.secondary_bridge_number, d.conference_profile,
+      d.max_concurrent_conferences, d.max_conference_duration_min,
+      d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
+      d.queue_timeout_sec, d.queue_priority, d.queue_hold_audio,
+      d.record_conferences, d.recording_directory,
+      d.retry_ring_count, d.retry_ring_interval,
+      d.pin, d.allow_rejoin, d.cli_authentication,
+      d.primary_retry_count, d.primary_retry_interval_sec,
+      d.secondary_retry_count, d.secondary_retry_interval_sec,
+      d.is_active,
+    ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
 
-  if (d.primary_group_ids !== undefined) {
-    await syncTierGroups(req.params.id, 'primary', d.primary_group_ids);
-  }
-  if (d.secondary_group_ids !== undefined) {
-    await syncTierGroups(req.params.id, 'secondary', d.secondary_group_ids);
-  }
-  const tierGroups = await loadTierGroups(req.params.id);
-  res.json({ ...rows[0], ...tierGroups });
+  const updates = [];
+  if (d.primary_group_ids   !== undefined) updates.push(syncTierGroups(req.params.id,   'primary',   d.primary_group_ids));
+  if (d.secondary_group_ids !== undefined) updates.push(syncTierGroups(req.params.id,   'secondary', d.secondary_group_ids));
+  if (d.primary_contact_ids   !== undefined) updates.push(syncTierContacts(req.params.id, 'primary',   d.primary_contact_ids));
+  if (d.secondary_contact_ids !== undefined) updates.push(syncTierContacts(req.params.id, 'secondary', d.secondary_contact_ids));
+  await Promise.all(updates);
+
+  const tierData = await loadTierData(req.params.id);
+  res.json({ ...rows[0], ...tierData });
 });
+
+// ── Delete ───────────────────────────────────────────────────────────────────
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
   await query(`UPDATE ers_configurations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
   res.status(204).end();
 });
+
+// ── Toggle ───────────────────────────────────────────────────────────────────
 
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
@@ -175,51 +308,34 @@ export const toggleActive = asyncHandler(async (req, res) => {
   res.json(rows[0]);
 });
 
-// GET /api/v1/ers/configurations/:id/tier-groups
+// ── Tier groups endpoint (GET / PUT) ─────────────────────────────────────────
+
 export const getTierGroups = asyncHandler(async (req, res) => {
-  const tierGroups = await loadTierGroups(req.params.id);
-  res.json(tierGroups);
+  const tierData = await loadTierData(req.params.id);
+  res.json(tierData);
 });
 
-// PUT /api/v1/ers/configurations/:id/tier-groups
-// Body: { primary_group_ids: [1,2,3], secondary_group_ids: [4,5] }
 export const updateTierGroups = asyncHandler(async (req, res) => {
-  const { primary_group_ids = [], secondary_group_ids = [] } = req.body;
+  const {
+    primary_group_ids    = [],
+    secondary_group_ids  = [],
+    primary_contact_ids  = [],
+    secondary_contact_ids = [],
+  } = req.body;
+
   await Promise.all([
-    syncTierGroups(req.params.id, 'primary',   primary_group_ids.map(Number)),
-    syncTierGroups(req.params.id, 'secondary', secondary_group_ids.map(Number)),
+    syncTierGroups(req.params.id,   'primary',   primary_group_ids.map(Number)),
+    syncTierGroups(req.params.id,   'secondary', secondary_group_ids.map(Number)),
+    syncTierContacts(req.params.id, 'primary',   primary_contact_ids.map(Number)),
+    syncTierContacts(req.params.id, 'secondary', secondary_contact_ids.map(Number)),
   ]);
-  const tierGroups = await loadTierGroups(req.params.id);
-  res.json(tierGroups);
+
+  const tierData = await loadTierData(req.params.id);
+  res.json(tierData);
 });
 
-// GET /api/v1/ers/lookup?pin=  — Lua API
-export const lookupByPin = asyncHandler(async (req, res) => {
-  const pin = req.query.pin;
-  if (!pin) return res.status(400).json({ error: 'pin required' });
+// ── ERS Incidents ─────────────────────────────────────────────────────────────
 
-  const { rows } = await query(
-    `SELECT e.id, e.name, e.pin, e.max_concurrent_conferences, e.queue_enabled,
-       e.primary_group_id, e.secondary_group_id, e.organization_id
-     FROM ers_configurations e
-     WHERE e.pin = $1 AND e.is_active = true AND e.deleted_at IS NULL LIMIT 1`,
-    [pin]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'No ERS configuration for PIN' });
-
-  // Also return current active count so Lua can decide routing
-  const { rows: cnt } = await query(
-    `SELECT COUNT(*)::INT AS active_count FROM ers_incidents
-     WHERE ers_configuration_id = $1 AND status = 'ACTIVE'`,
-    [rows[0].id]
-  );
-
-  res.json({ ...rows[0], active_conferences: cnt[0].active_count });
-});
-
-// ── ERS Incidents ─────────────────────────────────────────────
-
-// GET /api/v1/ers/incidents
 export const listIncidents = asyncHandler(async (req, res) => {
   const status = req.query.status || null;
   const { rows } = await query(
@@ -239,13 +355,6 @@ export const listIncidents = asyncHandler(async (req, res) => {
   res.json(rows);
 });
 
-// POST /api/v1/ers/incidents  — Lua calls this when emergency call arrives
-//
-// B7 FIX — Race condition: two simultaneous callers could both read
-// active_count < max and both insert as ACTIVE.
-// Fix: use SELECT … FOR UPDATE inside a transaction to serialise the
-// read-then-insert. The lock on the ers_configurations row means a
-// second concurrent call blocks at the SELECT until the first COMMIT.
 export const createIncident = asyncHandler(async (req, res) => {
   const {
     ers_configuration_id,
@@ -257,7 +366,6 @@ export const createIncident = asyncHandler(async (req, res) => {
   } = req.body;
 
   const incident = await withTransaction(async (tq) => {
-    // Lock the config row for the duration of this transaction
     const { rows: cfgRows } = await tq(
       `SELECT id, max_concurrent_conferences, queue_enabled
        FROM ers_configurations
@@ -266,10 +374,8 @@ export const createIncident = asyncHandler(async (req, res) => {
       [ers_configuration_id]
     );
     if (!cfgRows[0]) throw Object.assign(new Error('ERS configuration not found'), { status: 404 });
-
     const cfg = cfgRows[0];
 
-    // Count active incidents while holding the row lock — no TOCTOU gap
     const { rows: cntRows } = await tq(
       `SELECT COUNT(*)::INT AS active FROM ers_incidents
        WHERE ers_configuration_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
@@ -300,7 +406,6 @@ export const createIncident = asyncHandler(async (req, res) => {
          FROM ers_queues WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,
         [ers_configuration_id]
       );
-      // caller_number, queued_reason added to ers_queues by migration 002 B10
       await tq(
         `INSERT INTO ers_queues
            (ers_configuration_id, incident_id, position, status, caller_number, queued_reason)
@@ -315,56 +420,40 @@ export const createIncident = asyncHandler(async (req, res) => {
   res.status(201).json(incident);
 });
 
-// POST /api/v1/ers/incidents/:uuid/complete  — Lua calls after caller leaves
-//
-// B8 FIX — Non-atomic completion: the old code ran three separate queries
-// (UPDATE incident, SELECT queue, UPDATE queue) without a transaction.
-// If the process crashed between queries, the queue entry would be stuck as
-// QUEUED forever while the incident was COMPLETED. Now all three are atomic.
 export const completeIncident = asyncHandler(async (req, res) => {
-  // Accept both integer id and UUID (Lua uses UUID)
   const idParam = req.params.id;
   const isUuid  = /^[0-9a-f-]{36}$/i.test(idParam);
-  const whereClause = isUuid
-    ? 'incident_uuid = $1'
-    : 'id = $1';
-
+  const where   = isUuid ? 'incident_uuid = $1' : 'id = $1';
   const { recording_file } = req.body || {};
 
   const result = await withTransaction(async (tq) => {
     const { rows } = await tq(
       `UPDATE ers_incidents
-       SET status       = 'COMPLETED',
-           ended_at     = now(),
+       SET status = 'COMPLETED', ended_at = now(),
            recording_path = COALESCE($2, recording_path)
-       WHERE ${whereClause} AND deleted_at IS NULL
+       WHERE ${where} AND deleted_at IS NULL
        RETURNING *`,
       [idParam, recording_file || null]
     );
     if (!rows[0]) throw Object.assign(new Error('Incident not found'), { status: 404 });
     const incident = rows[0];
 
-    // Auto-dequeue — both queries in the same transaction
     const { rows: nextQ } = await tq(
       `SELECT q.id AS queue_id, q.incident_id FROM ers_queues q
        WHERE q.ers_configuration_id = $1 AND q.status = 'QUEUED'
        ORDER BY q.position ASC LIMIT 1
-       FOR UPDATE`,        // -- lock the queue row too     
+       FOR UPDATE`,
       [incident.ers_configuration_id]
     );
 
     let dequeued = null;
     if (nextQ[0]) {
       await tq(
-        `UPDATE ers_incidents
-         SET status = 'ACTIVE', dequeued_at = now()
-         WHERE id = $1`,
+        `UPDATE ers_incidents SET status = 'ACTIVE', dequeued_at = now() WHERE id = $1`,
         [nextQ[0].incident_id]
       );
-      // dequeued_at added to ers_queues by migration 002 B10
       const { rows: dq } = await tq(
-        `UPDATE ers_queues
-         SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()
+        `UPDATE ers_queues SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()
          WHERE id = $1 RETURNING *`,
         [nextQ[0].queue_id]
       );
@@ -377,19 +466,16 @@ export const completeIncident = asyncHandler(async (req, res) => {
   res.json({ ...result.incident, dequeued: result.dequeued });
 });
 
-// POST /api/v1/ers/incidents/:id/responders  — add responders to incident
 export const addResponder = asyncHandler(async (req, res) => {
   const { emergency_contact_id, status = 'INVITED' } = req.body;
   const { rows } = await query(
     `INSERT INTO ers_incident_responders (ers_incident_id, emergency_contact_id, status)
-     VALUES ($1,$2,$3)
-     ON CONFLICT DO NOTHING RETURNING *`,
+     VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *`,
     [req.params.id, emergency_contact_id, status]
   );
   res.status(201).json(rows[0] || { ok: true });
 });
 
-// GET /api/v1/ers/incidents/:id/responders
 export const listResponders = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT r.*, c.first_name, c.last_name, c.mobile_number, c.role
@@ -402,7 +488,6 @@ export const listResponders = asyncHandler(async (req, res) => {
   res.json(rows);
 });
 
-// GET /api/v1/ers/queue — live queue view for dashboard
 export const getQueue = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT q.*, e.name AS ers_name, i.emergency_call_number, i.started_at
