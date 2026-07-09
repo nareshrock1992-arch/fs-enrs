@@ -147,15 +147,48 @@ ALTER TABLE ivr_flow_versions
   ADD COLUMN IF NOT EXISTS published_at   TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS change_notes   TEXT;
 
--- Backfill new columns from old column values where they exist
-UPDATE ivr_flow_versions
-   SET version_uuid   = COALESCE(version_uuid,   gen_random_uuid()),
-       version_number = COALESCE(version_number, version, 1),
-       graph          = COALESCE(graph,           flow_json, '{}'::jsonb),
-       published_by   = COALESCE(published_by,   created_by),
-       published_at   = COALESCE(published_at,   created_at)
- WHERE version_number IS NULL
-    OR version_uuid   IS NULL;
+-- Backfill new columns from old column values — ONLY where those old
+-- columns (version, flow_json, created_by, created_at) actually exist.
+-- schema.sql / migration 004 never create them, so referencing them
+-- unconditionally breaks every fresh install (42703).
+DO $$
+DECLARE
+  has_version    BOOLEAN;
+  has_flow_json  BOOLEAN;
+  has_created_by BOOLEAN;
+  has_created_at BOOLEAN;
+BEGIN
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='ivr_flow_versions' AND column_name='version')
+    INTO has_version;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='ivr_flow_versions' AND column_name='flow_json')
+    INTO has_flow_json;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='ivr_flow_versions' AND column_name='created_by')
+    INTO has_created_by;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='ivr_flow_versions' AND column_name='created_at')
+    INTO has_created_at;
+
+  EXECUTE format(
+    'UPDATE ivr_flow_versions
+        SET version_uuid   = COALESCE(version_uuid, gen_random_uuid()),
+            version_number = COALESCE(version_number, %s, 1),
+            graph          = COALESCE(graph, %s, ''{}''::jsonb),
+            published_by   = COALESCE(published_by, %s),
+            published_at   = COALESCE(published_at, %s)
+      WHERE version_number IS NULL
+         OR version_uuid   IS NULL',
+    CASE WHEN has_version    THEN 'version'    ELSE 'NULL' END,
+    CASE WHEN has_flow_json  THEN 'flow_json'  ELSE 'NULL' END,
+    CASE WHEN has_created_by THEN 'created_by' ELSE 'NULL' END,
+    CASE WHEN has_created_at THEN 'created_at' ELSE 'NULL' END
+  );
+END $$;
+
+-- Final fallback for any rows still missing published_at (fresh-install path)
+UPDATE ivr_flow_versions SET published_at = now() WHERE published_at IS NULL;
 
 DO $$
 BEGIN

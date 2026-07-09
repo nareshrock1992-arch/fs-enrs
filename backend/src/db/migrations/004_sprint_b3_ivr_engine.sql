@@ -189,12 +189,26 @@ BEGIN
   END IF;
 END $$;
 
--- Backfill published_at from created_at.
--- 'created_at' exists on every schema variant, so no existence check needed.
-UPDATE ivr_flow_versions
-SET    published_at = created_at
-WHERE  created_at   IS NOT NULL
-  AND  published_at IS NULL;
+-- Backfill published_at from created_at — ONLY on databases where the old
+-- pre-Sprint-B3 table had that column. The CREATE TABLE above (used on
+-- fresh/schema.sql databases) never creates created_at on this table, so
+-- referencing it unconditionally breaks fresh installs (42703).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'ivr_flow_versions'
+      AND column_name  = 'created_at'
+  ) THEN
+    EXECUTE '
+      UPDATE ivr_flow_versions
+      SET    published_at = created_at
+      WHERE  created_at   IS NOT NULL
+        AND  published_at IS NULL
+    ';
+  END IF;
+END $$;
 
 -- Final fallback: any remaining NULLs get now()
 UPDATE ivr_flow_versions SET published_at = now() WHERE published_at IS NULL;
