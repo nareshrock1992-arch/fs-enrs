@@ -6,9 +6,9 @@
  * Behaviour
  * ─────────
  * Fresh database (tenants table does not exist):
- *   1. Apply schema.sql  — creates all tables in their final state.
- *   2. Mark every numbered migration file as already applied so they
- *      never run again (schema.sql already covers them).
+ *   1. Apply schema.sql  — creates the base tables (001 equivalent).
+ *   2. Mark 001 as applied; run every other migration normally (they are
+ *      idempotent, so this also heals any schema.sql drift).
  *
  * Existing database (tenants table exists):
  *   1. Skip schema.sql entirely — never replay DDL against existing tables.
@@ -136,16 +136,13 @@ async function migrate() {
         // Fresh install: schema.sql creates the base tables.
         await applySchema(client, join(__dir, 'schema.sql'));
 
-        // schema.sql covers the content of migrations 001–005 only.
-        // Mark those as applied so they never run again.
-        // Migrations 006+ must still run — they add tables and columns
-        // that are NOT in schema.sql (campaign engine, tier groups, etc.).
+        // schema.sql covers the base tables of migration 001 only.
+        // Migrations 002+ MUST still run even on fresh installs — schema.sql
+        // has drifted from them before (e.g. organizations.address/phone/email
+        // from 002 were missing), and they are all idempotent, so re-running
+        // them on a schema.sql database is safe and self-healing.
         const coveredBySchema = new Set([
           '001_initial_schema.sql',
-          '002_phase6_bugfixes.sql',
-          '003_sprint_b1_internal_api.sql',
-          '004_sprint_b3_ivr_engine.sql',
-          '005_stabilization.sql',
         ]);
         for (const f of migrationFiles) {
           if (coveredBySchema.has(f)) {
