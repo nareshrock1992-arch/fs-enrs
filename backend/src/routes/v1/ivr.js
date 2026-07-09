@@ -9,6 +9,15 @@ const router = Router();
 
 router.use(requireAuth);
 
+// Reject non-UUID values before they reach the DB (avoids an invalid-input-syntax 500).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+router.param('uuid', (req, res, next, uuid) => {
+  if (!UUID_RE.test(uuid)) {
+    return res.status(400).json({ error: `Invalid flow UUID: "${uuid}"` });
+  }
+  next();
+});
+
 // ── Templates (static segment — must be before /:uuid) ────────────────────────
 router.get('/templates',                          asyncHandler(tplCtrl.listTemplates));
 router.post('/templates/:id/create',

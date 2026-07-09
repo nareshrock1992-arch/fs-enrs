@@ -149,7 +149,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `INSERT INTO ens_configurations (
-       organization_id, name, description,
+       organization_id, tenant_id, name, description,
        blast_clid, reply_clid, pin,
        max_concurrent, max_concurrent_calls, calls_per_second,
        batch_size, retry_count, retry_delay_seconds, retry_interval_sec,
@@ -159,11 +159,11 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        no_pending_msg, expiry_announcement,
        is_active
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-       $17,$18,$19,$20,$21,$22,$23,$24,$25
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+       $18,$19,$20,$21,$22,$23,$24,$25,$26
      ) RETURNING *`,
     [
-      d.organization_id, d.name, d.description,
+      d.organization_id, req.user.tenantId, d.name, d.description,
       d.blast_clid, d.reply_clid, d.pin,
       d.max_concurrent, d.max_concurrent_calls ?? d.max_concurrent,
       d.calls_per_second,
@@ -218,6 +218,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        no_pending_msg            = COALESCE($23, no_pending_msg),
        expiry_announcement       = COALESCE($24, expiry_announcement),
        is_active                 = COALESCE($25, is_active),
+       tenant_id                 = COALESCE(tenant_id, $26),
        updated_at                = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
     [
@@ -234,6 +235,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.sip_gateway, d.sip_caller_id,
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
+      req.user.tenantId,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });

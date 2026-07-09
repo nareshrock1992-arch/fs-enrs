@@ -186,7 +186,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `INSERT INTO ers_configurations (
-       organization_id, name, description,
+       organization_id, tenant_id, name, description,
        primary_bridge_number, secondary_bridge_number, conference_profile,
        max_concurrent_conferences, max_conference_duration_min,
        queue_enabled, queue_announcement_audio, queue_music_path,
@@ -198,10 +198,10 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        secondary_retry_count, secondary_retry_interval_sec,
        is_active
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
      ) RETURNING *`,
     [
-      d.organization_id, d.name, d.description,
+      d.organization_id, req.user.tenantId, d.name, d.description,
       d.primary_bridge_number, d.secondary_bridge_number, d.conference_profile,
       d.max_concurrent_conferences, d.max_conference_duration_min,
       d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
@@ -259,6 +259,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        secondary_retry_count        = COALESCE($24, secondary_retry_count),
        secondary_retry_interval_sec = COALESCE($25, secondary_retry_interval_sec),
        is_active                    = COALESCE($26, is_active),
+       tenant_id                    = COALESCE(tenant_id, $27),
        updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
     [
@@ -274,6 +275,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.primary_retry_count, d.primary_retry_interval_sec,
       d.secondary_retry_count, d.secondary_retry_interval_sec,
       d.is_active,
+      req.user.tenantId,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
