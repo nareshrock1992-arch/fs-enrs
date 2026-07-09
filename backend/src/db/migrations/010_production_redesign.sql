@@ -101,8 +101,9 @@ ALTER TABLE ivr_flow_versions
   ALTER COLUMN published_at SET DEFAULT now();
 
 -- Backfill any existing NULLs before enforcing NOT NULL
+-- (ivr_flow_versions has no created_at column — now() is the only source)
 UPDATE ivr_flow_versions
-SET    published_at = COALESCE(created_at, now())
+SET    published_at = now()
 WHERE  published_at IS NULL;
 
 ALTER TABLE ivr_flow_versions
