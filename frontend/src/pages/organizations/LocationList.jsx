@@ -94,6 +94,8 @@ export default function LocationList() {
               <input className="input" value={form.name} onChange={e => f('name', e.target.value)} /></div>
             <div><label className="label">Address</label>
               <input className="input" value={form.address} onChange={e => f('address', e.target.value)} /></div>
+            <div><label className="label">Floor Plan URL</label>
+              <input className="input" value={form.floor_plan_url} onChange={e => f('floor_plan_url', e.target.value)} placeholder="https://…" /></div>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
               <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>

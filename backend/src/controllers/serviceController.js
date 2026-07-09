@@ -32,8 +32,9 @@ const ServicePatchSchema = ServiceSchema.partial();
 // ── List all services ─────────────────────────────────────────────────────────
 
 export const listServices = asyncHandler(async (req, res) => {
-  const orgId = req.query.organization_id || null;
-  const type  = req.query.type || null;
+  const orgId    = req.query.organization_id || null;
+  const type     = req.query.type || null;
+  const tenantId = req.user.tenantId;
 
   const { rows } = await query(
     `SELECT
@@ -81,10 +82,11 @@ export const listServices = asyncHandler(async (req, res) => {
      LEFT JOIN ens_configurations ec  ON ec.id  = en.ens_configuration_id AND ec.deleted_at IS NULL
      LEFT JOIN ers_configurations ers ON ers.id = en.ers_configuration_id AND ers.deleted_at IS NULL
      WHERE en.deleted_at IS NULL
+       AND en.tenant_id = $3
        AND ($1::int  IS NULL OR en.organization_id = $1)
        AND ($2::text IS NULL OR en.type = $2)
      ORDER BY en.sort_order ASC, en.type, en.number`,
-    [orgId, type]
+    [orgId, type, tenantId]
   );
 
   res.json({ services: rows, total: rows.length });
@@ -158,6 +160,11 @@ export const updateServiceMeta = asyncHandler(async (req, res) => {
        number                = COALESCE($2,  number),
        type                  = COALESCE($3,  type),
        organization_id       = COALESCE($4,  organization_id),
+       tenant_id             = CASE
+         WHEN $4::int IS NOT NULL THEN
+           (SELECT o.tenant_id FROM organizations o WHERE o.id = $4 AND o.deleted_at IS NULL)
+         ELSE tenant_id
+       END,
        ens_configuration_id  = COALESCE($5,  ens_configuration_id),
        ers_configuration_id  = COALESCE($6,  ers_configuration_id),
        ivr_flow_id           = COALESCE($7,  ivr_flow_id),
