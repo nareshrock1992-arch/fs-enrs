@@ -111,10 +111,16 @@ export async function validateGraph(graph, tenantId) {
       const node    = nodes[cur];
       const allRefs = node ? refsOf(node) : [];
 
-      // Check ALL refs for back-edges (cycle detection)
-      for (const r of allRefs) {
-        if (inStack.has(r)) {
-          errors.push(`Cycle detected: ${cur} → ${r}`);
+      // Only a DEAD-END cycle is an error: every outgoing ref loops back into
+      // the current DFS stack with no branch that goes anywhere new. A node
+      // with at least one forward-going ref (e.g. a menu's digit branches)
+      // alongside a self/back ref (its retry/invalid branch) has an escape
+      // route and is a normal, valid IVR pattern — not flagged.
+      const backRefs    = allRefs.filter(r => inStack.has(r));
+      const forwardRefs = allRefs.filter(r => !inStack.has(r));
+      if (backRefs.length > 0 && forwardRefs.length === 0) {
+        for (const r of backRefs) {
+          errors.push(`Cycle detected: ${cur} → ${r} (no branch escapes this loop)`);
         }
       }
 
