@@ -233,7 +233,7 @@ function TriggerModal({ service, onClose, onSuccess }) {
 
 // ── Create / Edit Service Modal ───────────────────────────────────────────────
 
-function ServiceModal({ editRow, orgs, ensList, ersList, onClose, onSaved }) {
+function ServiceModal({ editRow, orgs, ensList, ersList, flowList, onClose, onSaved }) {
   const [form, setForm] = useState(editRow
     ? {
         number:               editRow.trigger_number ?? '',
@@ -278,6 +278,7 @@ function ServiceModal({ editRow, orgs, ensList, ersList, onClose, onSaved }) {
 
   const showEns = form.type === 'ENS';
   const showErs = form.type === 'ERS';
+  const showIvr = form.type === 'IVR';
 
   return (
     <Modal title={editRow?.id ? 'Edit Service Number' : 'Register Service Number'} size="lg" onClose={onClose}>
@@ -335,6 +336,16 @@ function ServiceModal({ editRow, orgs, ensList, ersList, onClose, onSaved }) {
           </div>
         )}
 
+        {showIvr && (
+          <div>
+            <label className="label">IVR Flow</label>
+            <select className="input" value={form.ivr_flow_id} onChange={e => f('ivr_flow_id', e.target.value)}>
+              <option value="">None</option>
+              {(flowList || []).map(fl => <option key={fl.flow_uuid} value={fl.id}>{fl.name}</option>)}
+            </select>
+          </div>
+        )}
+
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="label">Icon</label>
@@ -378,6 +389,7 @@ export default function ServiceRegistry() {
   const [orgs,     setOrgs]       = useState([]);
   const [ensList,  setEnsList]    = useState([]);
   const [ersList,  setErsList]    = useState([]);
+  const [flowList, setFlowList]   = useState([]);
   const [loading,  setLoading]    = useState(true);
   const [error,    setError]      = useState('');
   const [filter,   setFilter]     = useState('ALL');
@@ -388,16 +400,18 @@ export default function ServiceRegistry() {
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const [svc, o, ens, ers] = await Promise.all([
+      const [svc, o, ens, ers, ivr] = await Promise.all([
         api.services.list(),
         api.orgs.list(),
         api.ens.list(),
         api.ers.list(),
+        api.ivr.list({ limit: 1000 }),
       ]);
       setServices(svc.services || []);
       setOrgs(o.organizations || []);
       setEnsList(ens.configurations || []);
       setErsList(ers.configurations || []);
+      setFlowList(ivr.flows || []);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }, []);
 
@@ -517,6 +531,7 @@ export default function ServiceRegistry() {
           orgs={orgs}
           ensList={ensList}
           ersList={ersList}
+          flowList={flowList}
           onClose={() => setEditRow(null)}
           onSaved={() => { setEditRow(null); load(); }}
         />

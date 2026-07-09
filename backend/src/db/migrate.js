@@ -133,18 +133,28 @@ async function migrate() {
       const fresh = await isFreshDatabase(client);
 
       if (fresh) {
-        // Fresh install: schema.sql is the canonical full state.
+        // Fresh install: schema.sql creates the base tables.
         await applySchema(client, join(__dir, 'schema.sql'));
 
-        // Mark all existing numbered migrations as already applied —
-        // schema.sql already includes everything they add.
+        // schema.sql covers the content of migrations 001–005 only.
+        // Mark those as applied so they never run again.
+        // Migrations 006+ must still run — they add tables and columns
+        // that are NOT in schema.sql (campaign engine, tier groups, etc.).
+        const coveredBySchema = new Set([
+          '001_initial_schema.sql',
+          '002_phase6_bugfixes.sql',
+          '003_sprint_b1_internal_api.sql',
+          '004_sprint_b3_ivr_engine.sql',
+          '005_stabilization.sql',
+        ]);
         for (const f of migrationFiles) {
-          await recordApplied(client, f);
-          console.log(`[migrate]  ✓ Skipped (covered by schema.sql): ${f}`);
+          if (coveredBySchema.has(f)) {
+            await recordApplied(client, f);
+            console.log(`[migrate]  ✓ Skipped (covered by schema.sql): ${f}`);
+          }
         }
 
-        console.log('[migrate] Fresh install complete.');
-        return;
+        // Fall through to Step 4 so migrations 006+ are applied normally.
 
       } else {
         // Existing database: record schema.sql as "done" without running it.

@@ -47,7 +47,7 @@ export default function BindNumbersModal({ flowUuid, flowName, boundNumbers, onC
         <div className="text-center py-6">
           <Phone size={24} className="mx-auto text-text-muted mb-2" />
           <p className="text-xs text-text-muted">No emergency numbers configured</p>
-          <p className="text-[10px] text-text-muted mt-1">Add numbers in Settings → Emergency Numbers</p>
+          <p className="text-[10px] text-text-muted mt-1">Add numbers in Emergency Config → Service Registry</p>
         </div>
       )}
 

@@ -62,7 +62,7 @@ export default function BuilderToolbar({
   return (
     <>
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-surface-border
-                      bg-surface-panel shrink-0 min-w-0">
+                      bg-surface-panel shrink-0 min-w-0 overflow-x-auto">
         {/* Flow name */}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-text-primary truncate">

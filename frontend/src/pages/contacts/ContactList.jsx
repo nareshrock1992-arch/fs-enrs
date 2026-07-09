@@ -9,6 +9,7 @@ const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_numbe
 export default function ContactList() {
   const [rows,     setRows]     = useState([]);
   const [orgs,     setOrgs]     = useState([]);
+  const [depts,    setDepts]    = useState([]);
   const [orgFilter,setOrgFilter]= useState('');
   const [modal,    setModal]    = useState(null);
   const [form,     setForm]     = useState(EMPTY);
@@ -22,12 +23,14 @@ export default function ContactList() {
 
   async function load() {
     try {
-      const [c, o] = await Promise.all([
+      const [c, o, d] = await Promise.all([
         api.contacts.list(orgFilter ? { organization_id: orgFilter } : {}),
         api.orgs.list(),
+        api.departments.list(''),
       ]);
       setRows(c.contacts || []);
       setOrgs(o.organizations || []);
+      setDepts(d.departments || []);
     } catch {}
   }
   useEffect(() => { load(); }, [orgFilter]);
@@ -152,6 +155,15 @@ export default function ContactList() {
                 <input className="input" type="email" value={form.email} onChange={e => f('email', e.target.value)} /></div>
               <div><label className="label">Role</label>
                 <input className="input" value={form.role} onChange={e => f('role', e.target.value)} placeholder="e.g. Security, Manager" /></div>
+            </div>
+            <div>
+              <label className="label">Department</label>
+              <select className="input" value={form.department_id} onChange={e => f('department_id', e.target.value)}>
+                <option value="">None</option>
+                {depts
+                  .filter(d => !form.organization_id || d.organization_id === Number(form.organization_id))
+                  .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
             </div>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
