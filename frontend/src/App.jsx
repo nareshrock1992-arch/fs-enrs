@@ -21,6 +21,8 @@ import IvrBuilder    from './pages/ivr/IvrBuilder.jsx';
 import ReportNotifications from './pages/reports/ReportNotifications.jsx';
 import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
+import ReportErsIncidents  from './pages/reports/ReportErsIncidents.jsx';
+import ReportEnsBroadcasts from './pages/reports/ReportEnsBroadcasts.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
@@ -85,6 +87,8 @@ export default function App() {
         <Route path="reports/notifications" element={<ReportNotifications />} />
         <Route path="reports/incidents"     element={<ReportIncidents />} />
         <Route path="reports/contact-usage" element={<ReportContactUsage />} />
+        <Route path="reports/ers-incidents"  element={<ReportErsIncidents />} />
+        <Route path="reports/ens-broadcasts" element={<ReportEnsBroadcasts />} />
 
         {/* Admin-only */}
         <Route path="users"    element={<RequireAdmin><UserList /></RequireAdmin>} />

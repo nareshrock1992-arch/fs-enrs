@@ -45,6 +45,8 @@ const NAV = [
       { label: 'Notification Report', to: '/reports/notifications' },
       { label: 'Incident Report',     to: '/reports/incidents' },
       { label: 'Contact Usage',       to: '/reports/contact-usage' },
+      { label: 'ERS Incident Detail', to: '/reports/ers-incidents' },
+      { label: 'ENS Broadcast Detail', to: '/reports/ens-broadcasts' },
     ]
   },
 

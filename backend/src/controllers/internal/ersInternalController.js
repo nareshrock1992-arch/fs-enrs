@@ -3,6 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
+import { getConferenceMemberCount } from '../../services/eslService.js';
+import { startRingAll, lookupCallerIdentity } from '../../services/ersRingService.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -685,5 +687,399 @@ export const ersIncidentStatus = asyncHandler(async (req, res) => {
     conference_room: incident.conference_room,
     group_type:      incident.group_type,
     dequeued_at:     incident.dequeued_at,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 5 — 3-scenario emergency flow endpoints
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Live occupancy for one tier: the newest non-completed incident's room's
+// LIVE member count. Phase 1 item 13 distinction, enforced here at the
+// source: an incident row marked COMPLETED only means "that leg's
+// completion call ran" — the room can still have live members, and a
+// room can be empty while its row still says ACTIVE (crash). The room's
+// member count via ESL is the only truth about occupancy.
+async function tierLiveStatus(configId, tier) {
+  const { rows: [incident] } = await query(
+    `SELECT id, incident_uuid, conference_room, status
+     FROM ers_incidents
+     WHERE ers_configuration_id = $1 AND group_type = $2
+       AND deleted_at IS NULL AND conference_room IS NOT NULL
+       AND started_at > now() - interval '24 hours'
+     ORDER BY started_at DESC LIMIT 1`,
+    [configId, tier]
+  );
+
+  if (!incident) return { tier, occupied: false, live_members: 0, incident_uuid: null, conference_room: null };
+
+  const liveMembers = await getConferenceMemberCount(incident.conference_room);
+  return {
+    tier,
+    occupied:        liveMembers > 0,
+    live_members:    liveMembers,
+    incident_uuid:   incident.incident_uuid,
+    conference_room: incident.conference_room,
+    incident_status: incident.status,
+  };
+}
+
+// GET /api/v1/internal/ers/tier-status?configuration_id=X
+export const ersTierStatus = asyncHandler(async (req, res) => {
+  const configId = parseInt(req.query.configuration_id, 10);
+  if (!configId) return res.status(400).json({ success: false, error: 'configuration_id required' });
+
+  const [primary, secondary] = await Promise.all([
+    tierLiveStatus(configId, 'primary'),
+    tierLiveStatus(configId, 'secondary'),
+  ]);
+
+  res.json({ success: true, primary, secondary });
+});
+
+// POST /api/v1/internal/ers/ring-all
+// Called by the ers_ring_all Lua node. Behavior:
+//   - If this tier already has a LIVE-occupied room (member count > 0),
+//     do NOT re-ring everyone — return the existing room so the caller
+//     bridges straight in (the rejoin path: a dropped responder or the
+//     initiator redialing joins the SAME still-active conference).
+//   - Otherwise create a fresh incident + room and start the background
+//     ring-all loop (simultaneous bgapi originates, continuous re-ring,
+//     recording on first join, caller identity passthrough).
+// Exported for scripts/verify-api-contracts.js (same as IncidentCreateSchema).
+export const RingAllSchema = z.object({
+  configuration_id: z.number().int().positive(),
+  tier:             z.enum(['primary', 'secondary']),
+  caller_number:    z.string().min(7).max(32),
+  caller_name:      z.string().max(128).optional().nullable(),
+});
+
+export const ersRingAll = asyncHandler(async (req, res) => {
+  const d = RingAllSchema.parse(req.body);
+
+  const { rows: [cfg] } = await query(
+    `SELECT id, tenant_id, ring_timeout_seconds FROM ers_configurations
+     WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
+    [d.configuration_id]
+  );
+  if (!cfg) return res.status(404).json({ success: false, error: 'ERS configuration not found' });
+
+  // Rejoin path — live occupancy check, never status alone.
+  const live = await tierLiveStatus(d.configuration_id, d.tier);
+  if (live.occupied) {
+    const identity = await lookupCallerIdentity(d.caller_number);
+    await query(
+      `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
+       SELECT i.id, NULL, $2, 'responder', now()
+       FROM ers_incidents i WHERE i.incident_uuid = $1`,
+      [live.incident_uuid, d.caller_number]
+    ).catch(() => {});
+    return res.json({
+      success:         true,
+      rejoin:          true,
+      incident_uuid:   live.incident_uuid,
+      conference_room: live.conference_room,
+      caller_name:     identity.name,
+    });
+  }
+
+  // Fresh incident
+  const incidentUuid = uuidv4();
+  const room = `ers_${d.configuration_id}_${d.tier}_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_]/g, '');
+
+  const { rows: [tierGroup] } = await query(
+    `SELECT id FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2 LIMIT 1`,
+    [d.configuration_id, d.tier]
+  );
+
+  const { rows: [incident] } = await query(
+    `INSERT INTO ers_incidents
+       (incident_uuid, ers_configuration_id, tier_group_id, status,
+        caller_number, caller_name, conference_room, group_type, started_at)
+     VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $6, $7, now())
+     RETURNING id, incident_uuid`,
+    [incidentUuid, d.configuration_id, tierGroup?.id ?? null,
+     d.caller_number, d.caller_name ?? null, room, d.tier]
+  );
+
+  await query(
+    `INSERT INTO ers_incident_participants (incident_id, raw_number, role, joined_at)
+     VALUES ($1, $2, 'initiator', now())`,
+    [incident.id, d.caller_number]
+  ).catch(() => {});
+
+  startRingAll({
+    incidentId:         incident.id,
+    incidentUuid:       incident.incident_uuid,
+    configId:           d.configuration_id,
+    tier:               d.tier,
+    room,
+    tenantId:           cfg.tenant_id,
+    callerNumber:       d.caller_number,
+    ringTimeoutSeconds: cfg.ring_timeout_seconds,
+  });
+
+  emitInternal('enrs::ers_incident_created', {
+    incident_uuid:    incident.incident_uuid,
+    incident_id:      incident.id,
+    configuration_id: d.configuration_id,
+    caller_number:    d.caller_number,
+    conference_room:  room,
+    group_type:       d.tier,
+    status:           'ACTIVE',
+  });
+
+  res.status(201).json({
+    success:         true,
+    rejoin:          false,
+    incident_uuid:   incident.incident_uuid,
+    conference_room: room,
+  });
+});
+
+// GET /api/v1/internal/ers/playback/authorize?configuration_id=X&caller=N
+// The UUUU authorized-playback line (ens_playback_gate node). Message is
+// valid for 24h from its recording START (per spec). Every attempt —
+// allowed or rejected — is logged to audit_logs for the report.
+export const ersPlaybackAuthorize = asyncHandler(async (req, res) => {
+  const configId = parseInt(req.query.configuration_id, 10);
+  const caller   = String(req.query.caller || '').trim();
+  if (!configId || !caller) {
+    return res.status(400).json({ success: false, error: 'configuration_id and caller required' });
+  }
+
+  async function logAttempt(outcome, detail) {
+    await query(
+      `INSERT INTO audit_logs (action, entity_type, details)
+       VALUES ('ers_playback_attempt', 'ers_playback_line', $1)`,
+      [JSON.stringify({ configuration_id: configId, caller, outcome, detail })]
+    ).catch(() => {});
+  }
+
+  const { rows: [line] } = await query(
+    `SELECT * FROM ers_playback_lines
+     WHERE ers_configuration_id = $1 AND is_active = true AND deleted_at IS NULL
+     LIMIT 1`,
+    [configId]
+  );
+  if (!line) {
+    await logAttempt('rejected', 'no playback line configured');
+    return res.json({ authorized: false, reason: 'not_configured' });
+  }
+
+  const callerLast9 = caller.replace(/\D/g, '').slice(-9);
+  const allowed = (line.authorized_callers || []).some(n =>
+    String(n).replace(/\D/g, '').slice(-9) === callerLast9
+  );
+  if (!allowed) {
+    await logAttempt('rejected', 'caller not in authorized list');
+    return res.json({ authorized: false, reason: 'not_authorized' });
+  }
+
+  // Message source: the explicitly-set line recording if fresh, otherwise
+  // the newest ERS incident recording for this config within the window.
+  const WINDOW = "interval '24 hours'";
+  let recording = null;
+  if (line.message_recording_path && line.message_started_at) {
+    const { rows: [fresh] } = await query(
+      `SELECT (message_started_at > now() - ${WINDOW}) AS fresh
+       FROM ers_playback_lines WHERE id = $1`,
+      [line.id]
+    );
+    if (fresh?.fresh) recording = line.message_recording_path;
+  }
+  if (!recording) {
+    const { rows: [inc] } = await query(
+      `SELECT recording_path FROM ers_incidents
+       WHERE ers_configuration_id = $1 AND recording_path IS NOT NULL
+         AND started_at > now() - ${WINDOW} AND deleted_at IS NULL
+       ORDER BY started_at DESC LIMIT 1`,
+      [configId]
+    );
+    recording = inc?.recording_path || null;
+  }
+
+  if (!recording) {
+    await logAttempt('no_message', 'authorized but no recording within 24h window');
+    return res.json({ authorized: true, reason: 'no_active_message', recording_file: null });
+  }
+
+  await logAttempt('played', recording);
+  res.json({ authorized: true, recording_file: recording });
+});
+
+// POST /api/v1/internal/ers/overflow/enqueue
+// Caller C's path: both tiers live-occupied. Creates a QUEUED incident +
+// ers_queues row (position = end of queue) and returns queue_id for the
+// Lua poll loop.
+// Exported for scripts/verify-api-contracts.js (same as IncidentCreateSchema).
+export const OverflowEnqueueSchema = z.object({
+  configuration_id:   z.number().int().positive(),
+  caller_number:      z.string().min(7).max(32),
+  caller_name:        z.string().max(128).optional().nullable(),
+  destination_number: z.string().max(32).optional().nullable(),
+});
+
+export const ersOverflowEnqueue = asyncHandler(async (req, res) => {
+  const d = OverflowEnqueueSchema.parse(req.body);
+
+  const result = await withTransaction(async tq => {
+    const incidentUuid = uuidv4();
+    const { rows: [incident] } = await tq(
+      `INSERT INTO ers_incidents
+         (incident_uuid, ers_configuration_id, status, caller_number, caller_name,
+          group_type, started_at, queued_at)
+       VALUES ($1, $2, 'QUEUED', $3, $4, 'primary', now(), now())
+       RETURNING id, incident_uuid`,
+      [incidentUuid, d.configuration_id, d.caller_number, d.caller_name ?? null]
+    );
+
+    const { rows: [{ next_pos }] } = await tq(
+      `SELECT COALESCE(MAX(position), 0) + 1 AS next_pos
+       FROM ers_queues WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,
+      [d.configuration_id]
+    );
+
+    const { rows: [queueRow] } = await tq(
+      `INSERT INTO ers_queues
+         (ers_configuration_id, incident_id, position, status,
+          caller_number, caller_name, destination_number)
+       VALUES ($1, $2, $3, 'QUEUED', $4, $5, $6)
+       RETURNING id, position`,
+      [d.configuration_id, incident.id, next_pos,
+       d.caller_number, d.caller_name ?? null, d.destination_number ?? null]
+    );
+
+    return { incident, queueRow };
+  });
+
+  emitInternal('enrs::ers_queue_changed', {
+    configuration_id: d.configuration_id,
+    action:           'enqueued',
+    queue_id:         result.queueRow.id,
+    position:         result.queueRow.position,
+  });
+
+  res.status(201).json({
+    success:       true,
+    queue_id:      result.queueRow.id,
+    position:      result.queueRow.position,
+    incident_uuid: result.incident.incident_uuid,
+  });
+});
+
+// GET /api/v1/internal/ers/overflow/poll?queue_id=X
+// Lua polls this every few seconds while playing hold music. When a tier's
+// LIVE member count reaches zero (Level 1 checked first — priority on
+// simultaneous free-up), the head-of-queue caller is promoted: its queue
+// row is dequeued, its incident flips ACTIVE with a fresh room, and the
+// ring-all loop starts for the freed tier. Non-head callers just get
+// their current position back.
+export const ersOverflowPoll = asyncHandler(async (req, res) => {
+  const queueId = parseInt(req.query.queue_id, 10);
+  if (!queueId) return res.status(400).json({ success: false, error: 'queue_id required' });
+
+  const { rows: [entry] } = await query(
+    `SELECT q.*, i.incident_uuid
+     FROM ers_queues q
+     JOIN ers_incidents i ON i.id = q.incident_id
+     WHERE q.id = $1`,
+    [queueId]
+  );
+  if (!entry) return res.status(404).json({ success: false, error: 'Queue entry not found' });
+
+  if (entry.status === 'DEQUEUED') {
+    // Already promoted (possibly by a competing poll) — hand back the room.
+    const { rows: [inc] } = await query(
+      `SELECT incident_uuid, conference_room FROM ers_incidents WHERE id = $1`,
+      [entry.incident_id]
+    );
+    return res.json({ success: true, ready: true, conference_room: inc.conference_room, incident_uuid: inc.incident_uuid });
+  }
+  if (entry.status === 'CANCELLED') {
+    return res.json({ success: true, ready: false, cancelled: true });
+  }
+
+  // Only the head of the queue may be promoted.
+  const { rows: [head] } = await query(
+    `SELECT id FROM ers_queues
+     WHERE ers_configuration_id = $1 AND status = 'QUEUED'
+     ORDER BY position ASC LIMIT 1`,
+    [entry.ers_configuration_id]
+  );
+  if (!head || head.id !== entry.id) {
+    return res.json({ success: true, ready: false, position: entry.position });
+  }
+
+  // Level 1 first (priority on simultaneous free-up), then Level 2 —
+  // judged by LIVE member count, never incident status.
+  const [primary, secondary] = await Promise.all([
+    tierLiveStatus(entry.ers_configuration_id, 'primary'),
+    tierLiveStatus(entry.ers_configuration_id, 'secondary'),
+  ]);
+  const freedTier = !primary.occupied ? 'primary' : (!secondary.occupied ? 'secondary' : null);
+
+  if (!freedTier) {
+    return res.json({ success: true, ready: false, position: entry.position });
+  }
+
+  // Promote — transactional, FOR UPDATE guard against a concurrent poll
+  // promoting the same entry twice.
+  const { rows: [cfg] } = await query(
+    `SELECT tenant_id, ring_timeout_seconds FROM ers_configurations WHERE id = $1`,
+    [entry.ers_configuration_id]
+  );
+
+  const room = `ers_${entry.ers_configuration_id}_${freedTier}_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_]/g, '');
+
+  const promoted = await withTransaction(async tq => {
+    const { rows: [locked] } = await tq(
+      `SELECT id, status FROM ers_queues WHERE id = $1 FOR UPDATE`,
+      [entry.id]
+    );
+    if (!locked || locked.status !== 'QUEUED') return null;
+
+    await tq(
+      `UPDATE ers_queues SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now() WHERE id = $1`,
+      [entry.id]
+    );
+    const { rows: [inc] } = await tq(
+      `UPDATE ers_incidents
+       SET status = 'ACTIVE', group_type = $2, conference_room = $3, dequeued_at = now()
+       WHERE id = $1
+       RETURNING id, incident_uuid`,
+      [entry.incident_id, freedTier, room]
+    );
+    return inc;
+  });
+
+  if (!promoted) {
+    return res.json({ success: true, ready: false, position: entry.position });
+  }
+
+  startRingAll({
+    incidentId:         promoted.id,
+    incidentUuid:       promoted.incident_uuid,
+    configId:           entry.ers_configuration_id,
+    tier:               freedTier,
+    room,
+    tenantId:           cfg.tenant_id,
+    callerNumber:       entry.caller_number,
+    ringTimeoutSeconds: cfg.ring_timeout_seconds,
+  });
+
+  emitInternal('enrs::ers_queue_changed', {
+    configuration_id: entry.ers_configuration_id,
+    action:           'promoted',
+    queue_id:         entry.id,
+    tier:             freedTier,
+  });
+
+  res.json({
+    success:         true,
+    ready:           true,
+    tier:            freedTier,
+    conference_room: room,
+    incident_uuid:   promoted.incident_uuid,
   });
 });

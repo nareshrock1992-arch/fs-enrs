@@ -37,6 +37,11 @@ const ErsConfigSchema = z.object({
   retry_ring_count:             intDef(3),
   retry_ring_interval:          intDef(30),
 
+  // Phase 5 — overall ring-all ceiling: give up ringing after N seconds
+  // with nobody answering. null = ring indefinitely (bounded internally
+  // by a 2h runaway-guard in ersRingService.js, never user-facing).
+  ring_timeout_seconds:         z.number().int().min(10).max(7200).optional().nullable(),
+
   // Auth / access
   pin:                          emptyToNull,
   allow_rejoin:                 boolDef(true),
@@ -196,9 +201,9 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        pin, allow_rejoin, cli_authentication,
        primary_retry_count, primary_retry_interval_sec,
        secondary_retry_count, secondary_retry_interval_sec,
-       is_active
+       is_active, ring_timeout_seconds
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -211,7 +216,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.pin, d.allow_rejoin, d.cli_authentication,
       d.primary_retry_count, d.primary_retry_interval_sec,
       d.secondary_retry_count, d.secondary_retry_interval_sec,
-      d.is_active,
+      d.is_active, d.ring_timeout_seconds ?? null,
     ]
   );
   const cfg = rows[0];
@@ -260,6 +265,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        secondary_retry_interval_sec = COALESCE($25, secondary_retry_interval_sec),
        is_active                    = COALESCE($26, is_active),
        tenant_id                    = COALESCE(tenant_id, $27),
+       ring_timeout_seconds         = COALESCE($28, ring_timeout_seconds),
        updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
     [
@@ -276,6 +282,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.secondary_retry_count, d.secondary_retry_interval_sec,
       d.is_active,
       req.user.tenantId,
+      d.ring_timeout_seconds,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
@@ -296,6 +303,93 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
 export const deleteConfiguration = asyncHandler(async (req, res) => {
   await query(`UPDATE ers_configurations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
   res.status(204).end();
+});
+
+// ── Broadcast-users upsert (Phase 5 C3 — external-facing, documented in
+//    docs/API_REFERENCE.md) ─────────────────────────────────────────────────
+//
+// Spec: "user list updated by invoking API." Upserts {name, extension,
+// mobile} rows into emergency_contacts and links them to a responder
+// group (which ENS configs and ERS tiers both reference). Match key is
+// the mobile number (last-9-digit normalized) — the same identity rule
+// the rest of the system uses for callers.
+
+const BroadcastUsersSchema = z.object({
+  organization_id:  z.number().int().positive(),
+  group_name:       z.string().min(1).max(128),
+  users: z.array(z.object({
+    name:      z.string().min(1).max(128),
+    extension: z.string().max(32).optional().nullable(),
+    mobile:    z.string().min(7).max(32),
+  })).min(1).max(500),
+});
+
+export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
+  const d = BroadcastUsersSchema.parse(req.body);
+
+  const summary = await withTransaction(async tq => {
+    // Group: find-or-create by (organization, name)
+    const { rows: [existingGroup] } = await tq(
+      `SELECT id FROM responder_groups
+       WHERE organization_id = $1 AND name = $2 AND deleted_at IS NULL`,
+      [d.organization_id, d.group_name]
+    );
+    let groupId = existingGroup?.id;
+    if (!groupId) {
+      const { rows: [g] } = await tq(
+        `INSERT INTO responder_groups (organization_id, name, is_active)
+         VALUES ($1, $2, true) RETURNING id`,
+        [d.organization_id, d.group_name]
+      );
+      groupId = g.id;
+    }
+
+    let created = 0, updated = 0;
+    for (const user of d.users) {
+      const [firstName, ...rest] = user.name.trim().split(/\s+/);
+      const lastName = rest.join(' ') || '-';
+      const last9 = user.mobile.replace(/\D/g, '').slice(-9);
+
+      const { rows: [existing] } = await tq(
+        `SELECT id FROM emergency_contacts
+         WHERE organization_id = $1 AND deleted_at IS NULL
+           AND RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2`,
+        [d.organization_id, last9]
+      );
+
+      let contactId;
+      if (existing) {
+        const { rows: [c] } = await tq(
+          `UPDATE emergency_contacts
+           SET first_name = $2, last_name = $3, extension_number = COALESCE($4, extension_number),
+               is_active = true, updated_at = now()
+           WHERE id = $1 RETURNING id`,
+          [existing.id, firstName, lastName, user.extension ?? null]
+        );
+        contactId = c.id;
+        updated++;
+      } else {
+        const { rows: [c] } = await tq(
+          `INSERT INTO emergency_contacts
+             (organization_id, first_name, last_name, mobile_number, extension_number, is_active)
+           VALUES ($1, $2, $3, $4, $5, true) RETURNING id`,
+          [d.organization_id, firstName, lastName, user.mobile, user.extension ?? null]
+        );
+        contactId = c.id;
+        created++;
+      }
+
+      await tq(
+        `INSERT INTO responder_group_members (responder_group_id, emergency_contact_id)
+         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [groupId, contactId]
+      );
+    }
+
+    return { group_id: groupId, created, updated };
+  });
+
+  res.json({ success: true, ...summary, total: d.users.length });
 });
 
 // ── Toggle ───────────────────────────────────────────────────────────────────

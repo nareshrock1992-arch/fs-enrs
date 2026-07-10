@@ -26,4 +26,7 @@ router.get('/incidents/:id/responders', adminOrOp, ctrl.listResponders);
 // Queue
 router.get('/queue', adminOrOp, ctrl.getQueue);
 
+// Phase 5 C3 — external-facing user-list upsert (docs/API_REFERENCE.md)
+router.post('/broadcast-users', adminOnly, ctrl.upsertBroadcastUsers);
+
 export default router;

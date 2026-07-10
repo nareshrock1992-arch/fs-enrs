@@ -54,8 +54,10 @@ function handleEvent(evt) {
     if (action === 'add-member') {
       emit('conference.member.joined', { confName, member, callerNum });
       persistEvent('conference.member.joined', { confName, member, callerNum });
+      trackParticipant(confName, callerNum, 'join');
     } else if (action === 'del-member') {
       emit('conference.member.left', { confName, member, callerNum });
+      trackParticipant(confName, callerNum, 'leave');
     } else if (action === 'conference-create') {
       emit('conference.created', { confName });
     } else if (action === 'conference-destroy') {
@@ -129,6 +131,72 @@ async function reconcileOrphanedIncident(confName) {
     }
   } catch (err) {
     console.error('[esl] reconcileOrphanedIncident failed for', confName, err.message);
+  }
+}
+
+// ─── Participant tracking (Phase 5 — ers_incident_participants) ─────
+//
+// One row per person per incident, with join/leave/rejoin timestamps —
+// the detail level the ERS incident report needs ("all participants,
+// join/leave/rejoin") that a single status column can't represent for
+// someone who dropped and came back. Driven by mod_conference's own
+// add-member/del-member events so it's accurate regardless of WHICH path
+// put the leg in the room (ring-all originate, caller's own Lua bridge,
+// a rejoin redial).
+async function trackParticipant(confName, callerNum, event) {
+  if (!confName || !callerNum) return;
+  try {
+    const { rows: [incident] } = await query(
+      `SELECT id FROM ers_incidents
+       WHERE conference_room = $1 AND deleted_at IS NULL
+       ORDER BY started_at DESC LIMIT 1`,
+      [confName]
+    );
+    if (!incident) return; // not an ERS room (e.g. an unrelated conference)
+
+    const last9 = String(callerNum).replace(/\D/g, '').slice(-9);
+    const { rows: [contact] } = await query(
+      `SELECT id FROM emergency_contacts
+       WHERE deleted_at IS NULL
+         AND (extension_number = $1
+              OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
+       LIMIT 1`,
+      [callerNum, last9]
+    );
+
+    if (event === 'join') {
+      const { rows: [existing] } = await query(
+        `SELECT id, left_at FROM ers_incident_participants
+         WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3)
+         ORDER BY joined_at DESC LIMIT 1`,
+        [incident.id, callerNum, contact?.id ?? null]
+      );
+      if (existing && existing.left_at) {
+        // Same person coming back — a rejoin, not a new participant.
+        await query(
+          `UPDATE ers_incident_participants
+           SET rejoined_at = now(), left_at = NULL WHERE id = $1`,
+          [existing.id]
+        );
+      } else if (!existing) {
+        await query(
+          `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
+           VALUES ($1, $2, $3, 'responder', now())`,
+          [incident.id, contact?.id ?? null, callerNum]
+        );
+      }
+    } else if (event === 'leave') {
+      await query(
+        `UPDATE ers_incident_participants
+         SET left_at = now()
+         WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
+        [incident.id, callerNum, contact?.id ?? null]
+      );
+    }
+  } catch (err) {
+    // Table may not exist yet (migration 016 pending) — never let audit
+    // tracking break live call event handling.
+    console.error('[esl] trackParticipant failed:', err.message);
   }
 }
 
@@ -307,6 +375,26 @@ export async function confPlay(confName, audioPath) {
 // ─── Kick a member from conference ──────────────────────────
 export async function confKick(confName, memberId) {
   return eslCommand(`conference ${confName} kick ${memberId}`);
+}
+
+// ─── Live conference member count — Phase 5's tier-status distinction ──
+//
+// ers_incidents.status alone only ever means "this particular leg's
+// completion call ran" — NOT "the room is empty" (see the comment on
+// completeIncidentCore()). Any code that needs to know whether a tier is
+// genuinely free to ring must check the room's actual live member count
+// via ESL, never the DB status column alone. Returns 0 for a room that
+// doesn't exist (already destroyed / never created) rather than erroring
+// — that's the correct "not occupied" answer for this use case.
+export async function getConferenceMemberCount(room) {
+  if (!room) return 0;
+  try {
+    const res = await eslCommand(`conference ${room} list count`);
+    const match = /^(\d+)/.exec((res || '').trim());
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ─── Verify an extension actually loaded into the live dialplan ─────

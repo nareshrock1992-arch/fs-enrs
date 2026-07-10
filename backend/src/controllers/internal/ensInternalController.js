@@ -41,15 +41,23 @@ const CallbackLogSchema = z.object({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Resolve all contact mobile numbers for an ENS config (groups + direct contacts).
+// Resolve all dialable numbers for an ENS config (groups + direct contacts).
 // Reads from emergency_contacts / responder_groups — the same tables the public
 // controller writes to when saving ENS configurations.
+//
+// Phase 5 (B5): a blast must reach BOTH channels per contact — internal
+// extension AND mobile number. Previously this was mobile-only, which
+// silently skipped desk phones entirely. Each contact now contributes up
+// to two entries; the campaign engine dials each as its own delivery leg
+// (the delivery table is keyed per contact_number, so the two channels
+// get independent answer/retry tracking, which is what you want — a desk
+// phone answering must not cancel the mobile leg's record and vice versa).
 async function resolveEnsContacts(configId) {
   const { rows } = await query(
-    `SELECT DISTINCT c.mobile_number
+    `SELECT DISTINCT c.mobile_number, c.extension_number
      FROM emergency_contacts c
      WHERE c.deleted_at IS NULL AND c.is_active = true
-       AND c.mobile_number IS NOT NULL
+       AND (c.mobile_number IS NOT NULL OR c.extension_number IS NOT NULL)
        AND (
          -- Direct contact mapping (emergency_contact_id path)
          c.id IN (
@@ -68,11 +76,15 @@ async function resolveEnsContacts(configId) {
            WHERE  ecg.ens_configuration_id = $1
              AND  ecg.responder_group_id IS NOT NULL
          )
-       )
-     ORDER BY c.mobile_number`,
+       )`,
     [configId]
   );
-  return rows.map(r => r.mobile_number);
+  const numbers = new Set();
+  for (const r of rows) {
+    if (r.mobile_number)    numbers.add(r.mobile_number);
+    if (r.extension_number) numbers.add(r.extension_number);
+  }
+  return [...numbers].sort();
 }
 
 // ── PIN Verification ──────────────────────────────────────────────────────────

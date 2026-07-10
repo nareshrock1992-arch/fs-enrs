@@ -31,6 +31,7 @@ const EMPTY = {
   // Ring / retry (shared)
   retry_ring_count:             3,
   retry_ring_interval:          30,
+  ring_timeout_seconds:         '',   // blank = ring indefinitely (2h safety cap)
   // Auth
   pin:                          '',
   allow_rejoin:                 true,
@@ -182,6 +183,7 @@ export default function ErsConfigList() {
         recording_directory:          form.recording_directory || null,
         retry_ring_count:             Number(form.retry_ring_count),
         retry_ring_interval:          Number(form.retry_ring_interval),
+        ring_timeout_seconds:         form.ring_timeout_seconds === '' ? null : Number(form.ring_timeout_seconds),
         pin:                          form.pin || null,
         primary_retry_count:          Number(form.primary_retry_count),
         primary_retry_interval_sec:   Number(form.primary_retry_interval_sec),
@@ -224,6 +226,7 @@ export default function ErsConfigList() {
         recording_directory:          full.recording_directory ?? '',
         retry_ring_count:             full.retry_ring_count ?? 3,
         retry_ring_interval:          full.retry_ring_interval ?? 30,
+        ring_timeout_seconds:         full.ring_timeout_seconds ?? '',
         pin:                          full.pin ?? '',
         allow_rejoin:                 full.allow_rejoin ?? true,
         cli_authentication:           full.cli_authentication ?? false,
@@ -488,6 +491,17 @@ export default function ErsConfigList() {
                   <input className="input" type="number" min="5"
                          value={form.retry_ring_interval}
                          onChange={e => f('retry_ring_interval', Number(e.target.value))} />
+                </div>
+                <div className="col-span-2">
+                  <label className="label">Ring-All Timeout (s) — blank = ring indefinitely</label>
+                  <input className="input" type="number" min="10" max="7200"
+                         placeholder="Leave blank to keep ringing until someone answers"
+                         value={form.ring_timeout_seconds}
+                         onChange={e => f('ring_timeout_seconds', e.target.value)} />
+                  <p className="text-[10px] text-text-muted mt-1">
+                    Overall ceiling for a ring-all wave: give up after this many seconds with no
+                    responder answering. Indefinite ringing is safety-capped at 2 hours internally.
+                  </p>
                 </div>
               </div>
             </section>

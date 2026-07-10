@@ -140,6 +140,52 @@ const WebhookNodeSchema = z.object({
   next:           nodeId,
 });
 
+// ── Phase 5 emergency-scenario node types ─────────────────────────────────────
+// Connection fields deliberately reuse existing ref names (branches / next /
+// true_node / false_node) so refsOf() and the canvas port strategies work
+// with zero changes — see nodeTypes/registry.js.
+
+const ErsRingAllNodeSchema = z.object({
+  type:                 z.literal('ers_ring_all'),
+  ers_configuration_id: z.number().int().positive(),
+  tier:                 z.enum(['primary', 'secondary']).default('primary'),
+});
+
+const ErsOverflowCheckNodeSchema = z.object({
+  type:                 z.literal('ers_overflow_check'),
+  ers_configuration_id: z.number().int().positive(),
+  branches:             z.record(z.enum(['primary', 'secondary', 'full']), nodeId).refine(
+    b => b.primary && b.secondary && b.full,
+    'ers_overflow_check requires all three branches: primary, secondary, full'
+  ),
+});
+
+const ErsOverflowWaitNodeSchema = z.object({
+  type:                 z.literal('ers_overflow_wait'),
+  ers_configuration_id: z.number().int().positive(),
+  hold_prompt_text:     z.string().max(1000).optional(),
+  hold_audio_url:       localAudioUrl.optional(),
+  max_wait_seconds:     z.number().int().min(10).max(3600).optional().default(300),
+  next:                 nodeId,   // fallback: wait cap hit / cancelled
+});
+
+const EnsBlastRecordNodeSchema = z.object({
+  type:                 z.literal('ens_blast_record'),
+  ens_configuration_id: z.number().int().positive().optional(), // else resolved from dialed number
+  pin_prompt_text:      z.string().max(1000).optional(),
+  record_prompt_text:   z.string().max(1000).optional(),
+  max_record_seconds:   z.number().int().min(5).max(300).optional().default(120),
+  next:                 nodeId,
+});
+
+const EnsPlaybackGateNodeSchema = z.object({
+  type:                 z.literal('ens_playback_gate'),
+  ers_configuration_id: z.number().int().positive(),
+  no_message_text:      z.string().max(1000).optional(),
+  true_node:            nodeId,
+  false_node:           nodeId,
+});
+
 // ── Discriminated union — validates any node by its type field ────────────────
 //
 // All members MUST be plain ZodObject instances.
@@ -163,6 +209,11 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   SetVariableNodeSchema,  // ZodObject ✓
   TransferNodeSchema,     // ZodObject ✓
   WebhookNodeSchema,      // ZodObject ✓
+  ErsRingAllNodeSchema,       // ZodObject ✓
+  ErsOverflowCheckNodeSchema, // ZodObject ✓  (refine is on the branches field)
+  ErsOverflowWaitNodeSchema,  // ZodObject ✓
+  EnsBlastRecordNodeSchema,   // ZodObject ✓
+  EnsPlaybackGateNodeSchema,  // ZodObject ✓
 ]).superRefine((node, ctx) => {
   if (node.type === 'play' && node.audio_file_id === undefined && node.audio_url === undefined) {
     ctx.addIssue({

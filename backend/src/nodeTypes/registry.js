@@ -497,6 +497,268 @@ local function exec_webhook(s, node)
 end`,
     apiEndpoint: null,
   },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 5 — 3-scenario emergency flow node types.
+  // Connection fields deliberately reuse the existing ref names (branches /
+  // next / true_node / false_node) so the graph validator's refsOf(), the
+  // canvas port strategies, and edge derivation all work with zero changes.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  {
+    type: 'ers_ring_all',
+    label: 'ERS Ring-All',
+    icon: '📟',
+    bg: '#3b1e2a', border: '#8a2a4a', color: '#fda4af',
+    category: 'Emergency',
+    description: 'Ring every tier responder simultaneously into one conference',
+    ports: 'none',
+    footnote: 'Rings all tier responders in parallel (continuous re-ring until any leg answers, recording on first join, caller identity shown on every phone). If the tier already has a live-occupied room, the caller bridges straight into it instead (rejoin). Call control ends here.',
+    configSchema: [
+      { key: 'ers_configuration_id', label: 'ERS Configuration ID', fieldType: 'number', min: 1, required: true },
+      { key: 'tier', label: 'Responder Tier', fieldType: 'select', required: true, options: [{ value: 'primary', label: 'Level 1 (Primary)' }, { value: 'secondary', label: 'Level 2 (Secondary)' }] },
+    ],
+    luaHandler: `
+local function exec_ers_ring_all(s, node)
+  local cfg_id = node.ers_configuration_id
+  if not cfg_id then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ers_ring_all: missing ers_configuration_id — hanging up\\n")
+    return nil
+  end
+
+  local d = post("/ers/ring-all", {
+    configuration_id = cfg_id,
+    tier             = node.tier or "primary",
+    caller_number    = s:getVariable("caller_id_number") or "",
+    caller_name      = s:getVariable("caller_id_name") or nil,
+  })
+
+  if d and d.conference_room then
+    s:setVariable("ers_incident_uuid", d.incident_uuid or "")
+    -- Blocks until THIS leg leaves. The backend ring loop keeps re-ringing
+    -- responders in parallel the whole time the caller waits in the room.
+    s:execute("conference", d.conference_room .. "@default")
+    if d.incident_uuid then
+      post("/ers/incidents/" .. d.incident_uuid .. "/complete", {})
+    end
+  else
+    freeswitch.consoleLog("ERR", "[ivr_executor] ers_ring_all: ring-all failed — " .. tostring(d and d.error or "no response") .. "\\n")
+  end
+  return nil
+end`,
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ers/ring-all' },
+  },
+
+  {
+    type: 'ers_overflow_check',
+    label: 'ERS Overflow Check',
+    icon: '🚦',
+    bg: '#2a2a3b', border: '#4a4a8a', color: '#c7d2fe',
+    category: 'Emergency',
+    description: 'Route by LIVE tier occupancy: Level 1 → Level 2 → queue',
+    ports: 'branches',
+    footnote: 'Occupancy is judged by the LIVE conference member count via FreeSWITCH, never the incident status column — a room with members is occupied even if its DB row was marked completed, and vice versa. Branch keys: primary (Level 1 free), secondary (Level 2 free), full (both occupied).',
+    configSchema: [
+      { key: 'ers_configuration_id', label: 'ERS Configuration ID', fieldType: 'number', min: 1, required: true },
+      { key: 'branches', label: 'Routes (primary / secondary / full)', fieldType: 'branches_map', required: true, hint: 'primary: Level 1 free · secondary: Level 2 free · full: both occupied' },
+    ],
+    luaHandler: `
+local function exec_ers_overflow_check(s, node)
+  local br = node.branches or {}
+  local d = get("/ers/tier-status?configuration_id=" .. tostring(node.ers_configuration_id or 0))
+  if not d or not d.success then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ers_overflow_check: tier-status failed — routing to full branch\\n")
+    return br["full"]
+  end
+  if d.primary and not d.primary.occupied then
+    return br["primary"]
+  elseif d.secondary and not d.secondary.occupied then
+    return br["secondary"]
+  end
+  return br["full"]
+end`,
+    apiEndpoint: { method: 'GET', path: '/api/v1/internal/ers/tier-status' },
+  },
+
+  {
+    type: 'ers_overflow_wait',
+    label: 'ERS Overflow Wait',
+    icon: '⏳',
+    bg: '#3b331e', border: '#8a742a', color: '#fde68a',
+    category: 'Emergency',
+    description: 'Hold in queue until a tier frees up (Level 1 priority)',
+    ports: 'next',
+    footnote: 'Plays the hold announcement, enqueues the caller, and polls tier occupancy (live member count). When a tier frees, the caller auto-connects with Level 1 priority. The Next Node is the FALLBACK when the wait cap is hit or the queue entry is cancelled.',
+    configSchema: [
+      { key: 'ers_configuration_id', label: 'ERS Configuration ID', fieldType: 'number', min: 1, required: true },
+      { key: 'hold_prompt_text', label: 'Hold announcement (TTS)', fieldType: 'textarea', placeholder: 'All emergency responders are currently engaged. Please remain on the line.' },
+      { key: 'hold_audio_url', label: 'Hold audio URL (overrides TTS)', fieldType: 'audio_url', placeholder: '/media/hold.wav' },
+      { key: 'max_wait_seconds', label: 'Max wait (seconds)', fieldType: 'number', min: 10, max: 3600, hint: 'After this, routes to the fallback Next Node' },
+      { key: 'next', label: 'Fallback Node (wait cap / cancelled)', fieldType: 'node_ref', required: true },
+    ],
+    luaHandler: `
+local function exec_ers_overflow_wait(s, node)
+  local enq = post("/ers/overflow/enqueue", {
+    configuration_id   = node.ers_configuration_id or 0,
+    caller_number      = s:getVariable("caller_id_number") or "",
+    caller_name        = s:getVariable("caller_id_name") or nil,
+    destination_number = s:getVariable("destination_number") or nil,
+  })
+  if not enq or not enq.queue_id then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ers_overflow_wait: enqueue failed — falling back\\n")
+    return node.next
+  end
+
+  local hold_file = resolve_audio(node.hold_audio_url)
+  local hold_text = interp(s, node.hold_prompt_text)
+  if hold_file then s:streamFile(hold_file)
+  elseif hold_text ~= "" then speak(s, hold_text) end
+
+  local max_wait = node.max_wait_seconds or 300
+  local deadline = os.time() + max_wait
+
+  while s:ready() and os.time() < deadline do
+    local d = get("/ers/overflow/poll?queue_id=" .. tostring(enq.queue_id))
+    if d and d.ready and d.conference_room then
+      s:execute("conference", d.conference_room .. "@default")
+      if d.incident_uuid then
+        post("/ers/incidents/" .. d.incident_uuid .. "/complete", {})
+      end
+      return nil
+    end
+    if d and d.cancelled then return node.next end
+    -- brief hold-tone loop between polls
+    s:execute("playback", "silence_stream://3000")
+  end
+
+  return node.next
+end`,
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ers/overflow/enqueue' },
+  },
+
+  {
+    type: 'ens_blast_record',
+    label: 'ENS Blast (PIN + Record)',
+    icon: '📣',
+    bg: '#1e333b', border: '#2a6a8a', color: '#93e3fd',
+    category: 'Emergency',
+    description: 'PIN-gate, record a message, broadcast to all contacts',
+    ports: 'next',
+    footnote: 'Full blast trigger in one node: collects and verifies the PIN (3 attempts), records the initiator’s message, and broadcasts to every contact’s extension AND mobile number. Next Node runs after the blast is confirmed started.',
+    configSchema: [
+      { key: 'ens_configuration_id', label: 'ENS Configuration ID', fieldType: 'number', min: 1, hint: 'Leave blank to resolve from the dialed number' },
+      { key: 'pin_prompt_text', label: 'PIN prompt (TTS)', fieldType: 'textarea', placeholder: 'Please enter your authorization PIN followed by pound.' },
+      { key: 'record_prompt_text', label: 'Record prompt (TTS)', fieldType: 'textarea', placeholder: 'Record your emergency message after the tone. Press pound when finished.' },
+      { key: 'max_record_seconds', label: 'Max recording (seconds)', fieldType: 'number', min: 5, max: 300 },
+      { key: 'next', label: 'Next Node (after blast starts)', fieldType: 'node_ref', required: true },
+    ],
+    luaHandler: `
+local function exec_ens_blast_record(s, node)
+  local dest = s:getVariable("destination_number") or ""
+
+  -- PIN gate — /ens/verify-pin is the single source of truth (handles the
+  -- "no PIN configured -> always authorized" case internally).
+  local authorized = false
+  for attempt = 1, 3 do
+    local prompt = interp(s, node.pin_prompt_text)
+    if prompt == "" then prompt = "Please enter your authorization PIN followed by pound." end
+    speak(s, prompt)
+    local pin = s:getDigits(8, "#", 10000)
+    local verify = post("/ens/verify-pin", { trigger_number = dest, pin = pin or "" })
+    if verify and verify.authorized then
+      authorized = true
+      break
+    end
+    speak(s, "Invalid PIN.")
+  end
+  if not authorized then
+    speak(s, "Maximum authorization attempts exceeded. Goodbye.")
+    s:hangup("CALL_REJECTED")
+    return nil
+  end
+
+  -- Resolve configuration_id (node value, else lookup by dialed number)
+  local cfg_id = node.ens_configuration_id
+  if not cfg_id then
+    local lookup = get("/ens/lookup?number=" .. url_encode(dest))
+    if lookup and lookup.success and lookup.data then
+      cfg_id = lookup.data.configuration_id
+    end
+  end
+  if not cfg_id then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ens_blast_record: could not resolve configuration_id\\n")
+    speak(s, "This notification service is not configured. Goodbye.")
+    return nil
+  end
+
+  -- Record the initiator's message
+  local rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
+  local fpath = rec_dir .. "/ens/ens_" .. tostring(cfg_id) .. "_" .. os.time() .. ".wav"
+  local rprompt = interp(s, node.record_prompt_text)
+  if rprompt == "" then rprompt = "Record your emergency message after the tone. Press pound when finished." end
+  speak(s, rprompt)
+  s:execute("playback", "tone_stream://%(500,0,640)")
+  s:recordFile(fpath, node.max_record_seconds or 120, 500, 3)
+
+  -- Broadcast — reaches every contact's extension AND mobile (see
+  -- resolveEnsContacts in ensInternalController.js).
+  local d = post("/ens/notifications", {
+    configuration_id = cfg_id,
+    triggered_via    = "PHONE",
+    caller_number    = s:getVariable("caller_id_number") or nil,
+    recording_file   = fpath,
+  })
+
+  if d and d.notification_uuid then
+    s:setVariable("ens_notification_uuid", d.notification_uuid)
+    speak(s, "Your emergency notification is now being sent to all contacts.")
+  else
+    freeswitch.consoleLog("ERR", "[ivr_executor] ens_blast_record: blast failed — " .. tostring(d and d.error or "no response") .. "\\n")
+    speak(s, "There was a problem starting your notification. Please contact your administrator.")
+  end
+
+  return node.next
+end`,
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ens/notifications' },
+  },
+
+  {
+    type: 'ens_playback_gate',
+    label: 'Playback Gate (Authorized)',
+    icon: '🔐',
+    bg: '#1e3b33', border: '#2a8a6a', color: '#99f6e4',
+    category: 'Emergency',
+    description: 'Authorized-caller check, then play the latest message',
+    ports: 'true_false',
+    footnote: 'The UUUU line: callers on the authorized list hear the latest recorded message if it is within its 24-hour window (or "no active message" after expiry) and route to the True node; unauthorized callers are logged and route to the False node.',
+    configSchema: [
+      { key: 'ers_configuration_id', label: 'ERS Configuration ID', fieldType: 'number', min: 1, required: true },
+      { key: 'no_message_text', label: '"No active message" text (TTS)', fieldType: 'textarea', placeholder: 'There is no active emergency message at this time.' },
+      { key: 'true_node', label: 'Authorized → Node', fieldType: 'node_ref', required: true },
+      { key: 'false_node', label: 'Rejected → Node', fieldType: 'node_ref', required: true },
+    ],
+    luaHandler: `
+local function exec_ens_playback_gate(s, node)
+  local caller = s:getVariable("caller_id_number") or ""
+  local d = get("/ers/playback/authorize?configuration_id=" .. tostring(node.ers_configuration_id or 0) ..
+                "&caller=" .. url_encode(caller))
+
+  if not d or not d.authorized then
+    freeswitch.consoleLog("WARN", "[ivr_executor] ens_playback_gate: rejected caller " .. caller .. " (" .. tostring(d and d.reason or "no response") .. ")\\n")
+    return node.false_node
+  end
+
+  if d.recording_file then
+    s:streamFile(d.recording_file)
+  else
+    local msg = interp(s, node.no_message_text)
+    if msg == "" then msg = "There is no active emergency message at this time." end
+    speak(s, msg)
+  end
+  return node.true_node
+end`,
+    apiEndpoint: { method: 'GET', path: '/api/v1/internal/ers/playback/authorize' },
+  },
 ];
 
 export function getNodeType(type) {

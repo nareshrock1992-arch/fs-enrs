@@ -190,6 +190,9 @@ export default function ErsLive() {
 
   useSocketEvent('enrs::ers_incident_created', reloadQueue);
   useSocketEvent('enrs::ers_incident_ended',   reloadQueue);
+  // Phase 5 — overflow queue enqueue/promote events (ersOverflowEnqueue /
+  // ersOverflowPoll emit these) keep the queue depth live in real time.
+  useSocketEvent('enrs::ers_queue_changed',    reloadQueue);
 
   async function completeIncident(uuid) {
     try {

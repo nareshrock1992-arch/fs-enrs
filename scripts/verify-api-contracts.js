@@ -116,7 +116,7 @@ for (const p of luaGetPaths) {
 
 // ── Step 3: body field names vs the actual Zod schema ───────────────────────
 
-const { IncidentCreateSchema } = await import(
+const { IncidentCreateSchema, RingAllSchema, OverflowEnqueueSchema } = await import(
   path.join(backendRoot, 'src', 'controllers', 'internal', 'ersInternalController.js')
 );
 const { NotificationCreateSchema } = await import(
@@ -126,6 +126,8 @@ const { NotificationCreateSchema } = await import(
 const SCHEMA_FOR_PATH = {
   '/ers/incidents': IncidentCreateSchema,
   '/ens/notifications': NotificationCreateSchema,
+  '/ers/ring-all': RingAllSchema,
+  '/ers/overflow/enqueue': OverflowEnqueueSchema,
 };
 
 console.log('\nInternal API — request body field names vs Zod schema:');

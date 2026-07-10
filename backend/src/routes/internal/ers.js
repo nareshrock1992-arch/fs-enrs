@@ -6,6 +6,13 @@ const router = Router();
 // Number → config lookup (dial_911_conference.lua first call)
 router.get('/lookup', ctrl.ersLookup);
 
+// Phase 5 — 3-scenario emergency flow
+router.get('/tier-status',        ctrl.ersTierStatus);      // live member counts per tier (never status alone)
+router.post('/ring-all',          ctrl.ersRingAll);         // simultaneous dial-all / rejoin path
+router.post('/overflow/enqueue',  ctrl.ersOverflowEnqueue); // Caller C: both tiers occupied
+router.get('/overflow/poll',      ctrl.ersOverflowPoll);    // hold-loop poll; promotes on tier free-up
+router.get('/playback/authorize', ctrl.ersPlaybackAuthorize); // UUUU line: authorized-caller playback
+
 // Incident lifecycle
 router.post('/incidents',                  ctrl.ersCreateIncident);
 router.post('/incidents/:uuid/complete',   ctrl.ersCompleteIncident);
