@@ -128,6 +128,18 @@ const TransferNodeSchema = z.object({
   context:     z.string().max(64).optional().default('default'),
 });
 
+// ── Proof node type added via the Phase 3 registry — see
+// backend/src/nodeTypes/registry.js and docs/EXTENDING_NODE_TYPES.md.
+// The registry is not yet the source of truth for validation (see that
+// file's header comment), so a new node type still needs one schema
+// added here to be accepted on save/publish.
+const WebhookNodeSchema = z.object({
+  type:           z.literal('webhook'),
+  url:            z.string().min(1).max(2048),
+  body_template:  z.string().max(4000).optional(),
+  next:           nodeId,
+});
+
 // ── Discriminated union — validates any node by its type field ────────────────
 //
 // All members MUST be plain ZodObject instances.
@@ -150,6 +162,7 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   RecordMessageNodeSchema,// ZodObject ✓
   SetVariableNodeSchema,  // ZodObject ✓
   TransferNodeSchema,     // ZodObject ✓
+  WebhookNodeSchema,      // ZodObject ✓
 ]).superRefine((node, ctx) => {
   if (node.type === 'play' && node.audio_file_id === undefined && node.audio_url === undefined) {
     ctx.addIssue({

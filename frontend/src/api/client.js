@@ -193,6 +193,7 @@ export const api = {
     unbind:           (uuid, numId) => request('PATCH',  `/ivr/flows/${uuid}/unbind`, { emergency_number_id: numId }),
     listTemplates:    ()            => request('GET',    '/ivr/flows/templates'),
     createFromTemplate: (id, name) => request('POST',   `/ivr/flows/templates/${id}/create`, name ? { name } : {}),
+    nodeTypes: () => request('GET', '/ivr/node-types'),
   },
 
   // Media

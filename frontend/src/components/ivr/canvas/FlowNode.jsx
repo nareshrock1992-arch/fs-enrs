@@ -1,52 +1,46 @@
 import { useRef } from 'react';
 import { Trash2 } from 'lucide-react';
 import { useDrag } from '../../../hooks/useDrag.js';
+import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
+import { getPortsForNode } from './nodePorts.js';
 import ConnectionDot from './ConnectionDot.jsx';
 
-// ── Node visual config by type ────────────────────────────────────────────────
+// Phase 3: per-type visual config (icon/colors/label) comes from the
+// node-type registry (GET /api/v1/ivr/node-types) instead of being
+// hardcoded here — see backend/src/nodeTypes/registry.js. This fallback
+// is used only for the brief window before the registry fetch resolves,
+// or if a node references a type the registry doesn't know about (e.g. a
+// flow saved before a type was removed).
+const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc' };
 
-export const NODE_CONFIG = {
-  play:           { label: 'Play Audio',    icon: '▶',  bg: '#1e3a5f', border: '#3b6ca8', color: '#93c5fd' },
-  say:            { label: 'Say (TTS)',      icon: '💬', bg: '#1e3a2f', border: '#2d6a4f', color: '#6ee7b7' },
-  gather:         { label: 'Gather DTMF',   icon: '⌨',  bg: '#3b2f1e', border: '#7c5c2a', color: '#fbbf24' },
-  goto:           { label: 'Go To Node',    icon: '↩',  bg: '#2a1e3b', border: '#5b3a8a', color: '#c4b5fd' },
-  ens:            { label: 'Trigger ENS',   icon: '📢', bg: '#1e2f3b', border: '#2a6080', color: '#7dd3fc' },
-  ers:            { label: 'Trigger ERS',   icon: '🚨', bg: '#3b1e1e', border: '#8a2a2a', color: '#fca5a5' },
-  hangup:         { label: 'Hangup',        icon: '✕',  bg: '#1e2a1e', border: '#2a4a2a', color: '#86efac' },
-  condition:      { label: 'Condition',     icon: '⑂',  bg: '#2a2a1e', border: '#6a6a2a', color: '#fde68a' },
-  record_message: { label: 'Record',        icon: '⏺',  bg: '#2a1e2a', border: '#6a2a6a', color: '#e9d5ff' },
-  set_variable:   { label: 'Set Variable',  icon: '📌', bg: '#1e2a3b', border: '#2a4a6a', color: '#bae6fd' },
-  transfer:       { label: 'Transfer',      icon: '↗',  bg: '#1e3b2a', border: '#2a6a4a', color: '#a7f3d0' },
-};
-
-// ── Ports per node type ───────────────────────────────────────────────────────
-
-function getPorts(node) {
+// Per-type one-line summary shown in the node card body. Additive-only —
+// a node type without an entry here just shows the header with no extra
+// summary line, so adding a new type never requires touching this.
+function nodeSummary(node) {
   switch (node.type) {
-    case 'play':
-    case 'say':
-    case 'record_message':
-    case 'set_variable':
-      return [{ key: 'next', label: 'next' }];
-    case 'ens':
-      return node.next ? [{ key: 'next', label: 'next' }] : [];
-    case 'gather': {
-      const branches = node.branches || {};
-      return Object.keys(branches).map(k => ({ key: k, label: k }));
-    }
-    case 'goto':
-      return [{ key: 'goto', label: 'target' }];
+    case 'play':           return <span className="truncate block">{node.audio_url || node.audio_file_id || '—'}</span>;
+    case 'say':             return <span className="truncate block italic">"{node.text?.slice(0,28) || '…'}"</span>;
+    case 'gather':          return <span>max {node.max_digits || 1} digit · {node.timeout_seconds || 5}s</span>;
+    case 'goto':             return <span>→ {node.target_node_id || '?'}</span>;
+    case 'ens':              return <span>Config {node.ens_configuration_id || node.ens_config_var || '?'}</span>;
+    case 'ers':              return <span>Config {node.ers_configuration_id || '?'}</span>;
+    case 'hangup':           return <span className="text-green-400">End of call</span>;
     case 'condition':
-      return [
-        { key: 'true',  label: 'true'  },
-        { key: 'false', label: 'false' },
-      ];
-    case 'ers':
-    case 'hangup':
-    case 'transfer':
-      return [];
-    default:
-      return [];
+      return (
+        <span className="truncate block font-mono">
+          {node.variable || '?'} {node.operator || '=='} {(node.expected_value || '?').slice(0,14)}
+        </span>
+      );
+    case 'record_message':
+      return <span className="truncate block">→ {node.variable_name || '?'} · max {node.max_seconds || 60}s</span>;
+    case 'set_variable':
+      return (
+        <span className="truncate block font-mono">
+          {node.variable || '?'} = {(node.value || '').slice(0,16)}
+        </span>
+      );
+    case 'transfer':        return <span className="truncate block">→ {node.destination || '?'}</span>;
+    default:                return null;
   }
 }
 
@@ -70,8 +64,9 @@ export default function FlowNode({
   onPortDragStart,
   onPortClick,
 }) {
-  const cfg   = NODE_CONFIG[node.type] || NODE_CONFIG.play;
-  const ports = getPorts(node);
+  const { byType } = useNodeTypes();
+  const cfg   = byType[node.type] || FALLBACK_CFG;
+  const ports = getPortsForNode(node, cfg.ports);
   const nodeRef = useRef(null);
 
   const startPos = useRef({ x: node.x, y: node.y });
@@ -148,31 +143,7 @@ export default function FlowNode({
 
         {/* Body — key field summary */}
         <div className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5">
-          {node.type === 'play'           && <span className="truncate block">{node.audio_url || node.audio_file_id || '—'}</span>}
-          {node.type === 'say'            && <span className="truncate block italic">"{node.text?.slice(0,28) || '…'}"</span>}
-          {node.type === 'gather'         && <span>max {node.max_digits || 1} digit · {node.timeout_seconds || 5}s</span>}
-          {node.type === 'goto'           && <span>→ {node.target_node_id || '?'}</span>}
-          {node.type === 'ens'            && <span>Config {node.ens_configuration_id || node.ens_config_var || '?'}</span>}
-          {node.type === 'ers'            && <span>Config {node.ers_configuration_id || '?'}</span>}
-          {node.type === 'hangup'         && <span className="text-green-400">End of call</span>}
-          {node.type === 'condition'      && (
-            <span className="truncate block font-mono">
-              {node.variable || '?'} {node.operator || '=='} {(node.expected_value || '?').slice(0,14)}
-            </span>
-          )}
-          {node.type === 'record_message' && (
-            <span className="truncate block">
-              → {node.variable_name || '?'} · max {node.max_seconds || 60}s
-            </span>
-          )}
-          {node.type === 'set_variable'   && (
-            <span className="truncate block font-mono">
-              {node.variable || '?'} = {(node.value || '').slice(0,16)}
-            </span>
-          )}
-          {node.type === 'transfer'       && (
-            <span className="truncate block">→ {node.destination || '?'}</span>
-          )}
+          {nodeSummary(node)}
         </div>
 
         {/* Output ports */}

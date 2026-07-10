@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import { requireAuth } from '../../middleware/auth.js';
+import { asyncHandler } from '../../middleware/asyncHandler.js';
+import { getNodeTypes } from '../../controllers/ivrController.js';
 import authRoutes       from './auth.js';
 import orgRoutes        from './organizations.js';
 import contactRoutes    from './contacts.js';
@@ -24,6 +27,10 @@ router.use('/contacts',      contactRoutes);
 router.use('/groups',        groupRoutes);
 router.use('/ens',           ensRoutes);
 router.use('/ers',           ersRoutes);
+// Phase 3 node-type registry — single source of truth for the IVR builder's
+// palette + property forms. Mounted at /ivr (not /ivr/flows) so it's not
+// shadowed by ivrRoutes' internal /:uuid param matcher.
+router.get('/ivr/node-types', requireAuth, asyncHandler(getNodeTypes));
 router.use('/ivr/flows',     ivrRoutes);
 router.use('/deployment',    deploymentRoutes);
 router.use('/services',      serviceRoutes);

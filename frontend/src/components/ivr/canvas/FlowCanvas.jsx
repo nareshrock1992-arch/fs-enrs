@@ -1,34 +1,17 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { useZoomPan } from '../../../hooks/useZoomPan.js';
+import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
+import { getPortKeysForNode } from './nodePorts.js';
 import FlowNode, { NODE_WIDTH, NODE_HEIGHT } from './FlowNode.jsx';
 import FlowEdge, { DraftEdge } from './FlowEdge.jsx';
 
-// ── Port key list per node type (must match getPorts in FlowNode.jsx) ─────────
-
-function getNodePortKeys(node) {
-  switch (node.type) {
-    case 'play':
-    case 'say':
-    case 'record_message':
-    case 'set_variable':
-      return ['next'];
-    case 'ens':
-      return node.next ? ['next'] : [];
-    case 'gather':
-      return Object.keys(node.branches || {});
-    case 'goto':
-      return ['goto'];
-    case 'condition':
-      return ['true', 'false'];
-    case 'ers':
-    case 'hangup':
-    case 'transfer':
-      return [];
-    default:
-      return [];
-  }
-}
+// Phase 3: port keys come from the same shared nodePorts.js the node cards
+// themselves use (via the registry's `ports` strategy field) — this used
+// to be an independently hand-maintained copy of FlowNode.jsx's switch
+// statement, with a comment literally warning "must match getPorts in
+// FlowNode.jsx." That's exactly the kind of duplication that drifts
+// silently; there is now exactly one place this logic lives.
 
 // ── Port position relative to node top-left (canvas coords) ──────────────────
 
@@ -75,6 +58,11 @@ export default function FlowCanvas({
 }) {
   const canvasRef  = useRef(null);
   const { transform, setTransform, cssTransform, onWheel, pan, reset, toCanvas } = useZoomPan();
+  const { byType } = useNodeTypes();
+  const portKeysFor = useCallback(
+    (node) => getPortKeysForNode(node, byType[node.type]?.ports),
+    [byType]
+  );
 
   // Draft edge state (while dragging a connection)
   const [draft, setDraft] = useState(null);
@@ -175,7 +163,7 @@ export default function FlowCanvas({
   const handlePortDragStart = useCallback((nodeId, portKey) => {
     const node = nodes[nodeId];
     if (!node) return;
-    const allPorts = getNodePortKeys(node);
+    const allPorts = portKeysFor(node);
     const { x, y } = portPosition(node, portKey, allPorts);
     setDraft({ fromNode: nodeId, fromPort: portKey, x, y });
 
@@ -198,14 +186,14 @@ export default function FlowCanvas({
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup',   onUp);
-  }, [nodes, toCanvas, onConnect]);
+  }, [nodes, toCanvas, onConnect, portKeysFor]);
 
   // ── Port position helpers (shared for edges + drag) ──────────────────────
 
   function getPortPos(nodeId, portKey) {
     const node = nodes[nodeId];
     if (!node) return { x: 0, y: 0 };
-    const allPorts = getNodePortKeys(node);
+    const allPorts = portKeysFor(node);
     return portPosition(node, portKey, allPorts);
   }
 

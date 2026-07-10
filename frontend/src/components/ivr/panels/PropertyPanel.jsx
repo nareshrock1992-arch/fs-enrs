@@ -1,7 +1,15 @@
-import { Trash2, Star, Link } from 'lucide-react';
-import { NODE_CONFIG } from '../canvas/FlowNode.jsx';
+import { Trash2, Star } from 'lucide-react';
+import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 
-// ── Field components ──────────────────────────────────────────────────────────
+// Phase 3: this used to be one hand-built <XyzFields> component per node
+// type (11 of them) — every new node type meant a new component here,
+// and it's exactly how the "field exists in state but nothing renders it"
+// bug class kept happening (ServiceRegistry.jsx, ContactList.jsx,
+// LocationList.jsx all hit variants of this earlier in the project).
+// A schema-driven form can't have that bug: every key in configSchema
+// gets a field, structurally, or it doesn't render at all.
+
+// ── Field components (presentational, type-agnostic) ─────────────────────────
 
 function Field({ label, hint, children }) {
   return (
@@ -35,7 +43,7 @@ function NumberInput({ value, onChange, min, max }) {
     <input
       type="number"
       value={value ?? ''}
-      onChange={e => onChange(Number(e.target.value))}
+      onChange={e => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
       min={min} max={max}
       className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
                  text-xs text-text-primary focus:outline-none focus:border-brand transition-colors"
@@ -73,9 +81,7 @@ function Select({ value, onChange, options }) {
 }
 
 // NodePicker — dropdown to pick a target node instead of typing a raw ID.
-// `nodes` is the graph nodes map { [id]: node }.
-// `excludeId` prevents self-loops.
-function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'None (end here)' }) {
+function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'None (end here)', byType }) {
   const nodeList = Object.values(nodes).filter(n => n.id !== excludeId);
   return (
     <select
@@ -86,11 +92,11 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
     >
       <option value="">{placeholder}</option>
       {nodeList.map(n => {
-        const cfg = NODE_CONFIG[n.type] || NODE_CONFIG.play;
+        const cfg = byType[n.type] || {};
         const label = n.label || (n.text?.slice(0, 24)) || (n.audio_url?.split('/').pop()) || n.type;
         return (
           <option key={n.id} value={n.id}>
-            {cfg.icon} {cfg.label} — {String(label).slice(0, 30)}
+            {cfg.icon || ''} {cfg.label || n.type} — {String(label).slice(0, 30)}
           </option>
         );
       })}
@@ -98,314 +104,124 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
   );
 }
 
-// ── Per-type property panels ──────────────────────────────────────────────────
-
-function PlayFields({ node, onChange, nodes }) {
-  return (
-    <>
-      <Field label="Audio URL (local /media/ path)">
-        <TextInput value={node.audio_url} onChange={v => onChange({ audio_url: v })} placeholder="/media/welcome.wav" mono />
-      </Field>
-      <Field label="Audio File ID (alternative)">
-        <NumberInput value={node.audio_file_id} onChange={v => onChange({ audio_file_id: v })} min={1} />
-      </Field>
-      <Field label="Next Node" hint="Node to go to after playing audio">
-        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
-      </Field>
-    </>
-  );
-}
-
-function SayFields({ node, onChange, nodes }) {
-  return (
-    <>
-      <Field label="Text to speak">
-        <Textarea value={node.text} onChange={v => onChange({ text: v })} placeholder="Please press 1 for emergency…" />
-      </Field>
-      <Field label="Language">
-        <Select
-          value={node.language || 'en-US'}
-          onChange={v => onChange({ language: v })}
-          options={['en-US','en-AU','en-GB','es-ES','fr-FR','de-DE'].map(l => ({ value: l, label: l }))}
-        />
-      </Field>
-      <Field label="Voice (optional)">
-        <TextInput value={node.voice} onChange={v => onChange({ voice: v })} placeholder="Joanna" />
-      </Field>
-      <Field label="Next Node" hint="Node to go to after speaking">
-        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
-      </Field>
-    </>
-  );
-}
-
-function GatherFields({ node, onChange, nodes }) {
+// Gather's branch key→target editor — the one genuinely bespoke widget
+// (dynamic add/remove keys, not a fixed field), driven by fieldType
+// 'branches_map' rather than a per-type component.
+function BranchesMapField({ node, onUpdate, nodes, byType }) {
   const branches = node.branches || {};
   const branchKeys = Object.keys(branches);
 
-  const updateBranch = (k, v) => onChange({ branches: { ...branches, [k]: v } });
+  const updateBranch = (k, v) => onUpdate(node.id, { branches: { ...branches, [k]: v } });
   const addBranch = () => {
     const next = String(branchKeys.filter(k => !['timeout','invalid','_default'].includes(k)).length + 1);
-    onChange({ branches: { ...branches, [next]: '' } });
+    onUpdate(node.id, { branches: { ...branches, [next]: '' } });
   };
   const removeBranch = (k) => {
-    const { [k]: _, ...rest } = branches;
-    onChange({ branches: rest });
+    const { [k]: _removed, ...rest } = branches;
+    onUpdate(node.id, { branches: rest });
   };
 
   return (
-    <>
-      <Field label="Variable Name" hint="Session variable that stores collected digits">
-        <TextInput value={node.variable_name} onChange={v => onChange({ variable_name: v })} placeholder="gather_result" mono />
-      </Field>
-      <Field label="Max Digits">
-        <NumberInput value={node.max_digits} onChange={v => onChange({ max_digits: v })} min={1} max={11} />
-      </Field>
-      <Field label="Timeout (seconds)">
-        <NumberInput value={node.timeout_seconds} onChange={v => onChange({ timeout_seconds: v })} min={1} max={60} />
-      </Field>
-      <Field label="Terminators" hint="Keys that end collection (default #)">
-        <TextInput value={node.terminators} onChange={v => onChange({ terminators: v })} placeholder="#" mono />
-      </Field>
-      <Field label="Prompt Audio URL">
-        <TextInput value={node.prompt_audio_url} onChange={v => onChange({ prompt_audio_url: v })} placeholder="/media/menu.wav" mono />
-      </Field>
-      <Field label="Prompt Text (TTS fallback)">
-        <TextInput value={node.prompt_text} onChange={v => onChange({ prompt_text: v })} placeholder="Please enter your PIN" />
-      </Field>
-      <Field label="Branches (key → target node)" hint="Use _default to catch any input not matched above">
-        <div className="space-y-1.5">
-          {branchKeys.map(k => (
-            <div key={k} className="flex gap-1.5 items-center">
-              <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-16 text-center shrink-0">
-                {k}
-              </span>
-              <div className="flex-1">
-                <NodePicker
-                  value={branches[k]}
-                  onChange={v => updateBranch(k, v)}
-                  nodes={nodes}
-                  excludeId={node.id}
-                  placeholder="Select target node…"
-                />
-              </div>
-              {!['timeout','invalid','_default'].includes(k) && (
-                <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
-                  <Trash2 size={11} />
-                </button>
-              )}
-            </div>
-          ))}
-          <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
-            + Add digit branch
-          </button>
-          {!branches['_default'] && (
-            <button
-              onClick={() => onChange({ branches: { ...branches, _default: '' } })}
-              className="text-[10px] text-text-muted hover:text-brand ml-3"
-            >
-              + Add _default (catch-all)
+    <div className="space-y-1.5">
+      {branchKeys.map(k => (
+        <div key={k} className="flex gap-1.5 items-center">
+          <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-16 text-center shrink-0">
+            {k}
+          </span>
+          <div className="flex-1">
+            <NodePicker
+              value={branches[k]}
+              onChange={v => updateBranch(k, v)}
+              nodes={nodes}
+              excludeId={node.id}
+              placeholder="Select target node…"
+              byType={byType}
+            />
+          </div>
+          {!['timeout','invalid','_default'].includes(k) && (
+            <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
+              <Trash2 size={11} />
             </button>
           )}
         </div>
-      </Field>
-    </>
+      ))}
+      <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
+        + Add digit branch
+      </button>
+      {!branches['_default'] && (
+        <button
+          onClick={() => onUpdate(node.id, { branches: { ...branches, _default: '' } })}
+          className="text-[10px] text-text-muted hover:text-brand ml-3"
+        >
+          + Add _default (catch-all)
+        </button>
+      )}
+    </div>
   );
 }
 
-function GotoFields({ node, onChange, nodes }) {
-  return (
-    <Field label="Jump to Node" hint="The node this Go To routes to">
-      <NodePicker value={node.target_node_id} onChange={v => onChange({ target_node_id: v })} nodes={nodes} excludeId={node.id} placeholder="Select target node…" />
-    </Field>
-  );
-}
+// ── Generic field renderer — dispatches on fieldType, not node.type ──────────
 
-function EnsFields({ node, onChange, nodes }) {
-  return (
-    <>
-      <Field label="ENS Configuration ID" hint="Leave blank if using ens_config_var">
-        <NumberInput value={node.ens_configuration_id} onChange={v => onChange({ ens_configuration_id: v || undefined })} min={1} />
-      </Field>
-      <Field label="ENS Config Variable" hint="Session var holding config ID (set by condition ens_pin_valid)">
-        <TextInput value={node.ens_config_var} onChange={v => onChange({ ens_config_var: v })} placeholder="ens_configuration_id" mono />
-      </Field>
-      <Field label="Recording File Variable" hint="Session var holding recorded file path (from record_message node)">
-        <TextInput value={node.recording_file_var} onChange={v => onChange({ recording_file_var: v })} placeholder="recorded_file_path" mono />
-      </Field>
-      <Field label="Next Node (optional — after blast)" hint="Where to go after ENS fires">
-        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
-      </Field>
-    </>
-  );
-}
+function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
+  // conditionalOn: the field's label/hint/placeholder swap based on another
+  // field's current value (e.g. condition node's expected_value field
+  // means something different when operator === 'ens_pin_valid').
+  const cond = fieldDef.conditionalOn;
+  const active = cond && node[cond.field] === cond.value;
+  const label = active ? cond.label : fieldDef.label;
+  const hint = active ? cond.hint : fieldDef.hint;
+  const placeholder = active ? cond.placeholder : fieldDef.placeholder;
 
-function ErsFields({ node, onChange }) {
-  return (
-    <Field label="ERS Configuration ID">
-      <NumberInput value={node.ers_configuration_id} onChange={v => onChange({ ers_configuration_id: v })} min={1} />
-    </Field>
-  );
-}
+  const value = node[fieldDef.key];
+  const set = v => onChange({ [fieldDef.key]: v });
 
-function HangupFields({ node, onChange }) {
-  return (
-    <Field label="Goodbye Audio URL (optional)">
-      <TextInput value={node.play_audio_url} onChange={v => onChange({ play_audio_url: v })} placeholder="/media/goodbye.wav" mono />
-    </Field>
-  );
-}
+  let control;
+  switch (fieldDef.fieldType) {
+    case 'textarea':
+      control = <Textarea value={value} onChange={set} placeholder={placeholder} />;
+      break;
+    case 'number':
+      control = <NumberInput value={value} onChange={set} min={fieldDef.min} max={fieldDef.max} />;
+      break;
+    case 'select':
+      control = <Select value={value} onChange={set} options={fieldDef.options || []} />;
+      break;
+    case 'node_ref':
+      control = <NodePicker value={value} onChange={set} nodes={nodes} excludeId={node.id} placeholder={fieldDef.required ? 'Select target node…' : undefined} byType={byType} />;
+      break;
+    case 'audio_url':
+    case 'mono_text':
+      control = <TextInput value={value} onChange={set} placeholder={placeholder} mono />;
+      break;
+    case 'branches_map':
+      control = <BranchesMapField node={node} onUpdate={onUpdate} nodes={nodes} byType={byType} />;
+      break;
+    case 'text':
+    default:
+      control = <TextInput value={value} onChange={set} placeholder={placeholder} />;
+  }
 
-// ── NEW: ConditionFields ──────────────────────────────────────────────────────
-
-const OPERATOR_OPTIONS = [
-  { value: '==',                 label: '== equals' },
-  { value: '!=',                 label: '!= not equals' },
-  { value: 'contains',           label: 'contains' },
-  { value: 'starts_with',        label: 'starts_with' },
-  { value: 'ens_pin_valid',      label: 'ENS PIN valid (lookup + validate)' },
-  { value: 'ens_callback_valid', label: 'ENS callback valid (recording replay)' },
-];
-
-function ConditionFields({ node, onChange, nodes }) {
-  const isEnsPinOp = node.operator === 'ens_pin_valid';
   return (
     <>
-      <Field label="Variable to check" hint="Session variable name (e.g. gather_result)">
-        <TextInput value={node.variable} onChange={v => onChange({ variable: v })} placeholder="gather_result" mono />
-      </Field>
-      <Field label="Operator">
-        <Select value={node.operator || '=='} onChange={v => onChange({ operator: v })} options={OPERATOR_OPTIONS} />
-      </Field>
-      <Field
-        label={isEnsPinOp ? 'ENS access number' : 'Expected value'}
-        hint={isEnsPinOp
-          ? 'The ENS emergency number to look up PIN against. Use ${var} to read from session.'
-          : 'Static value or ${var_name} to compare against'}
-      >
-        <TextInput
-          value={node.expected_value}
-          onChange={v => onChange({ expected_value: v })}
-          placeholder={isEnsPinOp ? '${destination_number}' : 'expected value'}
-          mono
-        />
-      </Field>
-      {isEnsPinOp && (
+      <Field label={label} hint={hint}>{control}</Field>
+      {active && cond.infoBox && (
         <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed">
-          On PIN match: auto-stores <code className="font-mono">ens_configuration_id</code>,{' '}
-          <code className="font-mono">ens_retry_count</code>, and{' '}
-          <code className="font-mono">ens_blast_clid</code> as session variables for downstream ENS node.
+          {cond.infoBox}
         </div>
       )}
-      <Field label="True → Node" hint="Route here when condition is met">
-        <NodePicker value={node.true_node} onChange={v => onChange({ true_node: v })} nodes={nodes} excludeId={node.id} placeholder="Select node for TRUE branch…" />
-      </Field>
-      <Field label="False → Node" hint="Route here when condition fails">
-        <NodePicker value={node.false_node} onChange={v => onChange({ false_node: v })} nodes={nodes} excludeId={node.id} placeholder="Select node for FALSE branch…" />
-      </Field>
     </>
   );
 }
 
-// ── NEW: RecordMessageFields ──────────────────────────────────────────────────
-
-function RecordMessageFields({ node, onChange, nodes }) {
-  return (
-    <>
-      <Field label="Variable name" hint="Session var that stores the recorded file path">
-        <TextInput value={node.variable_name} onChange={v => onChange({ variable_name: v })} placeholder="recorded_file_path" mono />
-      </Field>
-      <Field label="Prompt text (TTS)" hint="Played before recording starts">
-        <Textarea value={node.prompt_text} onChange={v => onChange({ prompt_text: v })} placeholder="Please record your message after the tone. Press # when done." rows={2} />
-      </Field>
-      <Field label="Prompt audio URL (overrides TTS)">
-        <TextInput value={node.prompt_audio_url} onChange={v => onChange({ prompt_audio_url: v })} placeholder="/media/record_prompt.wav" mono />
-      </Field>
-      <Field label="Max seconds">
-        <NumberInput value={node.max_seconds} onChange={v => onChange({ max_seconds: v })} min={1} max={300} />
-      </Field>
-      <Field label="Silence threshold (ms)" hint="Audio level below which is considered silence">
-        <NumberInput value={node.silence_threshold} onChange={v => onChange({ silence_threshold: v })} min={10} max={2000} />
-      </Field>
-      <Field label="Silence hits" hint="How many silence chunks before stopping">
-        <NumberInput value={node.silence_hits} onChange={v => onChange({ silence_hits: v })} min={1} max={10} />
-      </Field>
-      <Field label="Record directory" hint="Default: /var/lib/freeswitch/recordings">
-        <TextInput value={node.record_dir} onChange={v => onChange({ record_dir: v })} placeholder="/var/lib/freeswitch/recordings" mono />
-      </Field>
-      <Field label="Next Node" hint="Node to proceed to after recording">
-        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
-      </Field>
-    </>
-  );
-}
-
-// ── NEW: SetVariableFields ────────────────────────────────────────────────────
-
-function SetVariableFields({ node, onChange, nodes }) {
-  return (
-    <>
-      <Field label="Variable name" hint="FreeSWITCH channel variable to set">
-        <TextInput value={node.variable} onChange={v => onChange({ variable: v })} placeholder="my_variable" mono />
-      </Field>
-      <Field label="Value" hint="Static text or ${other_var} interpolation">
-        <TextInput value={node.value} onChange={v => onChange({ value: v })} placeholder="${destination_number}" mono />
-      </Field>
-      <Field label="Next Node" hint="Node to proceed to after setting variable">
-        <NodePicker value={node.next} onChange={v => onChange({ next: v })} nodes={nodes} excludeId={node.id} />
-      </Field>
-    </>
-  );
-}
-
-// ── NEW: TransferFields ───────────────────────────────────────────────────────
-
-function TransferFields({ node, onChange }) {
-  return (
-    <>
-      <Field label="Destination" hint="Extension number, or ${var} for dynamic destination">
-        <TextInput value={node.destination} onChange={v => onChange({ destination: v })} placeholder="1001" mono />
-      </Field>
-      <Field label="Dialplan">
-        <Select
-          value={node.dialplan || 'XML'}
-          onChange={v => onChange({ dialplan: v })}
-          options={[
-            { value: 'XML',       label: 'XML (default)' },
-            { value: 'inline',    label: 'inline' },
-            { value: 'enum',      label: 'enum' },
-          ]}
-        />
-      </Field>
-      <Field label="Context">
-        <TextInput value={node.context} onChange={v => onChange({ context: v })} placeholder="default" mono />
-      </Field>
-      <div className="mb-3 px-2.5 py-2 rounded-lg bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed">
-        Transfer hands off call control. No next node — the transferred dialplan takes over.
-      </div>
-    </>
-  );
-}
-
-// ── Registry ──────────────────────────────────────────────────────────────────
-
-const FIELD_COMPONENTS = {
-  play:           PlayFields,
-  say:            SayFields,
-  gather:         GatherFields,
-  goto:           GotoFields,
-  ens:            EnsFields,
-  ers:            ErsFields,
-  hangup:         HangupFields,
-  condition:      ConditionFields,
-  record_message: RecordMessageFields,
-  set_variable:   SetVariableFields,
-  transfer:       TransferFields,
-};
+// Transfer's static "call control ends here" note and similar per-type
+// footnotes live as an optional `footnote` on the registry entry itself
+// so this stays data-driven — see registry.js.
 
 // ── PropertyPanel ─────────────────────────────────────────────────────────────
 
 export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry, nodes = {} }) {
+  const { byType } = useNodeTypes();
+
   if (!node) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center p-6">
@@ -415,9 +231,9 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
     );
   }
 
-  const cfg        = NODE_CONFIG[node.type] || NODE_CONFIG.play;
-  const FieldsComp = FIELD_COMPONENTS[node.type] || (() => null);
+  const cfg        = byType[node.type] || { label: node.type, icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc', configSchema: [] };
   const nodeErrors = errors[node.id] || [];
+  const onChange   = patch => onUpdate(node.id, patch);
 
   return (
     <div className="flex flex-col h-full">
@@ -442,9 +258,24 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
         </div>
       )}
 
-      {/* Fields */}
+      {/* Fields — generated from configSchema */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        <FieldsComp node={node} onChange={patch => onUpdate(node.id, patch)} nodes={nodes} />
+        {(cfg.configSchema || []).map(fieldDef => (
+          <GenericField
+            key={fieldDef.key}
+            fieldDef={fieldDef}
+            node={node}
+            nodes={nodes}
+            byType={byType}
+            onChange={onChange}
+            onUpdate={onUpdate}
+          />
+        ))}
+        {cfg.footnote && (
+          <div className="mb-3 px-2.5 py-2 rounded-lg bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed">
+            {cfg.footnote}
+          </div>
+        )}
       </div>
 
       {/* Actions */}

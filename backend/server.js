@@ -15,6 +15,7 @@ import v1Routes        from './src/routes/v1/index.js';
 import internalRoutes  from './src/routes/internal/index.js';
 import { internalAuth, internalRateLimit } from './src/middleware/internalAuth.js';
 import { errorHandler } from './src/middleware/asyncHandler.js';
+import { checkNodeTypeApiEndpoints } from './src/nodeTypes/selfCheck.js';
 
 const app    = express();
 const server = http.createServer(app);
@@ -81,6 +82,10 @@ async function start() {
     console.log(`[boot] fs-enrs API running on port ${config.port}`);
     console.log(`[boot] Environment: ${config.env}`);
   });
+
+  // Non-fatal — a stale registry entry shouldn't block boot, but must be
+  // loud, not silent.
+  checkNodeTypeApiEndpoints();
 
   // Connect to FreeSWITCH (non-fatal — app works without ESL)
   try { eslConnect(); }

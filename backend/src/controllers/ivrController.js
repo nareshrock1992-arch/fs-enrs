@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { validateGraph } from '../utils/ivrGraphValidator.js';
+import { publicNodeTypes } from '../nodeTypes/registry.js';
 import {
   CreateFlowSchema,
   UpdateFlowSchema,
@@ -9,6 +10,13 @@ import {
   UnbindFlowSchema,
   GraphSchema,
 } from '../validators/ivrValidator.js';
+
+// ── GET /ivr/node-types ────────────────────────────────────────────────────────
+// Single source of truth for the IVR Builder's palette + property forms —
+// see backend/src/nodeTypes/registry.js. Never leaks Lua handler source.
+export const getNodeTypes = asyncHandler(async (req, res) => {
+  res.json({ node_types: publicNodeTypes() });
+});
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
