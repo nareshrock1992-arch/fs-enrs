@@ -167,13 +167,18 @@ export async function validateGraph(graph, tenantId) {
   const ersIds       = [];
   const audioFileIds = [];
 
+  // Any node type carrying an ens_configuration_id / ers_configuration_id
+  // gets FK-checked — collected by FIELD, not by a hardcoded type list, so
+  // Phase 5 node types (ers_ring_all, ers_overflow_check, ers_overflow_wait,
+  // ens_blast_record, ens_playback_gate) and any future registry type that
+  // references a configuration are covered automatically.
   for (const node of Object.values(nodes)) {
     if (!node) continue;
-    if (node.type === 'ens'    && node.ens_configuration_id)  ensIds.push(node.ens_configuration_id);
-    if (node.type === 'ers'    && node.ers_configuration_id)  ersIds.push(node.ers_configuration_id);
-    if (node.type === 'play'   && node.audio_file_id)         audioFileIds.push(node.audio_file_id);
-    if (node.type === 'hangup' && node.play_audio_file_id)    audioFileIds.push(node.play_audio_file_id);
-    if (node.type === 'gather' && node.prompt_audio_file_id)  audioFileIds.push(node.prompt_audio_file_id);
+    if (typeof node.ens_configuration_id === 'number') ensIds.push(node.ens_configuration_id);
+    if (typeof node.ers_configuration_id === 'number') ersIds.push(node.ers_configuration_id);
+    if (node.type === 'play'   && node.audio_file_id)        audioFileIds.push(node.audio_file_id);
+    if (node.type === 'hangup' && node.play_audio_file_id)   audioFileIds.push(node.play_audio_file_id);
+    if (node.type === 'gather' && node.prompt_audio_file_id) audioFileIds.push(node.prompt_audio_file_id);
   }
 
   const checks = [];
