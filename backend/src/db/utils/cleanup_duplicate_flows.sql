@@ -1,7 +1,8 @@
 -- Utility: find and soft-delete duplicate IVR flows
 --
--- A "duplicate" is two or more flows with the same (tenant_id, name) that have
--- NEVER been deployed (last_deployment_status IS NULL AND last_deployed_at IS NULL).
+-- A "duplicate" is two or more flows with the same (tenant_id, name) that
+-- have NEVER been deployed (last_deployment_status IS NULL AND
+-- last_deployed_at IS NULL) AND have no number currently bound to them.
 -- The most-recently-updated copy is kept; all older copies are soft-deleted.
 --
 -- Usage:
@@ -25,6 +26,10 @@ FROM ivr_flows f
 WHERE f.deleted_at IS NULL
   AND f.last_deployment_status IS NULL
   AND f.last_deployed_at       IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM emergency_numbers en
+    WHERE en.ivr_flow_id = f.id AND en.deleted_at IS NULL
+  )
   AND (f.tenant_id, f.name) IN (
     SELECT tenant_id, name
     FROM   ivr_flows
@@ -50,6 +55,10 @@ SET    deleted_at = now()
 WHERE  deleted_at IS NULL
   AND  last_deployment_status IS NULL
   AND  last_deployed_at       IS NULL
+  AND  NOT EXISTS (
+    SELECT 1 FROM emergency_numbers en
+    WHERE en.ivr_flow_id = ivr_flows.id AND en.deleted_at IS NULL
+  )
   AND  (tenant_id, name) IN (
     SELECT tenant_id, name
     FROM   ivr_flows
