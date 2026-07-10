@@ -178,6 +178,15 @@ export const api = {
     testMode:         ()          => request('GET', '/settings/test-mode'),
   },
 
+  // Telephony gateways (Phase 4 — gateway-agnostic dialing)
+  gateways: {
+    list:   ()       => request('GET',    '/gateways'),
+    create: (d)      => request('POST',   '/gateways', d),
+    update: (id, d)  => request('PUT',    `/gateways/${id}`, d),
+    remove: (id)     => request('DELETE', `/gateways/${id}`),
+    deploy: (id)     => request('POST',   `/gateways/${id}/deploy`),
+  },
+
   // IVR flows
   ivr: {
     list:     (q)           => request('GET',    `/ivr/flows?${new URLSearchParams(q || {})}`),

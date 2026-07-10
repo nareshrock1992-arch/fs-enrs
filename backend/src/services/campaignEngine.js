@@ -203,15 +203,20 @@ async function processCampaign(campaign) {
     [campaign.id, destinations.length]
   );
 
-  // Originate each call
-  const gateway   = campaign.sip_gateway || config.freeswitch?.defaultGateway || 'default';
-  const clid      = campaign.sip_caller_id || campaign.trigger_number || '999';
-  const mediaPath = campaign.recording_file || '';
+  // Originate each call — Phase 4: no hardcoded 'default' gateway name.
+  // Passing null/undefined through to resolveDialString() means "no
+  // gateway configured," which correctly falls back to sofia/internal/
+  // for local testing instead of assuming a gateway literally named
+  // "default" exists in FreeSWITCH (which broke every fresh local setup
+  // with zero gateways configured).
+  const gatewayName = campaign.sip_gateway || config.freeswitch?.defaultGateway || null;
+  const clid         = campaign.sip_caller_id || campaign.trigger_number || '999';
+  const mediaPath    = campaign.recording_file || '';
 
   for (const dest of destinations) {
     const callUuid = randomUUID();
     state.cpsHistory.push(Date.now());
-    await originateDestination(campaign, dest, callUuid, gateway, clid, mediaPath);
+    await originateDestination(campaign, dest, callUuid, gatewayName, clid, mediaPath);
   }
 
   emitInternal('enrs::campaign_progress', {
@@ -221,7 +226,7 @@ async function processCampaign(campaign) {
   });
 }
 
-async function originateDestination(campaign, dest, callUuid, gateway, clid, playbackFile) {
+async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile) {
   // Assign UUID to destination row first so ESL CHANNEL_HANGUP can find it
   await query(
     `UPDATE ens_campaign_destinations SET call_uuid = $2, updated_at = now() WHERE id = $1`,
@@ -235,7 +240,8 @@ async function originateDestination(campaign, dest, callUuid, gateway, clid, pla
       destId:      dest.id,
       number:      dest.phone_number,
       clid,
-      gateway,
+      gatewayName,
+      contactId:   dest.contact_id || null,
       playbackFile: playbackFile || null,
       timeout:     ORIGINATE_TIMEOUT,
     });

@@ -49,8 +49,13 @@ const NAV = [
   },
 
   // Admin-only items
-  { label: 'User Management', icon: Users,    to: '/users',    adminOnly: true },
-  { label: 'Settings',        icon: Settings, to: '/settings', adminOnly: true },
+  { label: 'User Management', icon: Users, to: '/users', adminOnly: true },
+  {
+    label: 'Settings', icon: Settings, adminOnly: true, children: [
+      { label: 'General',            to: '/settings' },
+      { label: 'Telephony Gateways', to: '/settings/gateways' },
+    ]
+  },
 ];
 
 function NavItem({ item, depth = 0 }) {

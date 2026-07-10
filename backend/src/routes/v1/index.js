@@ -17,6 +17,7 @@ import ivrRoutes        from './ivr.js';
 import deploymentRoutes from './deployment.js';
 import serviceRoutes    from './services.js';
 import campaignRoutes   from './campaigns.js';
+import gatewayRoutes    from './gateways.js';
 
 const router = Router();
 
@@ -39,5 +40,6 @@ router.use('/dashboard',     dashRoutes);
 router.use('/reports',       reportRoutes);
 router.use('/media',         mediaRoutes);
 router.use('/settings',      settingRoutes);
+router.use('/gateways',      gatewayRoutes);
 
 export default router;

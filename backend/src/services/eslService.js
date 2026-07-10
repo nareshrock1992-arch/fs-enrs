@@ -4,6 +4,7 @@ import { EventEmitter } from 'events';
 import esl from 'modesl';
 import { config } from '../config/index.js';
 import { query }  from '../db/pool.js';
+import { resolveDialString } from './dialResolver.js';
 
 const { Connection } = esl;
 
@@ -208,35 +209,35 @@ export function eslCommand(cmd) {
 
 // ─── Originate a call leg ────────────────────────────────────
 //
-// mode: 'gateway'  — external SIP gateway (production)
-//         opts.gateway  = gateway name in FreeSWITCH
-//         opts.to       = destination number to dial
+// Gateway-agnostic (Phase 4) — the dial string is resolved by
+// dialResolver.js, never constructed inline here. With zero SIP gateways
+// configured this always dials sofia/internal/<ext>@<domain>; adding a
+// tenant's default gateway (or a per-contact override) switches it to
+// sofia/gateway/<name>/<number> with no code change.
 //
-// mode: 'user'     — internal user/ dial string (lab mode, no SIP trunk needed)
-//         opts.extension = internal extension (e.g. '1001')
-//
-// mode: 'internal' — sofia/internal profile (lab/internal profile)
-//         opts.extension = extension
-//         opts.domain    = FreeSWITCH domain (default 127.0.0.1)
-//
-// Common opts:
+// opts:
+//   tenantId, contactId, extension, mobileNumber, gatewayId — passed
+//     straight through to resolveDialString()
 //   clid   — caller ID shown on recipient phone
 //   action — 'playback' | 'conference'
 //   target — recording path (playback) or room@profile (conference)
 //   vars   — additional channel variables { key: value }
 export async function originateCall({
-  mode = 'gateway',
-  gateway,
+  tenantId,
+  contactId,
   extension,
+  mobileNumber,
+  gatewayId,
   domain,
-  to,
   clid,
   action = 'playback',
   target,
   vars = {},
 }) {
-  const dest = extension || to;
-  const cid  = clid || dest;
+  const { dialString } = await resolveDialString({
+    tenantId, contactId, extension, mobileNumber, gatewayId, domain,
+  });
+  const cid = clid || extension || mobileNumber;
 
   const varParts = {
     origination_caller_id_number: cid,
@@ -247,27 +248,11 @@ export async function originateCall({
   };
   const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
 
-  let dialStr;
-  if (mode === 'user') {
-    // user/ dial string — routes through FreeSWITCH user directory (no external gateway)
-    dialStr = `user/${dest}`;
-  } else if (mode === 'internal') {
-    // sofia/internal profile — for extensions on internal SIP profile
-    const dom = domain || config.esl.domain || '127.0.0.1';
-    dialStr = `sofia/internal/${dest}@${dom}`;
-  } else {
-    // External SIP gateway (production)
-    dialStr = `sofia/gateway/${gateway}/${dest}`;
-  }
+  const app = action === 'conference'
+    ? `&conference(${target}@default)`
+    : `&playback(${target})`;
 
-  let app;
-  if (action === 'conference') {
-    app = `&conference(${target}@default)`;
-  } else {
-    app = `&playback(${target})`;
-  }
-
-  const cmd = `originate {${varStr}}${dialStr} ${app}`;
+  const cmd = `originate {${varStr}}${dialString} ${app}`;
   return eslCommand(cmd);
 }
 
@@ -277,16 +262,29 @@ export async function originateCall({
 // call ID before the CHANNEL_ANSWER / CHANNEL_HANGUP events fire.
 // playbackFile is the absolute FS path to the recording to play.
 // If null, the call is put in park — backend can send media later.
+//
+// Gateway-agnostic (Phase 4): dialString is resolved via
+// resolveDialString() by the caller (campaignEngine.js), or this
+// function resolves it itself if contactId/tenantId are provided instead
+// of a pre-resolved dialString — never construct "sofia/gateway/" here.
 export async function originateCampaignCall({
   callUuid,
   campaignId,
   destId,
   number,
   clid,
-  gateway = 'default',
+  tenantId,
+  contactId,
+  gatewayId,
+  gatewayName,
+  dialString,
   playbackFile,
   timeout = 30,
 }) {
+  const resolved = dialString || (await resolveDialString({
+    tenantId, contactId, mobileNumber: number, gatewayId, gatewayName,
+  })).dialString;
+
   const varParts = {
     origination_uuid:             callUuid,
     origination_caller_id_number: clid || number,
@@ -296,10 +294,9 @@ export async function originateCampaignCall({
     enrs_campaign_id:             String(campaignId),
     enrs_dest_id:                 String(destId),
   };
-  const varStr  = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
-  const dialStr = `sofia/gateway/${gateway}/${number}`;
-  const app     = playbackFile ? `&playback(${playbackFile})` : '&park()';
-  return eslCommand(`originate {${varStr}}${dialStr} ${app}`);
+  const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
+  const app    = playbackFile ? `&playback(${playbackFile})` : '&park()';
+  return eslCommand(`originate {${varStr}}${resolved} ${app}`);
 }
 
 // ─── Play audio in a conference ─────────────────────────────

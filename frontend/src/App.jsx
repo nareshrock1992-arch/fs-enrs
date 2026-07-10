@@ -22,6 +22,7 @@ import ReportNotifications from './pages/reports/ReportNotifications.jsx';
 import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
+import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
 import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
 import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
@@ -88,6 +89,7 @@ export default function App() {
         {/* Admin-only */}
         <Route path="users"    element={<RequireAdmin><UserList /></RequireAdmin>} />
         <Route path="settings" element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
+        <Route path="settings/gateways" element={<RequireAdmin><TelephonyGateways /></RequireAdmin>} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

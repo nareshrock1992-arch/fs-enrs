@@ -19,14 +19,15 @@ class FreeSwitchPathService {
 
   // ── Standard FS directories ────────────────────────────────────────────────
 
-  getConfigDir()    { return this.#cfg.confDir;      }
-  getDialplanDir()  { return this.#cfg.dialplanDir;  }
-  getScriptDir()    { return this.#cfg.scriptDir;    }
-  getSoundDir()     { return this.#cfg.soundDir;     }
-  getRecordingDir() { return this.#cfg.recordingDir; }
-  getStorageDir()   { return this.#cfg.storageDir;   }
-  getDbDir()        { return this.#cfg.dbDir;        }
-  getLogDir()       { return this.#cfg.logDir;       }
+  getConfigDir()      { return this.#cfg.confDir;      }
+  getDialplanDir()    { return this.#cfg.dialplanDir;  }
+  getScriptDir()      { return this.#cfg.scriptDir;    }
+  getSoundDir()       { return this.#cfg.soundDir;     }
+  getRecordingDir()   { return this.#cfg.recordingDir; }
+  getStorageDir()     { return this.#cfg.storageDir;   }
+  getDbDir()          { return this.#cfg.dbDir;        }
+  getLogDir()         { return this.#cfg.logDir;       }
+  getSipProfileDir()  { return this.#cfg.sipProfileDir; }
 
   // ── ENRS-specific paths ────────────────────────────────────────────────────
 

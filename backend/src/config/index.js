@@ -30,6 +30,10 @@ export const config = {
     port:        Number(process.env.ESL_PORT) || 8021,
     password:    process.env.ESL_PASSWORD    || 'ClueCon',
     reconnectMs: Number(process.env.ESL_RECONNECT_MS) || 3000,
+    // SIP domain used for sofia/internal/<ext>@<domain> dial strings
+    // (dialResolver.js). Was referenced here before but never defined —
+    // always silently fell through to the 127.0.0.1 default.
+    domain:      process.env.SIP_DOMAIN || process.env.ESL_DOMAIN || '127.0.0.1',
   },
 
   cors: {
