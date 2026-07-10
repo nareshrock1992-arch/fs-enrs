@@ -8,7 +8,10 @@ import { emitInternal } from '../../services/socketService.js';
 
 const ConferenceRoomRegex = /^[a-z0-9_]{1,64}$/;
 
-const IncidentCreateSchema = z.object({
+// Exported so scripts/verify-api-contracts.js can statically cross-check
+// every field name the generated Lua sends against what this endpoint
+// actually accepts, without needing a live server.
+export const IncidentCreateSchema = z.object({
   configuration_id: z.number().int().positive(),
   caller_number:    z.string().min(7).max(32),
   caller_name:      z.string().max(128).optional().nullable(),

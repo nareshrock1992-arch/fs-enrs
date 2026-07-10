@@ -49,6 +49,48 @@ describe('luaGenerator — ERS incident creation', () => {
   });
 });
 
+describe('Phase 2 discovery — ens_pin_valid condition operator', () => {
+  // Found while building scripts/verify-api-contracts.js: the previous
+  // implementation called GET /ens/lookup?number=&pin= — but ensLookup()
+  // never reads a pin query param at all (it's not part of that
+  // endpoint's contract), so the PIN was silently never checked. The real
+  // PIN check must go through POST /ens/verify-pin, which is the single
+  // source of truth for pin_required + correctness.
+  it('verifies the PIN via POST /ens/verify-pin, not as a GET query param on /ens/lookup', () => {
+    expect(lua).toContain('post("/ens/verify-pin"');
+    expect(lua).not.toMatch(/\/ens\/lookup\?number=.*&pin=/);
+  });
+
+  it('sends trigger_number and pin in the verify-pin body', () => {
+    expect(lua).toMatch(/post\("\/ens\/verify-pin",\s*\{\s*trigger_number\s*=\s*dest,\s*pin\s*=\s*val/);
+  });
+
+  it('reads configuration data from lookup.data, not top-level (lookup wraps its payload in a data key)', () => {
+    expect(lua).toContain('lookup.data.configuration_id');
+    expect(lua).not.toMatch(/\blookup\.configuration_id\b/);
+  });
+});
+
+describe('Phase 2 discovery — ens_callback_valid condition operator', () => {
+  // Same discovery pass: called a nonexistent /ens/callback_lookup path
+  // (the real endpoint is /ens/callbacks/authorize) with only `caller`,
+  // missing the required `reply_clid` param entirely, and read
+  // d.notification_id (doesn't exist) instead of d.notification_uuid.
+  it('calls the real /ens/callbacks/authorize endpoint, not a nonexistent /ens/callback_lookup', () => {
+    expect(lua).toContain('"/ens/callbacks/authorize?reply_clid="');
+    expect(lua).not.toContain('/ens/callback_lookup');
+  });
+
+  it('sends both reply_clid and caller as required by the endpoint', () => {
+    expect(lua).toMatch(/reply_clid=.*url_encode\(reply_clid\).*caller=.*url_encode\(caller\)/);
+  });
+
+  it('reads notification_uuid from the response, not the nonexistent notification_id', () => {
+    expect(lua).toContain('d.notification_uuid');
+    expect(lua).not.toContain('d.notification_id');
+  });
+});
+
 describe('Phase 1 item 13 — ERS incident completion after the caller leaves', () => {
   // exec_ers() previously never called the already-built
   // POST /ers/incidents/:uuid/complete endpoint after the conference

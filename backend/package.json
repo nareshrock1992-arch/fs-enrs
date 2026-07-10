@@ -10,7 +10,12 @@
     "migrate": "node src/db/migrate.js",
     "seed":    "node src/db/seed.js",
     "test":    "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify:lua":       "node scripts/lua-syntax-check.js",
+    "verify:xml":       "node scripts/xml-structural-check.js",
+    "verify:contracts": "node ../scripts/verify-api-contracts.js",
+    "verify:all":       "npm run verify:lua && npm run verify:xml && npm run verify:contracts && npm test",
+    "lint":    "eslint src server.js"
   },
   "dependencies": {
     "bcryptjs":          "^2.4.3",
@@ -33,7 +38,9 @@
     "nodemon":    "^3.1.4",
     "vitest":     "^1.6.0",
     "supertest":  "^7.0.0",
-    "@vitest/coverage-v8": "^1.6.0"
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint":     "^9.9.0",
+    "@eslint/js": "^9.9.0"
   },
   "engines": { "node": ">=20" }
 }

@@ -21,7 +21,10 @@ const DeliverySchema = z.object({
   answered_at:    z.string().datetime({ offset: true }).optional().nullable(),
 });
 
-const NotificationCreateSchema = z.object({
+// Exported so scripts/verify-api-contracts.js can statically cross-check
+// every field name the generated Lua sends against what this endpoint
+// actually accepts, without needing a live server.
+export const NotificationCreateSchema = z.object({
   configuration_id: z.number().int().positive(),
   triggered_via:    z.enum(['PHONE', 'UI', 'API']).default('PHONE'),
   caller_number:    z.string().min(7).max(20).optional().nullable(),
