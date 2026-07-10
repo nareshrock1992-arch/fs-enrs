@@ -274,6 +274,25 @@ export async function confKick(confName, memberId) {
   return eslCommand(`conference ${confName} kick ${memberId}`);
 }
 
+// ─── Verify an extension actually loaded into the live dialplan ─────
+//
+// reloadxml reporting "+OK" only means FreeSWITCH re-parsed its config
+// tree — it says nothing about whether a given extension ended up inside
+// the context that live calls actually route through (e.g. a file
+// written to the wrong directory produces a sibling XML node that never
+// merges in, and reloadxml succeeds regardless). xml_locate resolves the
+// dialplan the same way a real call would, so grepping its output for
+// the extension name is the only way to know it is truly live.
+export async function verifyExtensionLoaded(extensionName) {
+  try {
+    const raw = await eslCommand('xml_locate dialplan default');
+    const loaded = typeof raw === 'string' && raw.includes(extensionName);
+    return { loaded, raw };
+  } catch (err) {
+    return { loaded: false, raw: '', error: err.message };
+  }
+}
+
 // ─── Get current ESL status ─────────────────────────────────
 export function eslStatus() {
   return { connected: isConn, host: config.esl.host, port: config.esl.port, reconnect_attempts: reconnectCount };

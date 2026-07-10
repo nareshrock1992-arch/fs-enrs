@@ -19,7 +19,7 @@ import path from 'path';
 import { fsPathService } from './freeSwitchPathService.js';
 import { generateIvrExecutorLua } from '../utils/luaGenerator.js';
 import { generateDialplanXml }    from '../utils/xmlGenerator.js';
-import { eslCommand }              from './eslService.js';
+import { eslCommand, verifyExtensionLoaded } from './eslService.js';
 import { validateGraph }           from '../utils/ivrGraphValidator.js';
 import { query }                   from '../db/pool.js';
 import { config }                  from '../config/index.js';
@@ -89,9 +89,11 @@ async function validateAudioFiles(graph) {
 // ── Ensure FS directories exist ───────────────────────────────────────────────
 
 async function ensureDirs() {
+  const dialplanTargetDir = await fsPathService.detectDialplanTargetDir();
   const dirs = [
     fsPathService.getScriptDir(),
     fsPathService.getDialplanDir(),
+    dialplanTargetDir,
     fsPathService.getEnrsSoundDir(),
     fsPathService.getIvrRecordingDir(),
   ];
@@ -143,7 +145,7 @@ async function deployDialplanXml() {
   );
 
   const xmlContent = generateDialplanXml(bindings);
-  const xmlPath    = fsPathService.getIvrDialplanFile();
+  const xmlPath    = await fsPathService.getIvrDialplanFile();
 
   await fs.writeFile(xmlPath, xmlContent, 'utf8');
   await fs.chmod(xmlPath, 0o644).catch(() => {});
@@ -219,6 +221,7 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
     report.files.bound_numbers = xmlResult.bindingCount;
 
     // 7. reloadxml via ESL
+    let eslConnected = true;
     await runStep(report, 'reloadxml', async () => {
       try {
         const res = await eslCommand('reloadxml');
@@ -228,11 +231,48 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
       } catch (eslErr) {
         // ESL offline is a warning, not a fatal error
         // (files are deployed; dialplan will load on next FS restart)
+        eslConnected = false;
         report.warnings.push('ESL reloadxml skipped (ESL not connected): ' + eslErr.message);
       }
     });
 
-    // 8. Update deployment cache on ivr_flows + insert history row
+    // 8. Verify the deploy actually loaded — do NOT trust reloadxml's "+OK".
+    //    A file written to the wrong directory (e.g. a sibling <context>
+    //    node that default.xml's nested include never merges in) makes
+    //    reloadxml report success while the extension is silently dead.
+    if (eslConnected) {
+      await runStep(report, 'verify_extension_loaded', async () => {
+        const { rows: boundNumbers } = await query(
+          `SELECT number FROM emergency_numbers
+           WHERE ivr_flow_id = $1 AND deleted_at IS NULL AND is_active = true`,
+          [flow.id]
+        );
+
+        if (boundNumbers.length === 0) {
+          report.warnings.push('No numbers are bound to this flow yet — nothing to verify. Bind a number, then Deploy again to confirm it loads.');
+          return;
+        }
+
+        const unloaded = [];
+        for (const { number } of boundNumbers) {
+          const extensionName = `enrs_ivr_${number}`;
+          const { loaded } = await verifyExtensionLoaded(extensionName);
+          if (!loaded) unloaded.push(extensionName);
+        }
+
+        if (unloaded.length > 0) {
+          throw new Error(
+            `Deployed files were written but FreeSWITCH did not load the extension${unloaded.length > 1 ? 's' : ''} ` +
+            `(${unloaded.join(', ')}). Check dialplan/default.xml's include pattern on this box — ` +
+            `run GET /deployment/diagnostics to see the resolved include chain.`
+          );
+        }
+      });
+    } else {
+      report.warnings.push('Extension-load verification skipped (ESL not connected) — files are deployed but not confirmed live.');
+    }
+
+    // 9. Update deployment cache on ivr_flows + insert history row
     await runStep(report, 'record_deployment', async () => {
       await query(
         `UPDATE ivr_flows
@@ -359,7 +399,7 @@ export async function previewDeployment(flowUuid, tenantId) {
     flow_name:       flow.name,
     version_number:  flow.version_number,
     lua_target:      fsPathService.getExecutorLuaFile(),
-    xml_target:      fsPathService.getIvrDialplanFile(),
+    xml_target:      await fsPathService.getIvrDialplanFile(),
     bound_numbers:   bindings.map(b => b.number),
     audio_issues:    audioIssues,
     paths:           fsPathService.getSummary(),

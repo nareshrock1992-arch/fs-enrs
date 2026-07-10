@@ -14,8 +14,11 @@
  */
 
 import { promises as fs, constants as fsc } from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
 import { fsPathService } from './freeSwitchPathService.js';
 import { eslCommand, eslStatus } from './eslService.js';
+import { query } from '../db/pool.js';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -154,6 +157,177 @@ async function checkAudioCount() {
   }
 }
 
+// ── Dialplan include chain ────────────────────────────────────────────────────
+//
+// Walks the same include chain FreeSWITCH itself walks to assemble the live
+// "default" routing context: freeswitch.xml's top-level dialplan include,
+// then default.xml's own nested include (if any). Reports the fully-resolved
+// directory extensions actually load from, as a setup step rather than a
+// silent trap discovered only by tailing fs_cli logs during a real call.
+
+async function checkDialplanChain() {
+  const confDir            = fsPathService.getConfigDir();
+  const dialplanDir        = fsPathService.getDialplanDir();
+  const freeswitchXmlPath  = path.posix.join(confDir, 'freeswitch.xml');
+  const defaultXmlPath     = path.posix.join(dialplanDir, 'default.xml');
+
+  let topLevelPattern = null;
+  try {
+    const content = await fs.readFile(freeswitchXmlPath, 'utf8');
+    const m = content.match(/<X-PRE-PROCESS\s+cmd="include"\s+data="([^"]*dialplan[^"]*)"\s*\/>/i);
+    if (m) topLevelPattern = m[1];
+  } catch { /* not readable from this box — reported below */ }
+
+  const targetDir = await fsPathService.detectDialplanTargetDir();
+
+  const chain = [
+    { file: freeswitchXmlPath, include_pattern: topLevelPattern || '(not found)' },
+    { file: defaultXmlPath,    resolved_target: targetDir },
+  ];
+
+  if (!topLevelPattern) {
+    return {
+      ...warn(
+        'Dialplan Include Chain',
+        `Could not confirm ${freeswitchXmlPath} includes the dialplan directory — verify manually. ` +
+        `Extensions will still be written to the detected target: ${targetDir}`,
+        `Ensure freeswitch.xml has <X-PRE-PROCESS cmd="include" data="dialplan/*.xml"/>`
+      ),
+      chain,
+    };
+  }
+
+  return {
+    ...pass(
+      'Dialplan Include Chain',
+      `${freeswitchXmlPath} includes "${topLevelPattern}" → default.xml resolves live extensions to: ${targetDir}`
+    ),
+    chain,
+  };
+}
+
+// ── Conflict scan ─────────────────────────────────────────────────────────────
+//
+// A matching <extension> earlier in file/glob order with continue="false"
+// silently shadows our generated extension even after the target path is
+// correct — this only ever surfaces as "the call routes somewhere else"
+// with no error anywhere. Scan every other XML file in the detected target
+// directory for destination_number conditions that could also match a
+// number this app is about to bind.
+
+async function checkDialplanConflicts(targetDir) {
+  const { rows: boundNumbers } = await query(
+    `SELECT DISTINCT number FROM emergency_numbers
+     WHERE deleted_at IS NULL AND is_active = true AND ivr_flow_id IS NOT NULL`
+  );
+  if (boundNumbers.length === 0) {
+    return pass('Dialplan Conflict Scan', 'No IVR-bound numbers yet — nothing to check for shadowing.');
+  }
+
+  let files;
+  try {
+    files = await fs.readdir(targetDir);
+  } catch {
+    return warn('Dialplan Conflict Scan', `Target directory not readable yet: ${targetDir}`,
+      'Will be checked again after first deploy creates it');
+  }
+
+  const xmlFiles = files.filter(f => f.endsWith('.xml') && f !== 'enrs_ivr.xml');
+  const conflicts = [];
+
+  for (const file of xmlFiles) {
+    let content;
+    try {
+      content = await fs.readFile(path.posix.join(targetDir, file), 'utf8');
+    } catch { continue; }
+
+    const extRe = /<extension\s+name="([^"]+)"([^>]*)>([\s\S]*?)<\/extension>/gi;
+    let extMatch;
+    while ((extMatch = extRe.exec(content))) {
+      const [, extName, attrs, body] = extMatch;
+      const continueAttr = /continue="([^"]+)"/i.exec(attrs)?.[1] ?? 'true';
+
+      const condRe = /<condition\s+field="destination_number"\s+expression="([^"]+)"/gi;
+      let condMatch;
+      while ((condMatch = condRe.exec(body))) {
+        const expr = condMatch[1];
+        let regex;
+        try { regex = new RegExp(expr); } catch { continue; }
+
+        for (const { number } of boundNumbers) {
+          if (regex.test(number)) {
+            conflicts.push(
+              `Legacy extension "${extName}" in ${file} (continue="${continueAttr}") matches number "${number}" ` +
+              `via expression "${expr}"` +
+              (continueAttr === 'false'
+                ? ' — this WILL shadow the ENRS extension if it loads earlier in glob order.'
+                : ' — may execute before the ENRS extension depending on glob order.')
+            );
+          }
+        }
+      }
+    }
+  }
+
+  if (conflicts.length === 0) {
+    return pass('Dialplan Conflict Scan', `${xmlFiles.length} other file(s) checked in ${targetDir} — no matching extensions found.`);
+  }
+  return warn('Dialplan Conflict Scan', conflicts.join(' | '),
+    'Rename or remove the conflicting legacy extension, or ensure it does not use continue="false"');
+}
+
+// ── FreeSWITCH-user permission check ──────────────────────────────────────────
+//
+// A plain write failure at deploy time is cryptic ("EACCES") with no hint
+// about *why*. Compare the target directory's owner/group/mode against the
+// `freeswitch` system user directly so a mismatch reads as a clear warning
+// during setup, not a mystery during a customer's first test call.
+
+function getFreeswitchUidGid() {
+  try {
+    const uid = Number(execSync('id -u freeswitch', { timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim());
+    const gid = Number(execSync('id -g freeswitch', { timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim());
+    return Number.isFinite(uid) && Number.isFinite(gid) ? { uid, gid } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkFreeswitchPermissions(label, dirPath) {
+  let stat;
+  try {
+    stat = await fs.stat(dirPath);
+  } catch {
+    return warn(label, `Directory does not exist yet: ${dirPath}`, 'Will be created automatically on first Deploy');
+  }
+
+  const nodeCanWrite = await fs.access(dirPath, fsc.W_OK).then(() => true).catch(() => false);
+  if (!nodeCanWrite) {
+    return fail(label, `Not writable by the OS user running this backend process`,
+      `chown -R $(whoami) "${dirPath}"  OR run this process as a user with write access to it`);
+  }
+
+  const fsIds = getFreeswitchUidGid();
+  const mode = stat.mode & 0o777;
+  if (!fsIds) {
+    return warn(label,
+      `${dirPath} — owner uid=${stat.uid} gid=${stat.gid} mode=${mode.toString(8)}. ` +
+      `Could not resolve the 'freeswitch' system user on this box to compare (id command unavailable).`);
+  }
+
+  const worldReadable  = (mode & 0o004) !== 0;
+  const groupReadable  = stat.gid === fsIds.gid && (mode & 0o040) !== 0;
+  const ownerReadable  = stat.uid === fsIds.uid && (mode & 0o400) !== 0;
+
+  if (worldReadable || groupReadable || ownerReadable) {
+    return pass(label, `${dirPath} — readable by freeswitch (uid=${fsIds.uid}, gid=${fsIds.gid}), mode=${mode.toString(8)}`);
+  }
+  return fail(label,
+    `${dirPath} owned by uid=${stat.uid} gid=${stat.gid} mode=${mode.toString(8)} — NOT readable by freeswitch (uid=${fsIds.uid}, gid=${fsIds.gid})`,
+    `chown freeswitch:freeswitch "${dirPath}"  OR  chmod o+r "${dirPath}"`
+  );
+}
+
 // ── Main diagnostic runner ────────────────────────────────────────────────────
 
 export async function runDiagnostics() {
@@ -170,28 +344,52 @@ export async function runDiagnostics() {
     'Grant write to freeswitch user: chown freeswitch:freeswitch ' + fsPathService.getScriptDir()
   ));
   checks.push(await checkDirWritable(
-    'Dialplan Directory (XML)',
+    'Dialplan Directory (search root)',
     fsPathService.getDialplanDir(),
     'Grant write to freeswitch user: chown freeswitch:freeswitch ' + fsPathService.getDialplanDir()
   ));
 
-  // 3. ENRS sound dir
+  // 3. Dialplan include chain — where extensions ACTUALLY end up live
+  const dialplanChain = await checkDialplanChain();
+  checks.push(dialplanChain);
+  const dialplanTargetDir = await fsPathService.detectDialplanTargetDir();
+
+  // 3b. The detected target directory itself must be writable — this can
+  // differ from FS_DIALPLAN_DIR (the search root) when a nested include
+  // is in play, and is the directory that actually matters.
+  if (dialplanTargetDir !== fsPathService.getDialplanDir()) {
+    checks.push(await checkDirWritable(
+      'Dialplan Target Directory (detected)',
+      dialplanTargetDir,
+      'Grant write to freeswitch user: chown freeswitch:freeswitch ' + dialplanTargetDir
+    ));
+  }
+
+  // 3c. Conflict scan — other extensions in the target dir that could
+  // shadow a number this app is about to bind.
+  checks.push(await checkDialplanConflicts(dialplanTargetDir));
+
+  // 3d. freeswitch-user permission comparison on the directories that matter
+  checks.push(await checkFreeswitchPermissions('Permissions: Dialplan Target Directory', dialplanTargetDir));
+  checks.push(await checkFreeswitchPermissions('Permissions: Script Directory', fsPathService.getScriptDir()));
+
+  // 4. ENRS sound dir
   checks.push(await checkAudioCount());
 
-  // 4. Recording dirs
+  // 5. Recording dirs
   checks.push(await checkDirExists('IVR Recording Directory', fsPathService.getIvrRecordingDir()));
 
-  // 5. Deployed files
+  // 6. Deployed files
   checks.push(await checkFileExists(
     'Lua Executor (ivr_executor.lua)',
     fsPathService.getExecutorLuaFile()
   ));
   checks.push(await checkFileExists(
     'Dialplan XML (enrs_ivr.xml)',
-    fsPathService.getIvrDialplanFile()
+    await fsPathService.getIvrDialplanFile()
   ));
 
-  // 6. Path comparison vs actual FS global vars
+  // 7. Path comparison vs actual FS global vars
   const pathChecks = await checkFsGlobalVars();
   checks.push(...pathChecks);
 
@@ -209,6 +407,7 @@ export async function runDiagnostics() {
     finished_at: new Date().toISOString(),
     summary: { pass: pass_count, warn: warn_count, fail: fail_count, total: checks.length },
     checks,
+    dialplan_chain: dialplanChain.chain,
     paths: fsPathService.getSummary(),
   };
 }
