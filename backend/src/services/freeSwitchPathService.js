@@ -70,6 +70,17 @@ class FreeSwitchPathService {
    * Re-run on every deploy (not cached at boot) — the file is small and
    * the FreeSWITCH config on a box can change between deploys.
    */
+  /**
+   * @returns {Promise<{dir: string, nested: boolean}>}
+   *   dir    — the resolved directory FreeSWITCH actually loads from
+   *   nested — true when `dir` sits INSIDE an already-open <context name="default">
+   *            (via default.xml's own nested X-PRE-PROCESS include), meaning any
+   *            file written there must NOT declare its own <context> wrapper —
+   *            a second nested <context> tag at that splice point is invalid XML
+   *            and FreeSWITCH silently drops the whole fragment with no error.
+   *            false — flat layout: dialplan/*.xml siblings, each file DOES need
+   *            its own <context name="default"> wrapper.
+   */
   async detectDialplanTargetDir() {
     const dialplanDir  = this.getDialplanDir();
     const defaultXmlPath = path.posix.join(dialplanDir, 'default.xml');
@@ -78,20 +89,20 @@ class FreeSwitchPathService {
     try {
       content = await fs.readFile(defaultXmlPath, 'utf8');
     } catch {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (default.xml not readable at ${defaultXmlPath} — using root)`);
-      return dialplanDir;
+      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (default.xml not readable at ${defaultXmlPath} — using root, wrapped)`);
+      return { dir: dialplanDir, nested: false };
     }
 
     const contextMatch = content.match(/<context\s+name="default"\s*>([\s\S]*?)<\/context>/i);
     if (!contextMatch) {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no <context name="default"> block in default.xml — using root)`);
-      return dialplanDir;
+      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no <context name="default"> block in default.xml — using root, wrapped)`);
+      return { dir: dialplanDir, nested: false };
     }
 
     const includeMatch = contextMatch[1].match(/<X-PRE-PROCESS\s+cmd="include"\s+data="([^"]+)"\s*\/>/i);
     if (!includeMatch) {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no nested include found in default.xml, using root)`);
-      return dialplanDir;
+      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no nested include found in default.xml, using root, wrapped)`);
+      return { dir: dialplanDir, nested: false };
     }
 
     const includePattern = includeMatch[1]; // e.g. "default/*.xml"
@@ -99,16 +110,16 @@ class FreeSwitchPathService {
       ? path.posix.dirname(includePattern)
       : path.posix.join(dialplanDir, path.posix.dirname(includePattern));
 
-    console.log(`[deploy] Detected dialplan target: ${targetDir} (nested include "${includePattern}" in default.xml)`);
-    return targetDir;
+    console.log(`[deploy] Detected dialplan target: ${targetDir} (nested include "${includePattern}" in default.xml, bare — no <context> wrapper)`);
+    return { dir: targetDir, nested: true };
   }
 
   // ── Specific file paths ────────────────────────────────────────────────────
 
   /** The single generated dialplan file that covers all IVR-bound numbers */
   async getIvrDialplanFile() {
-    const targetDir = await this.detectDialplanTargetDir();
-    return path.posix.join(targetDir, 'enrs_ivr.xml');
+    const { dir } = await this.detectDialplanTargetDir();
+    return path.posix.join(dir, 'enrs_ivr.xml');
   }
 
   /** The generic Lua executor — one file drives all flows */
