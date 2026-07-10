@@ -178,11 +178,11 @@ async function checkDialplanChain() {
     if (m) topLevelPattern = m[1];
   } catch { /* not readable from this box — reported below */ }
 
-  const targetDir = await fsPathService.detectDialplanTargetDir();
+  const { dir: targetDir, nested } = await fsPathService.detectDialplanTargetDir();
 
   const chain = [
     { file: freeswitchXmlPath, include_pattern: topLevelPattern || '(not found)' },
-    { file: defaultXmlPath,    resolved_target: targetDir },
+    { file: defaultXmlPath,    resolved_target: targetDir, nested },
   ];
 
   if (!topLevelPattern) {
@@ -221,15 +221,18 @@ async function checkDialplanConflicts(targetDir) {
      WHERE deleted_at IS NULL AND is_active = true AND ivr_flow_id IS NOT NULL`
   );
   if (boundNumbers.length === 0) {
-    return pass('Dialplan Conflict Scan', 'No IVR-bound numbers yet — nothing to check for shadowing.');
+    return { ...pass('Dialplan Conflict Scan', 'No IVR-bound numbers yet — nothing to check for shadowing.'), conflicts: [] };
   }
 
   let files;
   try {
     files = await fs.readdir(targetDir);
   } catch {
-    return warn('Dialplan Conflict Scan', `Target directory not readable yet: ${targetDir}`,
-      'Will be checked again after first deploy creates it');
+    return {
+      ...warn('Dialplan Conflict Scan', `Target directory not readable yet: ${targetDir}`,
+        'Will be checked again after first deploy creates it'),
+      conflicts: [],
+    };
   }
 
   const xmlFiles = files.filter(f => f.endsWith('.xml') && f !== 'enrs_ivr.xml');
@@ -256,13 +259,16 @@ async function checkDialplanConflicts(targetDir) {
 
         for (const { number } of boundNumbers) {
           if (regex.test(number)) {
-            conflicts.push(
-              `Legacy extension "${extName}" in ${file} (continue="${continueAttr}") matches number "${number}" ` +
-              `via expression "${expr}"` +
-              (continueAttr === 'false'
-                ? ' — this WILL shadow the ENRS extension if it loads earlier in glob order.'
-                : ' — may execute before the ENRS extension depending on glob order.')
-            );
+            conflicts.push({
+              file, extension_name: extName, continue: continueAttr, expression: expr, number,
+              severity: continueAttr === 'false' ? 'blocking' : 'possible',
+              message:
+                `Legacy extension "${extName}" in ${file} (continue="${continueAttr}") matches number "${number}" ` +
+                `via expression "${expr}"` +
+                (continueAttr === 'false'
+                  ? ' — this WILL shadow the ENRS extension if it loads earlier in glob order.'
+                  : ' — may execute before the ENRS extension depending on glob order.'),
+            });
           }
         }
       }
@@ -270,10 +276,70 @@ async function checkDialplanConflicts(targetDir) {
   }
 
   if (conflicts.length === 0) {
-    return pass('Dialplan Conflict Scan', `${xmlFiles.length} other file(s) checked in ${targetDir} — no matching extensions found.`);
+    return {
+      ...pass('Dialplan Conflict Scan', `${xmlFiles.length} other file(s) checked in ${targetDir} — no matching extensions found.`),
+      conflicts,
+    };
   }
-  return warn('Dialplan Conflict Scan', conflicts.join(' | '),
-    'Rename or remove the conflicting legacy extension, or ensure it does not use continue="false"');
+  return {
+    ...warn('Dialplan Conflict Scan', conflicts.map(c => c.message).join(' | '),
+      'Rename or remove the conflicting legacy extension, or ensure it does not use continue="false" — see conflicts[] for one-click disable targets'),
+    conflicts,
+  };
+}
+
+// ── Disable a conflicting legacy extension (one-click fix) ───────────────────
+//
+// Safely comments out (never deletes) the specific matched <extension> block
+// in the offending file, so a non-technical user can resolve a shadowing
+// conflict from the Diagnostics UI without touching a shell. Reversible —
+// the block is wrapped, not removed.
+
+export async function disableLegacyExtension(targetDir, file, extensionName) {
+  const safeFile = path.basename(file); // never allow path traversal out of targetDir
+  const filePath = path.posix.join(targetDir, safeFile);
+
+  const content = await fs.readFile(filePath, 'utf8');
+  const escName = extensionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockRe = new RegExp(`<extension\\s+name="${escName}"[^>]*>[\\s\\S]*?<\\/extension>`, 'i');
+  const match = blockRe.exec(content);
+
+  if (!match) {
+    throw Object.assign(new Error(`Extension "${extensionName}" not found in ${safeFile}`), { status: 404 });
+  }
+  if (match[0].trim().startsWith('<!--')) {
+    throw Object.assign(new Error(`Extension "${extensionName}" in ${safeFile} is already disabled`), { status: 409 });
+  }
+
+  const disabled =
+    `<!-- DISABLED by ENRS Diagnostics (${new Date().toISOString()}) — was shadowing an ENRS-bound number.\n` +
+    `     Re-enable by removing this comment wrapper.\n` +
+    match[0] +
+    `\n-->`;
+
+  const updated = content.slice(0, match.index) + disabled + content.slice(match.index + match[0].length);
+  await fs.writeFile(filePath, updated, 'utf8');
+
+  return { file: safeFile, extension_name: extensionName, disabled: true };
+}
+
+// ── luasocket-free HTTP prerequisite check ────────────────────────────────────
+//
+// The generated ivr_executor.lua uses curl via io.popen (not luasocket) so
+// there is no lua-socket/lua-cjson package dependency to install — but curl
+// itself must be on PATH on the FreeSWITCH host. Node and FreeSWITCH run on
+// the same box in this architecture, so checking PATH from here is accurate.
+
+function checkCurlAvailable() {
+  try {
+    const out = execSync('curl --version', { timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+    return pass('curl Availability', out.split('\n')[0]);
+  } catch {
+    return fail('curl Availability',
+      'curl was not found on PATH — the generated IVR executor script depends on it for every backend API call and will silently fail every call without it.',
+      'Install curl: apt-get install -y curl   (Debian/Ubuntu)  OR  yum install -y curl   (RHEL/CentOS)'
+    );
+  }
 }
 
 // ── FreeSWITCH-user permission check ──────────────────────────────────────────
@@ -352,7 +418,7 @@ export async function runDiagnostics() {
   // 3. Dialplan include chain — where extensions ACTUALLY end up live
   const dialplanChain = await checkDialplanChain();
   checks.push(dialplanChain);
-  const dialplanTargetDir = await fsPathService.detectDialplanTargetDir();
+  const { dir: dialplanTargetDir } = await fsPathService.detectDialplanTargetDir();
 
   // 3b. The detected target directory itself must be writable — this can
   // differ from FS_DIALPLAN_DIR (the search root) when a nested include
@@ -367,7 +433,8 @@ export async function runDiagnostics() {
 
   // 3c. Conflict scan — other extensions in the target dir that could
   // shadow a number this app is about to bind.
-  checks.push(await checkDialplanConflicts(dialplanTargetDir));
+  const conflictCheck = await checkDialplanConflicts(dialplanTargetDir);
+  checks.push(conflictCheck);
 
   // 3d. freeswitch-user permission comparison on the directories that matter
   checks.push(await checkFreeswitchPermissions('Permissions: Dialplan Target Directory', dialplanTargetDir));
@@ -389,6 +456,10 @@ export async function runDiagnostics() {
     await fsPathService.getIvrDialplanFile()
   ));
 
+  // 6b. curl must be on PATH — the generated Lua executor shells out to it
+  // for every backend API call (no luasocket dependency by design).
+  checks.push(checkCurlAvailable());
+
   // 7. Path comparison vs actual FS global vars
   const pathChecks = await checkFsGlobalVars();
   checks.push(...pathChecks);
@@ -408,6 +479,8 @@ export async function runDiagnostics() {
     summary: { pass: pass_count, warn: warn_count, fail: fail_count, total: checks.length },
     checks,
     dialplan_chain: dialplanChain.chain,
+    dialplan_target_dir: dialplanTargetDir,
+    conflicts: conflictCheck.conflicts,
     paths: fsPathService.getSummary(),
   };
 }

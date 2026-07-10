@@ -23,6 +23,8 @@
  *   POST   /deployment/diagnostics/reloadxml — trigger reloadxml via ESL
  *   GET    /deployment/diagnostics/paths    — show configured FS paths
  *   GET    /deployment/diagnostics/esl      — ESL connectivity check
+ *   POST   /deployment/diagnostics/disable-legacy-extension — comment out a
+ *          conflicting legacy <extension> block flagged by the conflict scan
  */
 
 import { Router } from 'express';
@@ -32,7 +34,7 @@ import {
   listAudio, listCategories, uploadAudio, audioUploadMiddleware,
   deployAudio, streamAudio, deleteAudio,
   listFlowStatus, previewDeploy, triggerDeploy, deployHistory, triggerRedeployAll,
-  getDiagnostics, triggerReloadXml, getPaths, getEslStatus,
+  getDiagnostics, triggerReloadXml, getPaths, getEslStatus, disableLegacyExtensionRoute,
 } from '../../controllers/deploymentController.js';
 
 const router = Router();
@@ -61,5 +63,6 @@ router.get('/diagnostics',            adminOrOp, getDiagnostics);
 router.post('/diagnostics/reloadxml', adminOnly, triggerReloadXml);
 router.get('/diagnostics/paths',      adminOrOp, getPaths);
 router.get('/diagnostics/esl',        adminOrOp, getEslStatus);
+router.post('/diagnostics/disable-legacy-extension', adminOnly, disableLegacyExtensionRoute);
 
 export default router;

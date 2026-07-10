@@ -160,9 +160,10 @@ function FlowRow({ flow, onDeploy, deploying }) {
 // ── Diagnostics Panel ─────────────────────────────────────────────────────────
 
 function DiagnosticsPanel() {
-  const [result,  setResult]  = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [paths,   setPaths]   = useState(null);
+  const [result,     setResult]     = useState(null);
+  const [loading,    setLoading]    = useState(false);
+  const [paths,      setPaths]      = useState(null);
+  const [disabling,  setDisabling]  = useState(null);
 
   const run = async () => {
     setLoading(true);
@@ -188,6 +189,25 @@ function DiagnosticsPanel() {
       alert('reloadxml executed successfully');
     } catch (e) {
       alert('reloadxml failed: ' + e.message);
+    }
+  };
+
+  const disableConflict = async (conflict) => {
+    const ok = confirm(
+      `Disable legacy extension "${conflict.extension_name}" in ${conflict.file}?\n\n` +
+      `This comments out (does not delete) the block that matches number "${conflict.number}" ` +
+      `via expression "${conflict.expression}". It can be re-enabled by editing the file and ` +
+      `removing the comment wrapper.`
+    );
+    if (!ok) return;
+    setDisabling(`${conflict.file}::${conflict.extension_name}`);
+    try {
+      await api.deployment.disableLegacyExtension(conflict.file, conflict.extension_name);
+      await run();
+    } catch (e) {
+      alert('Failed to disable extension: ' + e.message);
+    } finally {
+      setDisabling(null);
     }
   };
 
@@ -273,6 +293,42 @@ function DiagnosticsPanel() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Conflicting legacy extensions — one-click disable */}
+      {result?.conflicts?.length > 0 && (
+        <div className="card space-y-2">
+          <p className="text-[10px] font-medium text-amber-500 uppercase tracking-wide mb-1 flex items-center gap-1.5">
+            <AlertTriangle size={11} /> Conflicting Legacy Extensions
+          </p>
+          {result.conflicts.map((c, i) => {
+            const key = `${c.file}::${c.extension_name}`;
+            return (
+              <div key={i} className="flex items-start gap-3 px-3 py-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-text-primary">
+                    "{c.extension_name}" in {c.file}
+                    {c.severity === 'blocking' && (
+                      <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400">
+                        will shadow
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[10px] text-text-muted mt-0.5">{c.message}</p>
+                </div>
+                <button
+                  onClick={() => disableConflict(c)}
+                  disabled={disabling === key}
+                  className="text-[10px] px-2.5 py-1.5 rounded-lg border border-amber-500/30
+                             text-amber-500 hover:bg-amber-500/10 transition-colors shrink-0
+                             disabled:opacity-50"
+                >
+                  {disabling === key ? 'Disabling…' : 'Disable'}
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 

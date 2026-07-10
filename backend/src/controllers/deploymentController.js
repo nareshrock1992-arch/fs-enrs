@@ -14,7 +14,7 @@ import { config }       from '../config/index.js';
 import { fsPathService }         from '../services/freeSwitchPathService.js';
 import { deployFlow, redeployAll, getDeploymentHistory, previewDeployment }
                                  from '../services/deploymentEngine.js';
-import { runDiagnostics, pingEsl, reloadXml }
+import { runDiagnostics, pingEsl, reloadXml, disableLegacyExtension }
                                  from '../services/diagnosticsService.js';
 
 // ── Audio upload config ───────────────────────────────────────────────────────
@@ -276,6 +276,25 @@ export const getPaths = asyncHandler(async (req, res) => {
 /** GET /deployment/diagnostics/esl */
 export const getEslStatus = asyncHandler(async (req, res) => {
   const result = await pingEsl();
+  res.json(result);
+});
+
+/**
+ * POST /deployment/diagnostics/disable-legacy-extension
+ * body: { file, extension_name }
+ *
+ * Safely comments out (never deletes) a conflicting legacy <extension>
+ * block flagged by the Dialplan Conflict Scan, in the currently-detected
+ * dialplan target directory. Reversible — the block stays in the file,
+ * just wrapped in an XML comment.
+ */
+export const disableLegacyExtensionRoute = asyncHandler(async (req, res) => {
+  const { file, extension_name } = req.body;
+  if (!file || !extension_name) {
+    return res.status(400).json({ error: 'file and extension_name are required' });
+  }
+  const { dir } = await fsPathService.detectDialplanTargetDir();
+  const result = await disableLegacyExtension(dir, file, extension_name);
   res.json(result);
 });
 
