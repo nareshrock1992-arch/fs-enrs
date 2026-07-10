@@ -298,19 +298,21 @@ export const ersCreateIncident = asyncHandler(async (req, res) => {
 
 // ── Complete Incident ─────────────────────────────────────────────────────────
 
-// POST /api/v1/internal/ers/incidents/:uuid/complete
-export const ersCompleteIncident = asyncHandler(async (req, res) => {
-  const { uuid } = req.params;
-  const d = IncidentCompleteSchema.parse(req.body);
-
+// Shared core used by both the HTTP endpoint (POST .../complete, called by
+// exec_ers right after a leg leaves the conference) and the ESL
+// conference-destroy reconciliation listener in eslService.js (catches
+// orphans from an unclean restart where the per-leg call never ran). Do
+// not duplicate the queue-promotion logic anywhere else — always go
+// through this function.
+export async function completeIncidentCore(incidentUuid, recordingFile) {
   const result = await withTransaction(async (tq) => {
     const { rows: updated } = await tq(
       `UPDATE ers_incidents
        SET status = 'COMPLETED', ended_at = now(),
            recording_path = COALESCE($2, recording_path)
-       WHERE incident_uuid = $1 AND deleted_at IS NULL
+       WHERE incident_uuid = $1 AND deleted_at IS NULL AND status != 'COMPLETED'
        RETURNING id, ers_configuration_id`,
-      [uuid, d.recording_file]
+      [incidentUuid, recordingFile]
     );
 
     if (!updated[0]) return null;
@@ -342,12 +344,23 @@ export const ersCompleteIncident = asyncHandler(async (req, res) => {
     return updated[0];
   });
 
-  if (!result) return res.status(404).json({ error: 'Incident not found' });
+  if (!result) return null;
 
   emitInternal('enrs::ers_incident_ended', {
-    incident_uuid: uuid,
+    incident_uuid: incidentUuid,
     ended_at:      new Date().toISOString(),
   });
+
+  return result;
+}
+
+// POST /api/v1/internal/ers/incidents/:uuid/complete
+export const ersCompleteIncident = asyncHandler(async (req, res) => {
+  const { uuid } = req.params;
+  const d = IncidentCompleteSchema.parse(req.body);
+
+  const result = await completeIncidentCore(uuid, d.recording_file);
+  if (!result) return res.status(404).json({ error: 'Incident not found' });
 
   res.json({ ok: true });
 });

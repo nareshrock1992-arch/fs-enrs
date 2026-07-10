@@ -52,28 +52,37 @@ async function seed() {
     orgId = ex.id;
   }
 
-  // ENS Contact
+  // ENS Contact — resolveEnsContacts() in ensInternalController.js reads
+  // exclusively from emergency_contacts (direct via
+  // ens_configuration_contacts.emergency_contact_id, or group-based via
+  // responder_group_members + ens_configuration_groups.responder_group_id).
+  // ens_contacts/ens_groups/ens_group_members are a dead, superseded
+  // subsystem no application controller queries — seeding into them here
+  // used to silently test nothing real; a blast against this config would
+  // always resolve zero destinations regardless of what the test asserted.
   const { rows: [ec] } = await query(
-    `INSERT INTO ens_contacts (organization_id, first_name, last_name, mobile_number, is_active)
+    `INSERT INTO emergency_contacts (organization_id, first_name, last_name, mobile_number, is_active)
      VALUES ($1, 'Alice', 'Test', '0501110001', true)
      ON CONFLICT DO NOTHING RETURNING id`,
     [orgId]
   );
   ensContactId = ec?.id;
   if (!ensContactId) {
-    const r = await query(`SELECT id FROM ens_contacts WHERE mobile_number = '0501110001'`);
+    const r = await query(`SELECT id FROM emergency_contacts WHERE mobile_number = '0501110001'`);
     ensContactId = r.rows[0].id;
   }
 
-  // ENS Group
+  // ENS Group — responder_groups is the active group table; ens_groups is
+  // the same dead subsystem as ens_contacts (see above).
   const { rows: [eg] } = await query(
-    `INSERT INTO ens_groups (organization_id, name, is_active)
+    `INSERT INTO responder_groups (organization_id, name, is_active)
      VALUES ($1, 'Test ENS Group', true) RETURNING id`,
     [orgId]
   );
   ensGroupId = eg.id;
   await query(
-    `INSERT INTO ens_group_members (group_id, contact_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    `INSERT INTO responder_group_members (responder_group_id, emergency_contact_id)
+     VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [ensGroupId, ensContactId]
   );
 
@@ -88,9 +97,10 @@ async function seed() {
   );
   ensConfigId = en.id;
 
-  // Link group to ENS config
+  // Link group to ENS config via responder_group_id — the column
+  // resolveEnsContacts() actually joins on (ens_group_id is dead).
   await query(
-    `INSERT INTO ens_configuration_groups (ens_configuration_id, ens_group_id)
+    `INSERT INTO ens_configuration_groups (ens_configuration_id, responder_group_id)
      VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [ensConfigId, ensGroupId]
   );
@@ -148,9 +158,9 @@ async function cleanup() {
     SELECT id FROM ens_notifications WHERE ens_configuration_id = $1)`, [ensConfigId]);
   await query(`DELETE FROM ens_notifications WHERE ens_configuration_id = $1`, [ensConfigId]);
   await query(`DELETE FROM ens_configuration_groups WHERE ens_configuration_id = $1`, [ensConfigId]);
-  await query(`DELETE FROM ens_group_members WHERE group_id = $1`, [ensGroupId]);
-  await query(`DELETE FROM ens_groups WHERE id = $1`, [ensGroupId]);
-  await query(`DELETE FROM ens_contacts WHERE id = $1`, [ensContactId]);
+  await query(`DELETE FROM responder_group_members WHERE responder_group_id = $1`, [ensGroupId]);
+  await query(`DELETE FROM responder_groups WHERE id = $1`, [ensGroupId]);
+  await query(`DELETE FROM emergency_contacts WHERE id = $1`, [ensContactId]);
   await query(`DELETE FROM ens_configurations WHERE id = $1`, [ensConfigId]);
 
   await query(`DELETE FROM organizations WHERE id = $1`, [orgId]);

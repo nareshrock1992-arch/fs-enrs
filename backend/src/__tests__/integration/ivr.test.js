@@ -198,7 +198,7 @@ describe('IVR CRUD', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ graph: CYCLIC_GRAPH });
     expect(res.status).toBe(400);
-    expect(res.body.errors.some(e => e.includes('Cycle'))).toBe(true);
+    expect(res.body.errors.some(e => e.includes('never reach an end of call'))).toBe(true);
   });
 
   it('PUT /ivr/flows/:uuid → 400 for dangling ref', async () => {
@@ -237,7 +237,7 @@ describe('IVR validate', () => {
       .send({ graph: CYCLIC_GRAPH });
     expect(res.status).toBe(200);
     expect(res.body.valid).toBe(false);
-    expect(res.body.errors.some(e => e.includes('Cycle'))).toBe(true);
+    expect(res.body.errors.some(e => e.includes('never reach an end of call'))).toBe(true);
   });
 });
 

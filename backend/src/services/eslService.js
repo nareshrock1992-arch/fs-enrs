@@ -59,6 +59,14 @@ function handleEvent(evt) {
       emit('conference.created', { confName });
     } else if (action === 'conference-destroy') {
       emit('conference.ended', { confName });
+      // Preferred fix over a periodic sweep (Phase 1 item 13): FreeSWITCH
+      // itself tells us the instant a room is truly empty and torn down —
+      // reconcile any ers_incidents row still marked ACTIVE for this exact
+      // room immediately, rather than polling. Catches orphans from an
+      // unclean process restart (crash mid-call, kill -9, etc.) where
+      // exec_ers's own /complete call never ran because the Lua process
+      // itself never got to finish executing.
+      reconcileOrphanedIncident(confName);
     }
     return;
   }
@@ -90,6 +98,36 @@ function handleEvent(evt) {
       if (k) payload[decodeURIComponent(k)] = decodeURIComponent(v || '');
     }
     emit(subclass, payload);
+  }
+}
+
+// ─── Reconcile an ERS incident whose conference room was just destroyed ─
+//
+// mod_conference destroys a room the instant its last member leaves — this
+// is the authoritative "truly vacant" signal, stronger than any per-leg
+// /complete call (which only ever means "this leg left," not "the room is
+// empty"; see exec_ers's own comment in luaGenerator.js). Any ers_incidents
+// row still ACTIVE for this exact room at this point is an orphan — most
+// commonly from an unclean backend/FreeSWITCH restart where the per-leg
+// completion call never ran. Marking it here also promotes the next queued
+// entry via the same endpoint the normal completion path uses, so the
+// queue doesn't stall because of the crash either.
+async function reconcileOrphanedIncident(confName) {
+  if (!confName) return;
+  try {
+    const { rows } = await query(
+      `SELECT incident_uuid FROM ers_incidents
+       WHERE conference_room = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+      [confName]
+    );
+    for (const { incident_uuid } of rows) {
+      // Local import to avoid a circular import at module load time
+      // (controllers import eslService, not the reverse).
+      const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
+      await completeIncidentCore(incident_uuid, null);
+    }
+  } catch (err) {
+    console.error('[esl] reconcileOrphanedIncident failed for', confName, err.message);
   }
 }
 
@@ -300,13 +338,16 @@ async function xmlLocateDefaultContext() {
   return eslCommand('xml_locate dialplan context name default');
 }
 
-export async function verifyExtensionLoaded(extensionName, { attempts = 3, delayMs = 500 } = {}) {
+// `locateFn` is injectable purely so the retry/backoff behavior can be unit
+// tested without a real ESL connection — production callers never pass it,
+// so this changes nothing about real behavior.
+export async function verifyExtensionLoaded(extensionName, { attempts = 3, delayMs = 500, locateFn = xmlLocateDefaultContext } = {}) {
   let lastRaw = '';
   let lastErr = null;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const raw = await xmlLocateDefaultContext();
+      const raw = await locateFn();
       lastRaw = raw;
       if (typeof raw === 'string' && raw.includes(extensionName)) {
         return { loaded: true, raw, attempts: attempt };

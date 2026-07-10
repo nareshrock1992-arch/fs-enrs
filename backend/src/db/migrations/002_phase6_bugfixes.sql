@@ -231,7 +231,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_emerg_number_active
 --    unified emergency_contacts for the responder use case.)
 -- ────────────────────────────────────────────────────────────
 
--- ens_contacts (replaces emergency_contacts for ENS side)
+-- ens_contacts — DEPRECATED, DO NOT USE. This table was originally meant
+-- to replace emergency_contacts for the ENS side but that direction was
+-- abandoned; emergency_contacts remains the single active contact table
+-- for both ERS and ENS (see migration 010's contact-model unification —
+-- ens_configuration_contacts.emergency_contact_id / ens_configuration_
+-- groups.responder_group_id are what resolveEnsContacts() actually reads).
+-- Kept only for backward compatibility with any pre-existing rows;
+-- schema.sql's definition of this same table name was previously
+-- disagreeing on column set (full_name vs first_name/last_name) and has
+-- been made to match this one exactly so there is only one true shape.
 CREATE TABLE IF NOT EXISTS ens_contacts (
   id               SERIAL      PRIMARY KEY,
   organization_id  INT         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

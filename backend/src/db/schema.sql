@@ -173,17 +173,34 @@ CREATE TABLE IF NOT EXISTS notification_templates (
   deleted_at      TIMESTAMPTZ
 );
 
--- ── 12. ENS Contacts (internal Lua/API model) ────────────────
+-- ── 12. ENS Contacts — DEPRECATED, DO NOT USE ─────────────────
+-- This table (and ens_groups / ens_group_members / ens_configuration_
+-- contacts.ens_contact_id / ens_configuration_groups.ens_group_id) is a
+-- dead, superseded contact model. No application controller queries it —
+-- resolveEnsContacts() in ensInternalController.js reads exclusively from
+-- emergency_contacts / responder_groups (see ens_configuration_contacts.
+-- emergency_contact_id and ens_configuration_groups.responder_group_id
+-- below, added by migration 010's contact-model unification). Kept only
+-- because dropping it is a separate, deliberate migration decision — do
+-- not build any new feature against ens_contacts. This definition is kept
+-- byte-identical to migration 002's (which previously disagreed on
+-- full_name vs first_name/last_name) so the two are no longer two
+-- contradictory definitions of the same table name.
 CREATE TABLE IF NOT EXISTS ens_contacts (
-  id              SERIAL       PRIMARY KEY,
-  organization_id INT          NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  full_name       VARCHAR(128) NOT NULL,
-  mobile_number   VARCHAR(32)  NOT NULL,
-  email           VARCHAR(255),
-  is_active       BOOLEAN      NOT NULL DEFAULT true,
-  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  deleted_at      TIMESTAMPTZ
+  id               SERIAL      PRIMARY KEY,
+  organization_id  INT         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  location_id      INT         REFERENCES locations(id)   ON DELETE SET NULL,
+  department_id    INT         REFERENCES departments(id) ON DELETE SET NULL,
+  first_name       VARCHAR(64) NOT NULL,
+  last_name        VARCHAR(64) NOT NULL,
+  title            VARCHAR(64),
+  mobile_number    VARCHAR(32) NOT NULL,
+  extension_number VARCHAR(32),
+  email            VARCHAR(255),
+  is_active        BOOLEAN     NOT NULL DEFAULT true,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at       TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_ens_contact_org    ON ens_contacts (organization_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ens_contact_mobile ON ens_contacts (mobile_number)   WHERE deleted_at IS NULL;

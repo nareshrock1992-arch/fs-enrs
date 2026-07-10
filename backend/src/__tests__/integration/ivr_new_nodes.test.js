@@ -265,7 +265,7 @@ describe('B5: ENS IVR flow — create and validate full operator graph', () => {
       .send({ graph: ENS_IVR_GRAPH });
     expect(res.status).toBe(200);
     // Errors about ens_configuration_id FK not existing are warnings (draft mode)
-    expect(res.body.errors?.filter(e => e.includes('Cycle'))).toHaveLength(0);
+    expect(res.body.errors?.filter(e => e.includes('never reach an end of call'))).toHaveLength(0);
   });
 
   it('publishes the ENS operator flow at v1', async () => {
@@ -392,7 +392,7 @@ describe('B5: transfer node validation', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ graph: SET_TRANSFER_GRAPH });
     expect(res.status).toBe(200);
-    expect(res.body.errors?.filter(e => e.includes('Cycle'))).toHaveLength(0);
+    expect(res.body.errors?.filter(e => e.includes('never reach an end of call'))).toHaveLength(0);
   });
 
   it('rejects transfer with empty destination', async () => {
@@ -424,7 +424,7 @@ describe('B5: ENS node — extended fields', () => {
       }});
     expect(res.status).toBe(200);
     // FK warning for ens_configuration_id is OK (draft mode, no real config)
-    expect(res.body.errors?.filter(e => e.includes('Cycle'))).toHaveLength(0);
+    expect(res.body.errors?.filter(e => e.includes('never reach an end of call'))).toHaveLength(0);
   });
 
   it('rejects ens node with neither ens_configuration_id nor ens_config_var', async () => {
@@ -473,12 +473,18 @@ describe('B5: ENS callback graph validates correctly', () => {
     // play node with ${ens_recording_file} audio_url will fail localAudioUrl regex
     // (it starts with ${ not /media/) — this is expected; use a static path in production
     // Just verify there are no cycle errors
-    expect(res.body.errors?.filter(e => e.includes('Cycle'))).toHaveLength(0);
+    expect(res.body.errors?.filter(e => e.includes('never reach an end of call'))).toHaveLength(0);
   });
 });
 
-describe('B5: cycle detection works for condition node loops', () => {
-  it('detects cycle through condition true_node path', async () => {
+describe('B5: dead-end cycle detection distinguishes real infinite loops from valid retry loops', () => {
+  // A condition node whose true branch loops back to itself but whose false
+  // branch reaches hangup is a normal, valid retry pattern (exactly the
+  // shape of the ENS operator PIN-retry flow published above) — it must
+  // NOT be flagged. This graph used to trigger a false-positive "Cycle
+  // detected" error under the old back-edge-only check; the corrected
+  // reachability-to-terminal algorithm must let it through clean.
+  it('does not flag a loop that has an escape path to hangup', async () => {
     const res = await request(server)
       .post(`/api/v1/ivr/flows/${flowUuid}/validate`)
       .set('Authorization', `Bearer ${adminToken}`)
@@ -493,12 +499,37 @@ describe('B5: cycle detection works for condition node loops', () => {
             true_node: 'node_b',
             false_node: 'node_c',
           },
-          node_b: { type: 'say', text: 'Loop!', next: 'node_a' }, // cycle back
+          node_b: { type: 'say', text: 'Loop!', next: 'node_a' }, // loops back, but node_a escapes via node_c
           node_c: { type: 'hangup' },
         },
       }});
     expect(res.status).toBe(200);
-    expect(res.body.errors.some(e => e.includes('Cycle'))).toBe(true);
+    expect(res.body.errors.some(e => e.includes('never reach an end of call'))).toBe(false);
+  });
+
+  // A loop with NO node reaching any terminal node anywhere is a genuine
+  // infinite loop — the call could never end without the MAX_STEPS runtime
+  // backstop. This must still be caught at publish time.
+  it('flags a loop with no reachable terminal node at all', async () => {
+    const res = await request(server)
+      .post(`/api/v1/ivr/flows/${flowUuid}/validate`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ graph: {
+        entry_node_id: 'node_a',
+        nodes: {
+          node_a: {
+            type: 'condition',
+            variable: 'x',
+            operator: '==',
+            expected_value: '1',
+            true_node: 'node_b',
+            false_node: 'node_b', // both branches loop — no hangup/transfer/ers anywhere
+          },
+          node_b: { type: 'say', text: 'Loop forever!', next: 'node_a' },
+        },
+      }});
+    expect(res.status).toBe(200);
+    expect(res.body.errors.some(e => e.includes('never reach an end of call'))).toBe(true);
   });
 });
 

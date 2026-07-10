@@ -49,6 +49,27 @@ describe('luaGenerator — ERS incident creation', () => {
   });
 });
 
+describe('Phase 1 item 13 — ERS incident completion after the caller leaves', () => {
+  // exec_ers() previously never called the already-built
+  // POST /ers/incidents/:uuid/complete endpoint after the conference
+  // execute app returned, leaving every ERS incident permanently ACTIVE
+  // on the Live Monitoring dashboard even after every caller hung up.
+  it('calls the incidents/:uuid/complete endpoint after the conference blocks', () => {
+    expect(lua).toContain('/ers/incidents/" .. d.incident_uuid .. "/complete"');
+  });
+
+  it('completes AFTER the conference execute call, not before (must block on the call first)', () => {
+    const confIdx     = lua.indexOf('s:execute("conference"');
+    const completeIdx = lua.indexOf('/ers/incidents/" .. d.incident_uuid .. "/complete"');
+    expect(confIdx).toBeGreaterThan(-1);
+    expect(completeIdx).toBeGreaterThan(confIdx);
+  });
+
+  it('passes recording_file when a recording was captured earlier in the flow', () => {
+    expect(lua).toMatch(/recording_file\s*=\s*s:getVariable\("recorded_file_path"\)/);
+  });
+});
+
 describe('luaGenerator — ENS notification trigger', () => {
   it('POSTs to /ens/notifications (not /ens/trigger)', () => {
     expect(lua).toContain('"/ens/notifications"');

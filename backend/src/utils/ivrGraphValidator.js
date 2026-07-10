@@ -90,59 +90,12 @@ export async function validateGraph(graph, tenantId) {
     }
   }
 
-  // 2b. Cycle detection — iterative DFS, primary-path only
+  // 2b. Reachability — BFS exploring all outgoing edges
   //
-  // Follows only the FIRST outgoing edge per node. This is intentional:
-  // IVR flows often contain intentional retry loops (e.g. PIN retry branches)
-  // where the retry path eventually reaches an exit via a different branch.
-  // Following all branches would flag those as cycles and block valid flows.
-  // The Lua executor's MAX_LOOP=100 guard prevents runaway execution regardless.
-  const visited = new Set();
-  const inStack = new Set();
-  const stack   = [entry_node_id];
-
-  while (stack.length > 0) {
-    const cur = stack[stack.length - 1];
-
-    if (!visited.has(cur)) {
-      visited.add(cur);
-      inStack.add(cur);
-
-      const node    = nodes[cur];
-      const allRefs = node ? refsOf(node) : [];
-
-      // Only a DEAD-END cycle is an error: every outgoing ref loops back into
-      // the current DFS stack with no branch that goes anywhere new. A node
-      // with at least one forward-going ref (e.g. a menu's digit branches)
-      // alongside a self/back ref (its retry/invalid branch) has an escape
-      // route and is a normal, valid IVR pattern — not flagged.
-      const backRefs    = allRefs.filter(r => inStack.has(r));
-      const forwardRefs = allRefs.filter(r => !inStack.has(r));
-      if (backRefs.length > 0 && forwardRefs.length === 0) {
-        for (const r of backRefs) {
-          errors.push(`Cycle detected: ${cur} → ${r} (no branch escapes this loop)`);
-        }
-      }
-
-      // Only follow the first unvisited ref to avoid triggering on retry branches
-      const firstUnvisited = allRefs.find(r => nodes[r] && !visited.has(r) && !inStack.has(r));
-      if (firstUnvisited) {
-        stack.push(firstUnvisited);
-      } else {
-        stack.pop();
-        inStack.delete(cur);
-      }
-    } else {
-      stack.pop();
-      inStack.delete(cur);
-    }
-  }
-
-  // 2c. Reachability — BFS exploring all outgoing edges
-  //
-  // Run separately from cycle detection so all nodes reachable via any branch
-  // are correctly identified, avoiding false "unreachable" warnings for nodes
-  // that are only reachable via non-primary branches (e.g. gather timeout/invalid).
+  // All nodes reachable via any branch are correctly identified, avoiding
+  // false "unreachable" warnings for nodes only reachable via non-primary
+  // branches (e.g. gather timeout/invalid, or a level-2 menu hanging off
+  // a digit branch several levels deep).
   const reachable = new Set([entry_node_id]);
   const bfsQueue  = [entry_node_id];
 
@@ -155,6 +108,47 @@ export async function validateGraph(graph, tenantId) {
         reachable.add(ref);
         bfsQueue.push(ref);
       }
+    }
+  }
+
+  // 2c. Dead-end cycle detection — reachability-to-terminal analysis
+  //
+  // A node is only a genuine problem if NO path from it ever reaches a
+  // terminal node (hangup / ers / transfer — any node type whose schema
+  // structurally has zero outgoing refs). IVR flows routinely chain a
+  // single-ref "invalid input, try again" node back into an earlier
+  // gather — that's fine as long as SOME path eventually exits. Flagging
+  // every back-edge regardless of whether an exit exists (the previous
+  // approach here) blocked exactly that, the single most common IVR
+  // pattern there is, and was the actual root cause of a real publish
+  // failure on a fully valid ENS operator flow. The Lua executor's
+  // MAX_STEPS=100 guard remains the runtime backstop for the case this
+  // check is designed to catch: a flow with genuinely no way to end.
+  const predecessors = new Map(); // nodeId -> Set of nodeIds with an edge INTO it
+  for (const [nid, node] of Object.entries(nodes)) {
+    for (const ref of refsOf(node)) {
+      if (!nodes[ref]) continue; // dangling refs already reported in 2a
+      if (!predecessors.has(ref)) predecessors.set(ref, new Set());
+      predecessors.get(ref).add(nid);
+    }
+  }
+
+  const terminalNodes = Object.keys(nodes).filter(nid => refsOf(nodes[nid]).length === 0);
+  const canReachTerminal = new Set(terminalNodes);
+  const revQueue = [...terminalNodes];
+  while (revQueue.length > 0) {
+    const cur = revQueue.shift();
+    for (const pred of predecessors.get(cur) || []) {
+      if (!canReachTerminal.has(pred)) {
+        canReachTerminal.add(pred);
+        revQueue.push(pred);
+      }
+    }
+  }
+
+  for (const nid of reachable) {
+    if (!canReachTerminal.has(nid)) {
+      errors.push(`Node "${nid}" can never reach an end of call (hangup/transfer/ers) — infinite loop with no exit`);
     }
   }
 
