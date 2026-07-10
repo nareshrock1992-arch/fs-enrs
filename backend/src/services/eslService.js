@@ -283,14 +283,43 @@ export async function confKick(confName, memberId) {
 // merges in, and reloadxml succeeds regardless). xml_locate resolves the
 // dialplan the same way a real call would, so grepping its output for
 // the extension name is the only way to know it is truly live.
-export async function verifyExtensionLoaded(extensionName) {
-  try {
-    const raw = await eslCommand('xml_locate dialplan default');
-    const loaded = typeof raw === 'string' && raw.includes(extensionName);
-    return { loaded, raw };
-  } catch (err) {
-    return { loaded: false, raw: '', error: err.message };
+//
+// xml_locate takes 4 arguments: <section> <tag_name> <key_name> <key_value>
+// — "xml_locate dialplan default" (2 args) is not a valid invocation; the
+// "default" context is located via tag_name="context", key_name="name",
+// key_value="default". A malformed command reliably produced a
+// false-negative "not found" even immediately after a reload that a real
+// test call proved had succeeded.
+//
+// There is also a real race: reloadxml's ESL response can return before
+// FreeSWITCH has finished re-parsing internally. Retry a few times before
+// declaring failure — a false failure here makes an already-correct
+// deploy look broken with no way for a non-technical user to tell the
+// difference from a real one.
+async function xmlLocateDefaultContext() {
+  return eslCommand('xml_locate dialplan context name default');
+}
+
+export async function verifyExtensionLoaded(extensionName, { attempts = 3, delayMs = 500 } = {}) {
+  let lastRaw = '';
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const raw = await xmlLocateDefaultContext();
+      lastRaw = raw;
+      if (typeof raw === 'string' && raw.includes(extensionName)) {
+        return { loaded: true, raw, attempts: attempt };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < attempts) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
   }
+
+  return { loaded: false, raw: lastRaw, error: lastErr?.message, attempts };
 }
 
 // ─── Get current ESL status ─────────────────────────────────

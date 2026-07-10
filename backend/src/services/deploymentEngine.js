@@ -89,7 +89,7 @@ async function validateAudioFiles(graph) {
 // ── Ensure FS directories exist ───────────────────────────────────────────────
 
 async function ensureDirs() {
-  const dialplanTargetDir = await fsPathService.detectDialplanTargetDir();
+  const { dir: dialplanTargetDir } = await fsPathService.detectDialplanTargetDir();
   const dirs = [
     fsPathService.getScriptDir(),
     fsPathService.getDialplanDir(),
@@ -124,6 +124,24 @@ async function deployLuaExecutor() {
 
 // ── Deploy dialplan XML ───────────────────────────────────────────────────────
 
+async function loadTestModeConfig() {
+  const { rows } = await query(
+    `SELECT key, value FROM system_settings WHERE key IN ('test_mode_enabled', 'test_mode_caller_id')`
+  );
+  const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  const enabled = map.test_mode_enabled === 'true';
+
+  let testFlowUuids = new Set();
+  if (enabled) {
+    const { rows: testFlows } = await query(
+      `SELECT flow_uuid FROM ivr_flows WHERE is_test_flow = true AND deleted_at IS NULL`
+    );
+    testFlowUuids = new Set(testFlows.map(f => f.flow_uuid));
+  }
+
+  return { enabled, callerId: map.test_mode_caller_id || '', testFlowUuids };
+}
+
 async function deployDialplanXml() {
   // Gather ALL published flows that have bound numbers
   const { rows: bindings } = await query(
@@ -144,8 +162,10 @@ async function deployDialplanXml() {
      ORDER BY en.number`
   );
 
-  const xmlContent = generateDialplanXml(bindings);
-  const xmlPath    = await fsPathService.getIvrDialplanFile();
+  const { dir: dialplanTargetDir, nested } = await fsPathService.detectDialplanTargetDir();
+  const testMode  = await loadTestModeConfig();
+  const xmlContent = generateDialplanXml(bindings, { nested, testMode });
+  const xmlPath    = path.posix.join(dialplanTargetDir, 'enrs_ivr.xml');
 
   await fs.writeFile(xmlPath, xmlContent, 'utf8');
   await fs.chmod(xmlPath, 0o644).catch(() => {});
