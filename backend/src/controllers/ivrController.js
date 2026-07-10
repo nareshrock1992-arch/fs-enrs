@@ -145,7 +145,7 @@ export const updateFlow = asyncHandler(async (req, res) => {
   const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-  const { name, description, graph } = parsed.data;
+  const { name, description, graph, is_test_flow } = parsed.data;
 
   // Structural-only validation on save (skip on empty canvas; DB ID checks run only on publish)
   if (graph && Object.keys(graph.nodes || {}).length > 0) {
@@ -170,8 +170,9 @@ export const updateFlow = asyncHandler(async (req, res) => {
   const sets   = ['updated_at = now()', 'updated_by = $1'];
   const params = [req.user.id];
 
-  if (name !== undefined)        { params.push(name);                           sets.push(`name = $${params.length}`); }
-  if (description !== undefined) { params.push(description);                    sets.push(`description = $${params.length}`); }
+  if (name !== undefined)         { params.push(name);                          sets.push(`name = $${params.length}`); }
+  if (description !== undefined)  { params.push(description);                   sets.push(`description = $${params.length}`); }
+  if (is_test_flow !== undefined) { params.push(is_test_flow);                  sets.push(`is_test_flow = $${params.length}`); }
   if (graph !== undefined) {
     // Strip _layout (frontend position hints) — never stored in the graph column
     const { _layout: _ignored, ...graphToStore } = graph;

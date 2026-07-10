@@ -201,9 +201,10 @@ export const CreateFlowSchema = z.object({
 });
 
 export const UpdateFlowSchema = z.object({
-  name:        z.string().min(1).max(128).trim().optional(),
-  description: z.string().max(1000).optional(),
-  graph:       DraftGraphSchema.optional(),
+  name:         z.string().min(1).max(128).trim().optional(),
+  description:  z.string().max(1000).optional(),
+  graph:        DraftGraphSchema.optional(),
+  is_test_flow: z.boolean().optional(),
 });
 
 export const PublishFlowSchema = z.object({

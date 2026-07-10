@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save } from 'lucide-react';
+import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
 
@@ -13,6 +13,7 @@ export default function BuilderToolbar({
   onPublished,
   onShowHistory,
   onShowBind,
+  onFlowChange,
 }) {
   const [showPublish, setShowPublish] = useState(false);
   const [changeNotes, setChangeNotes] = useState('');
@@ -20,6 +21,20 @@ export default function BuilderToolbar({
   const [pubError,    setPubError]    = useState('');
   const [validating,  setValidating]  = useState(false);
   const [lastValidation, setLastValidation] = useState(null);
+  const [savingTestFlag, setSavingTestFlag] = useState(false);
+
+  async function toggleTestFlow() {
+    if (!flow?.flow_uuid) return;
+    setSavingTestFlag(true);
+    try {
+      const r = await api.ivr.update(flow.flow_uuid, { is_test_flow: !flow.is_test_flow });
+      onFlowChange?.(r.flow);
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSavingTestFlag(false);
+    }
+  }
 
   const errorCount   = Object.values(errors).flat().filter(e => e && !e.startsWith('__')).length
     + (errors.__global?.length || 0);
@@ -123,6 +138,22 @@ export default function BuilderToolbar({
         >
           <Phone size={12} />
           <span>{flow?.bound_numbers?.length || 0} numbers</span>
+        </button>
+
+        {/* Test Flow toggle — marks this flow eligible for the Test Mode
+            caller-ID override at deploy time (Settings → Test Mode) */}
+        <button
+          onClick={toggleTestFlow}
+          disabled={savingTestFlag}
+          title="Mark this flow as a test flow — eligible for the Test Mode caller-ID override"
+          className={`flex items-center gap-1.5 text-[10px] px-2.5 py-1.5 rounded-full font-medium
+                     border shrink-0 transition-colors disabled:opacity-50
+                     ${flow?.is_test_flow
+                       ? 'bg-amber-500/15 text-amber-500 border-amber-500/30'
+                       : 'bg-surface-hover text-text-muted border-surface-border'}`}
+        >
+          <FlaskConical size={11} />
+          {flow?.is_test_flow ? 'Test Flow' : 'Mark as Test'}
         </button>
 
         {/* Publish */}

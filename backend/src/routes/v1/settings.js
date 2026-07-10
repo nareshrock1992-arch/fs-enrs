@@ -13,6 +13,20 @@ router.get('/', adminOnly, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// Available to every authenticated role — the "TEST MODE ACTIVE" banner must
+// be visible to anyone who could place a test call, not just admins who can
+// see the full settings list.
+router.get('/test-mode', asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT key, value FROM system_settings WHERE key IN ('test_mode_enabled', 'test_mode_caller_id')`
+  );
+  const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  res.json({
+    enabled:   map.test_mode_enabled === 'true',
+    caller_id: map.test_mode_caller_id || '',
+  });
+}));
+
 // Available to ADMIN and SUPERVISOR — consumed by BindNumbersModal in IVR Builder
 router.get('/emergency-numbers', adminOrSuper, asyncHandler(async (req, res) => {
   const { rows: numbers } = await query(

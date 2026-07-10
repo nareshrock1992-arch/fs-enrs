@@ -36,6 +36,14 @@ export default function SettingsPage() {
     try { await api.settings.setFlag(key, !cur); load(); } catch (e) { alert(e.message); }
   }
 
+  async function toggleTestMode(cur) {
+    setSaving('test_mode_enabled');
+    try {
+      await api.settings.update('test_mode_enabled', String(!cur));
+      await load();
+    } catch (e) { alert(e.message); } finally { setSaving(null); }
+  }
+
   return (
     <div className="space-y-6 max-w-2xl">
       <h1 className="text-xl font-bold text-text-primary">Settings</h1>
@@ -60,16 +68,38 @@ export default function SettingsPage() {
         <div className="card space-y-4">
           <h2 className="font-semibold text-text-primary text-sm">System Settings</h2>
           {settings.map(s => (
-            <div key={s.key} className="flex items-end gap-3">
-              <div className="flex-1 min-w-0">
-                <label className="label">{s.key.replace(/_/g, ' ')}</label>
-                <input className="input" value={vals[s.key] ?? ''} onChange={e => setVals(p => ({ ...p, [s.key]: e.target.value }))} />
+            s.key === 'test_mode_enabled' ? (
+              <div key={s.key} className="flex items-center justify-between py-2
+                                          border-b border-surface-border last:border-0">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Test Mode</p>
+                  {s.description && <p className="text-xs text-text-muted max-w-md">{s.description}</p>}
+                  {vals[s.key] === 'true' && (
+                    <p className="text-xs font-semibold text-amber-500 mt-1">
+                      ACTIVE — a persistent banner is shown to all users while this is on
+                    </p>
+                  )}
+                </div>
+                <button onClick={() => toggleTestMode(vals[s.key] === 'true')} disabled={saving === s.key}
+                        className="btn-ghost p-1 shrink-0">
+                  {vals[s.key] === 'true'
+                    ? <ToggleRight size={22} className="text-amber-500" />
+                    : <ToggleLeft size={22} className="text-text-muted" />}
+                </button>
               </div>
-              <button onClick={() => saveSetting(s.key)} disabled={saving === s.key}
-                      className="btn-primary flex items-center gap-1.5 shrink-0">
-                <Save size={13} />{saving === s.key ? '…' : 'Save'}
-              </button>
-            </div>
+            ) : (
+              <div key={s.key} className="flex items-end gap-3">
+                <div className="flex-1 min-w-0">
+                  <label className="label">{s.key.replace(/_/g, ' ')}</label>
+                  <input className="input" value={vals[s.key] ?? ''} onChange={e => setVals(p => ({ ...p, [s.key]: e.target.value }))} />
+                  {s.description && <p className="text-xs text-text-muted mt-1">{s.description}</p>}
+                </div>
+                <button onClick={() => saveSetting(s.key)} disabled={saving === s.key}
+                        className="btn-primary flex items-center gap-1.5 shrink-0">
+                  <Save size={13} />{saving === s.key ? '…' : 'Save'}
+                </button>
+              </div>
+            )
           ))}
         </div>
       )}

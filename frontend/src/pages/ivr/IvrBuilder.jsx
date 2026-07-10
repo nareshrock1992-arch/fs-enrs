@@ -83,6 +83,7 @@ export default function IvrBuilder() {
         onPublished={handlePublished}
         onShowHistory={() => setShowHistory(true)}
         onShowBind={() => setShowBind(true)}
+        onFlowChange={flow => graph.dispatch({ type: 'UPDATE_META', patch: flow })}
       />
 
       {/* Main 3-column layout */}

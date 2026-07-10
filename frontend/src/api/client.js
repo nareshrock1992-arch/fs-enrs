@@ -175,6 +175,7 @@ export const api = {
     flags:            ()          => request('GET', '/settings/feature-flags'),
     setFlag:          (key, val)  => request('PATCH', `/settings/feature-flags/${key}`, { is_enabled: val }),
     emergencyNumbers: ()          => request('GET', '/settings/emergency-numbers'),
+    testMode:         ()          => request('GET', '/settings/test-mode'),
   },
 
   // IVR flows
@@ -223,5 +224,7 @@ export const api = {
     reloadXml:      ()        => request('POST',   '/deployment/diagnostics/reloadxml'),
     paths:          ()        => request('GET',    '/deployment/diagnostics/paths'),
     eslStatus:      ()        => request('GET',    '/deployment/diagnostics/esl'),
+    disableLegacyExtension: (file, extensionName) =>
+      request('POST', '/deployment/diagnostics/disable-legacy-extension', { file, extension_name: extensionName }),
   },
 };
