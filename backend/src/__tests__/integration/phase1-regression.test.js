@@ -131,6 +131,35 @@ describe('Phase 1 item 9 — ivrLookup only ever serves published versions', () 
   });
 });
 
+// Production-readiness review — ens_notifications.triggered_by_user_id was
+// defined by migration 001 but omitted from schema.sql (the fresh-install
+// path), so fresh databases crashed on both the notifications report query
+// and ensController's UI-trigger INSERT. Fixed in schema.sql + migration
+// 017; this asserts the column actually exists with the right FK semantics.
+
+describe('Production review — ens_notifications.triggered_by_user_id exists', () => {
+  it('the column exists (migration 017 / schema.sql fix)', async () => {
+    const { rows } = await query(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+       WHERE table_name = 'ens_notifications' AND column_name = 'triggered_by_user_id'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type).toBe('integer');
+    expect(rows[0].is_nullable).toBe('YES'); // nullable — phone-triggered blasts have no user
+  });
+
+  it('the reports/notifications join no longer references a missing column', async () => {
+    // The exact query shape that crashed in the field — must parse + run.
+    const { rows } = await query(
+      `SELECT n.id, u.full_name AS triggered_by
+       FROM ens_notifications n
+       LEFT JOIN users u ON u.id = n.triggered_by_user_id
+       LIMIT 1`
+    );
+    expect(Array.isArray(rows)).toBe(true);
+  });
+});
+
 // Item 13 — completeIncidentCore() is the single reusable core both the
 // HTTP endpoint (exec_ers's per-leg call) and the ESL conference-destroy
 // reconciliation listener (orphan cleanup) call — it must never mark an

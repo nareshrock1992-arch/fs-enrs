@@ -279,8 +279,10 @@ CREATE TABLE IF NOT EXISTS ens_notifications (
   notification_uuid    UUID        NOT NULL DEFAULT gen_random_uuid() UNIQUE,
   triggered_via        VARCHAR(16) NOT NULL DEFAULT 'PHONE'
                          CHECK (triggered_via IN ('PHONE','UI','API')),
+  triggered_by_user_id INT         REFERENCES users(id) ON DELETE SET NULL,
   caller_number        VARCHAR(32),
   recording_file       VARCHAR(512),
+  recording_reference  VARCHAR(512),
   status               VARCHAR(16) NOT NULL DEFAULT 'PENDING'
                          CHECK (status IN ('PENDING','IN_PROGRESS','COMPLETED','FAILED')),
   total_targets        INT         NOT NULL DEFAULT 0,

@@ -1,24 +1,24 @@
 /**
  * Gateway-agnostic dial string resolution — Phase 4.
  *
- * The ONE place a FreeSWITCH dial string (`sofia/internal/...` or
+ * The ONE place a FreeSWITCH dial string (`user/...` or
  * `sofia/gateway/.../...`) gets constructed. Every call-origination path
  * in this codebase (ERS ring-all, ENS campaign engine, ad-hoc test
  * originate) must go through resolveDialString() — never inline
- * "sofia/internal/" or "sofia/gateway/" anywhere else.
+ * "user/" or "sofia/gateway/" anywhere else.
  *
  * All testing today happens on local internal SIP extensions — no
  * external trunk is available. Production customers front real phones
  * through a real Avaya Aura or Cisco UC SIP trunk (a row in
  * sip_gateways). With zero gateways configured, every call below
- * defaults to sofia/internal/ automatically — the full local acceptance
- * suite runs with no admin setup. Connecting a real PBX later is a
- * config change (add a sip_gateways row, optionally override individual
- * contacts) — see docs/CONNECTING_A_PBX.md — never a code change.
+ * defaults to user/<extension> automatically (FreeSWITCH resolves the
+ * registered contact) — the full local acceptance suite runs with no
+ * admin setup. Connecting a real PBX later is a config change (add a
+ * sip_gateways row, optionally override individual contacts) — see
+ * docs/CONNECTING_A_PBX.md — never a code change.
  */
 
 import { query } from '../db/pool.js';
-import { config } from '../config/index.js';
 
 /**
  * @param {object} opts
@@ -32,7 +32,10 @@ import { config } from '../config/index.js';
  *                                          up in sip_gateways for this tenant if possible, else
  *                                          used as a raw FreeSWITCH gateway name directly for
  *                                          backward compatibility with pre-Phase-4 configs
- * @param {string} [opts.domain]          — SIP domain for internal dialing (defaults to config)
+ * @param {string} [opts.domain]          — DEPRECATED, ignored: local users are dialed via
+ *                                          user/<ext> (FreeSWITCH resolves the registered
+ *                                          contact), so no domain is needed. Accepted so
+ *                                          existing callers don't break.
  * @returns {Promise<{ dialString: string, mode: 'internal'|'gateway', gateway: object|null }>}
  */
 export async function resolveDialString({
@@ -42,7 +45,7 @@ export async function resolveDialString({
   mobileNumber,
   gatewayId,
   gatewayName,
-  domain,
+  domain: _domain, // deprecated, ignored — see docblock
 } = {}) {
   let ext = extension || null;
   let mobile = mobileNumber || null;
@@ -103,11 +106,21 @@ export async function resolveDialString({
     return { dialString: `sofia/gateway/${name}/${number}`, mode: 'gateway', gateway };
   }
 
-  // Default — zero gateways configured, dial the internal SIP extension.
+  // Default — zero gateways configured, dial the locally registered
+  // FreeSWITCH user.
+  //
+  // user/<extension>, NOT sofia/internal/<ext>@<domain>: a registered
+  // softphone's real contact is something like
+  // sip:1001@192.168.1.105:62027;ob — dialing the profile IP directly
+  // returns NO_USER_RESPONSE because nothing is listening at
+  // <ext>@<profile-ip>. `user/` makes FreeSWITCH resolve the registered
+  // contact itself (equivalent to sofia_contact lookup), which is the
+  // correct mechanism for local users and needs no IP/domain at all.
+  // This branch is ONLY reached when no gateway resolves — production
+  // Avaya/Cisco/trunk routing (the gateway branch above) is untouched.
   const dest = ext || mobile;
   if (!dest) {
     throw new Error('resolveDialString: no extension or mobile number available to dial');
   }
-  const dom = domain || config.esl.domain || '127.0.0.1';
-  return { dialString: `sofia/internal/${dest}@${dom}`, mode: 'internal', gateway: null };
+  return { dialString: `user/${dest}`, mode: 'internal', gateway: null };
 }

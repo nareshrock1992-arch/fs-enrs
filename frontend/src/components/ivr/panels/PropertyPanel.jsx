@@ -1,5 +1,6 @@
 import { Trash2, Star } from 'lucide-react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
+import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -104,6 +105,35 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
   );
 }
 
+// ERS/ENS configuration picker — replaces "open PostgreSQL, find the ID,
+// paste it" with a dropdown of the actual configurations. Stores the same
+// numeric id the raw number field stored, so existing flows keep working
+// and the backend contract is unchanged.
+function ConfigPicker({ kind, value, onChange, required }) {
+  const { options, loading } = useConfigOptions(kind);
+  const known = options.some(o => o.id === value);
+  return (
+    <select
+      value={value ?? ''}
+      onChange={e => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
+      className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                 text-xs text-text-primary focus:outline-none focus:border-brand"
+    >
+      <option value="">{loading ? 'Loading configurations…' : (required ? 'Select a configuration…' : 'None')}</option>
+      {/* A saved value not in the list (deleted config / other tenant) stays
+          visible rather than silently vanishing from the form. */}
+      {value != null && !known && !loading && (
+        <option value={value}>Unknown configuration #{value}</option>
+      )}
+      {options.map(o => (
+        <option key={o.id} value={o.id}>
+          {o.name}{o.description ? ` — ${o.description.slice(0, 40)}` : ''} (#{o.id})
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // Gather's branch key→target editor — the one genuinely bespoke widget
 // (dynamic add/remove keys, not a fixed field), driven by fieldType
 // 'branches_map' rather than a per-type component.
@@ -188,6 +218,12 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
       break;
     case 'node_ref':
       control = <NodePicker value={value} onChange={set} nodes={nodes} excludeId={node.id} placeholder={fieldDef.required ? 'Select target node…' : undefined} byType={byType} />;
+      break;
+    case 'ers_config_ref':
+      control = <ConfigPicker kind="ers" value={value} onChange={set} required={fieldDef.required} />;
+      break;
+    case 'ens_config_ref':
+      control = <ConfigPicker kind="ens" value={value} onChange={set} required={fieldDef.required} />;
       break;
     case 'audio_url':
     case 'mono_text':

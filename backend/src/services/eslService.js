@@ -279,9 +279,10 @@ export function eslCommand(cmd) {
 //
 // Gateway-agnostic (Phase 4) — the dial string is resolved by
 // dialResolver.js, never constructed inline here. With zero SIP gateways
-// configured this always dials sofia/internal/<ext>@<domain>; adding a
-// tenant's default gateway (or a per-contact override) switches it to
-// sofia/gateway/<name>/<number> with no code change.
+// configured this always dials user/<ext> (FreeSWITCH resolves the
+// registered contact); adding a tenant's default gateway (or a
+// per-contact override) switches it to sofia/gateway/<name>/<number>
+// with no code change.
 //
 // opts:
 //   tenantId, contactId, extension, mobileNumber, gatewayId — passed

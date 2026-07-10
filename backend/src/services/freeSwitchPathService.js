@@ -83,36 +83,58 @@ class FreeSwitchPathService {
    *            its own <context name="default"> wrapper.
    */
   async detectDialplanTargetDir() {
-    const dialplanDir  = this.getDialplanDir();
-    const defaultXmlPath = path.posix.join(dialplanDir, 'default.xml');
+    const dialplanDir = this.getDialplanDir();
 
-    let content;
-    try {
-      content = await fs.readFile(defaultXmlPath, 'utf8');
-    } catch {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (default.xml not readable at ${defaultXmlPath} — using root, wrapped)`);
-      return { dir: dialplanDir, nested: false };
+    // Extract the nested include's target dir from a default.xml, if that
+    // file declares one inside its <context name="default"> block.
+    // Returns the resolved directory or null. Regexes are deliberately
+    // tolerant of attribute spacing and self-close style ("/>" vs " />").
+    const nestedIncludeDirOf = async (defaultXmlPath, baseDir) => {
+      let content;
+      try {
+        content = await fs.readFile(defaultXmlPath, 'utf8');
+      } catch {
+        return null;
+      }
+      const contextMatch = content.match(/<context\s+name\s*=\s*"default"[^>]*>([\s\S]*?)<\/context>/i);
+      if (!contextMatch) return null;
+      const includeMatch = contextMatch[1].match(/<X-PRE-PROCESS\s+cmd\s*=\s*"include"\s+data\s*=\s*"([^"]+)"\s*\/?\s*>/i);
+      if (!includeMatch) return null;
+      const pattern = includeMatch[1]; // e.g. "default/*.xml"
+      return pattern.startsWith('/')
+        ? path.posix.dirname(pattern)
+        : path.posix.join(baseDir, path.posix.dirname(pattern));
+    };
+
+    // Case 1 — FS_DIALPLAN_DIR is the search root (documented setup):
+    // its own default.xml declares the nested include.
+    const ownTarget = await nestedIncludeDirOf(path.posix.join(dialplanDir, 'default.xml'), dialplanDir);
+    if (ownTarget) {
+      console.log(`[deploy] Detected dialplan target: ${ownTarget} (nested include in ${dialplanDir}/default.xml, bare — no <context> wrapper)`);
+      return { dir: ownTarget, nested: true };
     }
 
-    const contextMatch = content.match(/<context\s+name="default"\s*>([\s\S]*?)<\/context>/i);
-    if (!contextMatch) {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no <context name="default"> block in default.xml — using root, wrapped)`);
-      return { dir: dialplanDir, nested: false };
+    // Case 2 — FS_DIALPLAN_DIR was set to the nested TARGET directory
+    // itself (e.g. .../dialplan/default instead of .../dialplan). Real
+    // field failure: with no default.xml in that dir, the old code fell
+    // back to "flat → wrap in <context>", writing a <context>-wrapped
+    // file INTO a directory whose contents are spliced inside an
+    // already-open <context name="default"> — a doubled context tag that
+    // FreeSWITCH's parser silently drops with zero error. Check the
+    // PARENT directory's default.xml: if its nested include resolves back
+    // to this very directory, we're inside a nested layout and must emit
+    // bare fragments.
+    const parentDir = path.posix.dirname(dialplanDir.replace(/\\/g, '/'));
+    const parentTarget = await nestedIncludeDirOf(path.posix.join(parentDir, 'default.xml'), parentDir);
+    if (parentTarget && path.posix.normalize(parentTarget) === path.posix.normalize(dialplanDir.replace(/\\/g, '/'))) {
+      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (FS_DIALPLAN_DIR points at the nested include dir itself — parent ${parentDir}/default.xml includes it; bare, no <context> wrapper)`);
+      return { dir: dialplanDir, nested: true };
     }
 
-    const includeMatch = contextMatch[1].match(/<X-PRE-PROCESS\s+cmd="include"\s+data="([^"]+)"\s*\/>/i);
-    if (!includeMatch) {
-      console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no nested include found in default.xml, using root, wrapped)`);
-      return { dir: dialplanDir, nested: false };
-    }
-
-    const includePattern = includeMatch[1]; // e.g. "default/*.xml"
-    const targetDir = includePattern.startsWith('/')
-      ? path.posix.dirname(includePattern)
-      : path.posix.join(dialplanDir, path.posix.dirname(includePattern));
-
-    console.log(`[deploy] Detected dialplan target: ${targetDir} (nested include "${includePattern}" in default.xml, bare — no <context> wrapper)`);
-    return { dir: targetDir, nested: true };
+    // Case 3 — genuinely flat layout: extensions load from dialplan/*.xml
+    // siblings, each file needs its own <context name="default"> wrapper.
+    console.log(`[deploy] Detected dialplan target: ${dialplanDir} (no nested include found in own or parent default.xml — flat layout, wrapped)`);
+    return { dir: dialplanDir, nested: false };
   }
 
   // ── Specific file paths ────────────────────────────────────────────────────

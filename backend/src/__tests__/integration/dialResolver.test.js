@@ -46,17 +46,28 @@ afterAll(async () => {
 });
 
 describe('Phase 4 — resolveDialString() defaults to internal with zero gateways configured', () => {
-  it('dials sofia/internal/<extension>@<domain> for a contact with no gateway anywhere', async () => {
+  // user/<ext>, NOT sofia/internal/<ext>@<ip>: a registered softphone's
+  // contact is e.g. sip:1001@192.168.1.105:62027 — dialing the profile IP
+  // directly gives NO_USER_RESPONSE. user/ makes FreeSWITCH resolve the
+  // registered contact itself (verified on real hardware:
+  // `originate user/1001 &park` works where sofia/internal/1001@<ip> fails).
+  it('dials user/<extension> for a contact with no gateway anywhere', async () => {
     const result = await resolveDialString({ tenantId, contactId: contactAId });
     expect(result.mode).toBe('internal');
-    expect(result.dialString).toMatch(/^sofia\/internal\/1001@/);
+    expect(result.dialString).toBe('user/1001');
     expect(result.gateway).toBeNull();
   });
 
   it('falls back to the raw mobile number if no extension is set', async () => {
     const result = await resolveDialString({ tenantId, mobileNumber: '15559998888' });
     expect(result.mode).toBe('internal');
-    expect(result.dialString).toMatch(/^sofia\/internal\/15559998888@/);
+    expect(result.dialString).toBe('user/15559998888');
+  });
+
+  it('never emits a hardcoded IP or domain in the internal path', async () => {
+    const result = await resolveDialString({ tenantId, contactId: contactAId });
+    expect(result.dialString).not.toMatch(/@/);
+    expect(result.dialString).not.toMatch(/sofia\/internal/);
   });
 });
 
@@ -111,7 +122,7 @@ describe('Phase 4 — adding a tenant default gateway switches exactly the affec
       // test — must still resolve to internal, untouched.
       const resultB = await resolveDialString({ tenantId, contactId: contactBId });
       expect(resultB.mode).toBe('internal');
-      expect(resultB.dialString).toMatch(/^sofia\/internal\/1002@/);
+      expect(resultB.dialString).toBe('user/1002');
     } finally {
       await query(`UPDATE emergency_contacts SET gateway_id = NULL WHERE id = $1`, [contactAId]);
       await query(`DELETE FROM sip_gateways WHERE id = $1`, [gw.id]);

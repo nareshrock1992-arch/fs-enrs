@@ -44,9 +44,12 @@ INTERNAL_API_KEY=<a long random string>
 
 `FS_DIALPLAN_DIR` is a **search root**, not a literal write target — the
 app reads `default.xml` under it and figures out where extensions actually
-need to go (see "Why this exists" above). You still need to set it
-correctly to the box's real `dialplan/` directory; the app resolves the
-rest.
+need to go (see "Why this exists" above). Set it to the box's real
+`dialplan/` directory; the app resolves the rest. If it accidentally gets
+pointed at the nested include directory itself (e.g.
+`/etc/freeswitch/dialplan/default`), the detector now recognizes that too
+by checking the parent directory's `default.xml` — but the documented,
+intended value remains the `dialplan/` root.
 
 `INTERNAL_API_KEY` **must exactly match** whatever is exported as
 `FS_INTERNAL_KEY` on the FreeSWITCH box itself (in `vars.xml` or a systemd

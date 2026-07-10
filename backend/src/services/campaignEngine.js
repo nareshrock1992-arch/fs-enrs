@@ -205,7 +205,7 @@ async function processCampaign(campaign) {
 
   // Originate each call — Phase 4: no hardcoded 'default' gateway name.
   // Passing null/undefined through to resolveDialString() means "no
-  // gateway configured," which correctly falls back to sofia/internal/
+  // gateway configured," which correctly falls back to user/<ext> dialing
   // for local testing instead of assuming a gateway literally named
   // "default" exists in FreeSWITCH (which broke every fresh local setup
   // with zero gateways configured).
