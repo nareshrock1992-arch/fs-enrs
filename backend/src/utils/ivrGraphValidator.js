@@ -159,6 +159,64 @@ export async function validateGraph(graph, tenantId) {
     }
   }
 
+  // 2e. Designer lint — per-node warnings shown as yellow badges in the canvas
+  for (const [nid, node] of Object.entries(nodes)) {
+    if (!node) continue;
+
+    // ERS Ring-All: missing configuration or tier
+    if (node.type === 'ers_ring_all') {
+      if (!node.ers_configuration_id) {
+        warnings.push(`Node "${nid}" (ERS Ring-All): ERS Configuration is required`);
+      }
+      if (!node.tier) {
+        warnings.push(`Node "${nid}" (ERS Ring-All): Responder Tier is required`);
+      }
+    }
+
+    // ERS Overflow Check: must have all three branch targets
+    if (node.type === 'ers_overflow_check') {
+      if (!node.ers_configuration_id) {
+        warnings.push(`Node "${nid}" (ERS Overflow Check): ERS Configuration is required`);
+      }
+      const br = node.branches || {};
+      if (!br.primary)   warnings.push(`Node "${nid}" (ERS Overflow Check): "primary" branch not connected`);
+      if (!br.secondary) warnings.push(`Node "${nid}" (ERS Overflow Check): "secondary" branch not connected`);
+      if (!br.full)      warnings.push(`Node "${nid}" (ERS Overflow Check): "full" branch not connected`);
+    }
+
+    // ERS Overflow Wait: missing configuration
+    if (node.type === 'ers_overflow_wait') {
+      if (!node.ers_configuration_id) {
+        warnings.push(`Node "${nid}" (ERS Overflow Wait): ERS Configuration is required`);
+      }
+    }
+
+    // ENS Blast Record: missing next node
+    if (node.type === 'ens_blast_record' && !node.next) {
+      warnings.push(`Node "${nid}" (ENS Blast Record): Next Node not connected`);
+    }
+
+    // ENS Playback Gate: missing configuration
+    if (node.type === 'ens_playback_gate') {
+      if (!node.ers_configuration_id) {
+        warnings.push(`Node "${nid}" (ENS Playback Gate): ERS Configuration is required`);
+      }
+    }
+
+  }
+
+  // Mixed ERS node types — legacy ers + ers_ring_all in same flow is confusing.
+  // Flag once per offending node (not per iteration above to avoid O(n²) scan).
+  {
+    const legacyErsNodes   = Object.keys(nodes).filter(nid => nodes[nid]?.type === 'ers');
+    const ringAllErsNodes  = Object.keys(nodes).filter(nid => nodes[nid]?.type === 'ers_ring_all');
+    if (legacyErsNodes.length > 0 && ringAllErsNodes.length > 0) {
+      for (const nid of [...legacyErsNodes, ...ringAllErsNodes]) {
+        warnings.push(`Node "${nid}": Flow mixes legacy "Trigger ERS" and "ERS Ring-All" nodes — pick one pattern per flow`);
+      }
+    }
+  }
+
   if (errors.length > 0) return { valid: false, errors, warnings };
 
   // ── Pass 2e: DB foreign key existence checks ──────────────────────────────

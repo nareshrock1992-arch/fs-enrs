@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 
@@ -20,6 +20,17 @@ export default function IvrBuilder() {
   const navigate   = useNavigate();
 
   const graph = useIvrGraph(uuid);
+
+  // Warn on browser tab close / reload while there are unsaved changes.
+  useEffect(() => {
+    const handler = (e) => {
+      if (!graph.dirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [graph.dirty]);
 
   const [showHistory,   setShowHistory]   = useState(false);
   const [showBind,      setShowBind]      = useState(false);
@@ -77,6 +88,7 @@ export default function IvrBuilder() {
         flow={graph.flowMeta}
         dirty={graph.dirty}
         saving={graph.saving}
+        saveError={graph.saveError}
         errors={graph.errors}
         warnings={graph.warnings}
         onValidate={graph.validate}
@@ -84,6 +96,7 @@ export default function IvrBuilder() {
         onShowHistory={() => setShowHistory(true)}
         onShowBind={() => setShowBind(true)}
         onFlowChange={flow => graph.dispatch({ type: 'UPDATE_META', patch: flow })}
+        onSaveNow={graph.saveNow}
       />
 
       {/* Main 3-column layout */}
@@ -102,6 +115,7 @@ export default function IvrBuilder() {
             edges={graph.edges}
             entryNodeId={graph.entryNodeId}
             errors={graph.errors}
+            warnings={graph.nodeWarnings}
             selected={graph.selected}
             onSelect={graph.setSelected}
             onMoveNode={graph.moveNode}

@@ -13,35 +13,21 @@ import ConnectionDot from './ConnectionDot.jsx';
 // flow saved before a type was removed).
 const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc' };
 
-// Per-type one-line summary shown in the node card body. Additive-only —
-// a node type without an entry here just shows the header with no extra
-// summary line, so adding a new type never requires touching this.
-function nodeSummary(node) {
-  switch (node.type) {
-    case 'play':           return <span className="truncate block">{node.audio_url || node.audio_file_id || '—'}</span>;
-    case 'say':             return <span className="truncate block italic">"{node.text?.slice(0,28) || '…'}"</span>;
-    case 'gather':          return <span>max {node.max_digits || 1} digit · {node.timeout_seconds || 5}s</span>;
-    case 'goto':             return <span>→ {node.target_node_id || '?'}</span>;
-    case 'ens':              return <span>Config {node.ens_configuration_id || node.ens_config_var || '?'}</span>;
-    case 'ers':              return <span>Config {node.ers_configuration_id || '?'}</span>;
-    case 'hangup':           return <span className="text-green-400">End of call</span>;
-    case 'condition':
-      return (
-        <span className="truncate block font-mono">
-          {node.variable || '?'} {node.operator || '=='} {(node.expected_value || '?').slice(0,14)}
-        </span>
-      );
-    case 'record_message':
-      return <span className="truncate block">→ {node.variable_name || '?'} · max {node.max_seconds || 60}s</span>;
-    case 'set_variable':
-      return (
-        <span className="truncate block font-mono">
-          {node.variable || '?'} = {(node.value || '').slice(0,16)}
-        </span>
-      );
-    case 'transfer':        return <span className="truncate block">→ {node.destination || '?'}</span>;
-    default:                return null;
-  }
+// Registry-driven node card summary line.
+// Each node type in the registry supplies a summaryTemplate string with
+// ${fieldName} placeholders; missing/empty fields render as '?'.
+// Returns null when the type has no summaryTemplate (e.g. hangup).
+function nodeSummary(node, cfg) {
+  const tmpl = cfg?.summaryTemplate;
+  if (!tmpl) return null;
+
+  const text = tmpl.replace(/\$\{(\w+)\}/g, (_, key) => {
+    const v = node[key];
+    if (v === undefined || v === null || v === '') return '?';
+    return String(v).slice(0, 24);
+  });
+
+  return <span className="truncate block">{text}</span>;
 }
 
 // ── FlowNode ──────────────────────────────────────────────────────────────────
@@ -56,6 +42,7 @@ export default function FlowNode({
   isSelected,
   isEntry,
   hasErrors,
+  hasWarnings,
   edges,
   scale,
   onSelect,
@@ -70,16 +57,27 @@ export default function FlowNode({
   const nodeRef = useRef(null);
 
   const startPos = useRef({ x: node.x, y: node.y });
-  const { onPointerDown } = useDrag({
+
+  // Drag is attached only to the HEADER div (5px threshold) so body
+  // clicks can open the settings panel without accidentally moving the node.
+  const { onPointerDown: headerPointerDown } = useDrag({
+    threshold: 5,
     onStart: () => { startPos.current = { x: node.x, y: node.y }; },
     onMove:  (dx, dy) => onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale),
     onEnd:   (dx, dy, _e, moved) => {
-      if (!moved) onSelect(node.id);
-      else        onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
+      if (moved) onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
     },
   });
 
   const connectedPorts = new Set(edges.filter(e => e.from === node.id).map(e => e.fromPort));
+
+  const borderColor = hasErrors
+    ? '#ef4444'
+    : isSelected
+    ? '#f1f5f9'
+    : hasWarnings
+    ? '#f59e0b'
+    : cfg.border;
 
   return (
     <div
@@ -90,10 +88,8 @@ export default function FlowNode({
         left:        node.x,
         top:         node.y,
         width:       NODE_WIDTH,
-        cursor:      'grab',
         zIndex:      isSelected ? 10 : 1,
       }}
-      onPointerDown={onPointerDown}
       onClick={e => { e.stopPropagation(); }}
       onPointerUp={e => { e.stopPropagation(); onPortClick?.(node.id); }}
     >
@@ -107,27 +103,28 @@ export default function FlowNode({
       <div
         style={{
           background:   cfg.bg,
-          border:       `1.5px solid ${
-            hasErrors ? '#ef4444'
-            : isSelected ? '#f1f5f9'
-            : cfg.border
-          }`,
+          border:       `1.5px solid ${borderColor}`,
           borderRadius: 10,
           boxShadow: isSelected
             ? `0 0 0 2px #f1f5f960, 0 4px 20px #00000060`
             : hasErrors
             ? `0 0 0 2px #ef444440`
+            : hasWarnings
+            ? `0 0 0 2px #f59e0b30`
             : '0 2px 8px #00000040',
           overflow:     'hidden',
           userSelect:   'none',
         }}
       >
-        {/* Header */}
-        <div style={{ borderBottom: `1px solid ${cfg.border}30` }}
-             className="px-2.5 py-1.5 flex items-center gap-1.5">
+        {/* Header — drag handle. 5px threshold prevents accidental drags. */}
+        <div
+          style={{ borderBottom: `1px solid ${cfg.border}30`, cursor: 'grab' }}
+          className="px-2.5 py-1.5 flex items-center gap-1.5"
+          onPointerDown={headerPointerDown}
+        >
           <span className="text-sm leading-none">{cfg.icon}</span>
           <span style={{ color: cfg.color }} className="text-[10px] font-bold uppercase tracking-wide truncate flex-1">
-            {cfg.label}
+            {node.nickname || cfg.label}
           </span>
           {isSelected && (
             <button
@@ -141,9 +138,12 @@ export default function FlowNode({
           )}
         </div>
 
-        {/* Body — key field summary */}
-        <div className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5">
-          {nodeSummary(node)}
+        {/* Body — click opens settings panel (onPortClick selects node) */}
+        <div
+          className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5 cursor-pointer"
+          onClick={e => { e.stopPropagation(); onSelect(node.id); }}
+        >
+          {nodeSummary(node, cfg)}
         </div>
 
         {/* Output ports */}

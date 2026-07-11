@@ -8,7 +8,7 @@ import rateLimit       from 'express-rate-limit';
 
 import { config }      from './src/config/index.js';
 import { testConnection } from './src/db/pool.js';
-import { connect as eslConnect, eslEvents } from './src/services/eslService.js';
+import { connect as eslConnect, eslEvents, reconcileAllActiveIncidents } from './src/services/eslService.js';
 import { initSocket }  from './src/services/socketService.js';
 import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/services/campaignEngine.js';
 import v1Routes        from './src/routes/v1/index.js';
@@ -90,6 +90,16 @@ async function start() {
   // Connect to FreeSWITCH (non-fatal — app works without ESL)
   try { eslConnect(); }
   catch (err) { console.warn('[boot] ESL connect failed (will retry):', err.message); }
+
+  // Startup incident reconciliation — mark any ACTIVE incident whose
+  // deterministic conference room is now empty as COMPLETED. Runs once at
+  // boot (catches crashes during downtime), then every 60 s via the sweep
+  // in eslService.js. Non-fatal: ESL may not be up yet.
+  setTimeout(() => {
+    reconcileAllActiveIncidents().catch(err =>
+      console.warn('[boot] startup reconciliation skipped:', err.message)
+    );
+  }, 5000); // wait 5 s for ESL to connect before checking member counts
 
   // Wire ESL events → campaign engine
   eslEvents.on('CHANNEL_ANSWER', ({ uuid }) => {

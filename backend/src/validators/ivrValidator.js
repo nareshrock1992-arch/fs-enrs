@@ -86,7 +86,7 @@ const HangupNodeSchema = z.object({
 const ConditionNodeSchema = z.object({
   type:           z.literal('condition'),
   variable:       varName,                // session variable to read
-  operator:       z.enum(['==', '!=', 'contains', 'starts_with', 'ens_pin_valid', 'ens_callback_valid']),
+  operator:       z.enum(['==', '!=', 'contains', 'starts_with', 'ens_pin_valid', 'ens_callback_valid', 'time_of_day', 'day_of_week']),
   expected_value: z.string().max(256),    // static value or ${var_name} interpolation
   true_node:      nodeId,
   false_node:     nodeId,

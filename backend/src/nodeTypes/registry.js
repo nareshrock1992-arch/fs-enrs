@@ -54,6 +54,7 @@ export const NODE_TYPE_REGISTRY = [
     category: 'Audio',
     description: 'Play an audio file',
     ports: 'next',
+    summaryTemplate: '${audio_url}',
     configSchema: [
       { key: 'audio_url', label: 'Audio URL (local /media/ path)', fieldType: 'audio_url', placeholder: '/media/welcome.wav' },
       { key: 'audio_file_id', label: 'Audio File ID (alternative)', fieldType: 'number', min: 1 },
@@ -76,6 +77,7 @@ end`,
     category: 'Audio',
     description: 'Text-to-speech message',
     ports: 'next',
+    summaryTemplate: '"${text}"',
     configSchema: [
       { key: 'text', label: 'Text to speak', fieldType: 'textarea', required: true, placeholder: 'Please press 1 for emergency…' },
       { key: 'language', label: 'Language', fieldType: 'select', options: ['en-US','en-AU','en-GB','es-ES','fr-FR','de-DE'].map(l => ({ value: l, label: l })) },
@@ -98,6 +100,7 @@ end`,
     category: 'Input',
     description: 'Collect DTMF digits',
     ports: 'branches',
+    summaryTemplate: 'max ${max_digits} digit · ${timeout_seconds}s',
     configSchema: [
       { key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text', placeholder: 'gather_result', hint: 'Session variable that stores collected digits' },
       { key: 'max_digits', label: 'Max Digits', fieldType: 'number', min: 1, max: 11 },
@@ -138,6 +141,7 @@ end`,
     category: 'Input',
     description: 'Branch on variable value',
     ports: 'true_false',
+    summaryTemplate: '${variable} ${operator} ${expected_value}',
     configSchema: [
       { key: 'variable', label: 'Variable to check', fieldType: 'mono_text', required: true, placeholder: 'gather_result', hint: 'Session variable name (e.g. gather_result)' },
       {
@@ -149,12 +153,14 @@ end`,
           { value: 'starts_with',        label: 'starts_with' },
           { value: 'ens_pin_valid',      label: 'ENS PIN valid (lookup + validate)' },
           { value: 'ens_callback_valid', label: 'ENS callback valid (recording replay)' },
+          { value: 'time_of_day',       label: 'Time of day (HHMM range)' },
+          { value: 'day_of_week',       label: 'Day of week (0=Sun…6=Sat)' },
         ],
       },
       {
         key: 'expected_value', label: 'Expected value', fieldType: 'mono_text', required: true,
         placeholder: 'expected value',
-        hint: 'Static value or ${var_name} to compare against',
+        hint: 'Static value or ${var_name} to compare against. For time_of_day: "HHMM-HHMM" (e.g. 0900-1700). For day_of_week: comma-separated day numbers (e.g. 1,2,3,4,5 for Mon–Fri).',
         conditionalOn: {
           field: 'operator', value: 'ens_pin_valid',
           label: 'ENS access number',
@@ -197,6 +203,26 @@ local function exec_condition(s, node)
       end
       ok = true
     end
+  elseif op == "time_of_day" then
+    -- expected_value format: "HHMM-HHMM" e.g. "0900-1700"
+    local now_hhmm = tonumber(os.date("%H%M")) or 0
+    local s_part, e_part = exp:match("^(%d%d%d%d)-(%d%d%d%d)$")
+    if s_part and e_part then
+      local start_n = tonumber(s_part) or 0
+      local end_n   = tonumber(e_part) or 2359
+      if start_n <= end_n then
+        ok = (now_hhmm >= start_n and now_hhmm < end_n)
+      else
+        -- overnight range e.g. 2200-0600
+        ok = (now_hhmm >= start_n or now_hhmm < end_n)
+      end
+    end
+  elseif op == "day_of_week" then
+    -- expected_value: comma-separated day numbers 0=Sun … 6=Sat
+    local today = tonumber(os.date("%w")) or -1
+    for d in exp:gmatch("%d+") do
+      if tonumber(d) == today then ok = true; break end
+    end
   elseif op == "ens_callback_valid" then
     -- expected_value carries the reply_clid the caller dialed in on —
     -- matches GET /ens/callbacks/authorize?reply_clid=&caller= exactly.
@@ -224,6 +250,7 @@ end`,
     category: 'Flow',
     description: 'Jump to another node',
     ports: 'goto_target',
+    summaryTemplate: '→ ${target_node_id}',
     configSchema: [
       { key: 'target_node_id', label: 'Jump to Node', fieldType: 'node_ref', required: true, hint: 'The node this Go To routes to' },
     ],
@@ -243,6 +270,7 @@ local function exec_goto(s, node)  return node.target_node_id end`,
     category: 'Emergency',
     description: 'Trigger ENS blast',
     ports: 'next_optional',
+    summaryTemplate: 'Config ${ens_configuration_id}',
     configSchema: [
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank if using ens_config_var' },
       { key: 'ens_config_var', label: 'ENS Config Variable', fieldType: 'mono_text', placeholder: 'ens_configuration_id', hint: 'Session var holding config ID (set by condition ens_pin_valid)' },
@@ -294,6 +322,7 @@ end`,
     category: 'Emergency',
     description: 'Start ERS conference',
     ports: 'none',
+    summaryTemplate: 'Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'group_type', label: 'Responder Tier', fieldType: 'select', options: [{ value: 'primary', label: 'Primary' }, { value: 'secondary', label: 'Secondary' }] },
@@ -373,6 +402,7 @@ end`,
     category: 'Recording',
     description: 'Record caller audio',
     ports: 'next',
+    summaryTemplate: '→ ${variable_name} · max ${max_seconds}s',
     configSchema: [
       { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session var that stores the recorded file path' },
       { key: 'prompt_text', label: 'Prompt text (TTS)', fieldType: 'textarea', hint: 'Played before recording starts', placeholder: 'Please record your message after the tone. Press # when done.' },
@@ -419,6 +449,7 @@ end`,
     category: 'Recording',
     description: 'Set session variable',
     ports: 'next',
+    summaryTemplate: '${variable} = ${value}',
     configSchema: [
       { key: 'variable', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'my_variable', hint: 'FreeSWITCH channel variable to set' },
       { key: 'value', label: 'Value', fieldType: 'mono_text', required: true, placeholder: '${destination_number}', hint: 'Static text or ${other_var} interpolation' },
@@ -441,6 +472,7 @@ end`,
     description: 'Transfer call to extension',
     ports: 'none',
     footnote: 'Transfer hands off call control. No next node — the transferred dialplan takes over.',
+    summaryTemplate: '→ ${destination}',
     configSchema: [
       { key: 'destination', label: 'Destination', fieldType: 'mono_text', required: true, placeholder: '1001', hint: 'Extension number, or ${var} for dynamic destination' },
       { key: 'dialplan', label: 'Dialplan', fieldType: 'select', options: [{ value: 'XML', label: 'XML (default)' }, { value: 'inline', label: 'inline' }, { value: 'enum', label: 'enum' }] },
@@ -470,6 +502,7 @@ end`,
     category: 'Integrations',
     description: 'POST JSON to an external URL',
     ports: 'next',
+    summaryTemplate: '${url}',
     configSchema: [
       { key: 'url', label: 'Webhook URL', fieldType: 'mono_text', required: true, placeholder: 'https://example.com/hooks/emergency' },
       { key: 'body_template', label: 'Body (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"caller": "${caller_id_number}"}' },
@@ -514,15 +547,19 @@ end`,
     description: 'Ring every tier responder simultaneously into one conference',
     ports: 'none',
     footnote: 'Rings all tier responders in parallel (continuous re-ring until any leg answers, recording on first join, caller identity shown on every phone). If the tier already has a live-occupied room, the caller bridges straight into it instead (rejoin). Call control ends here.',
+    summaryTemplate: 'Config ${ers_configuration_id} · ${tier}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'tier', label: 'Responder Tier', fieldType: 'select', required: true, options: [{ value: 'primary', label: 'Level 1 (Primary)' }, { value: 'secondary', label: 'Level 2 (Secondary)' }] },
+      { key: 'ring_timeout_seconds', label: 'Ring timeout (seconds)', fieldType: 'number', min: 10, max: 7200, hint: 'Stop re-ringing after this many seconds with no answer. Leave blank for no limit (2h safety cap applies).' },
     ],
     luaHandler: `
 local function exec_ers_ring_all(s, node)
   local cfg_id = node.ers_configuration_id
   if not cfg_id then
     freeswitch.consoleLog("ERR", "[ivr_executor] ers_ring_all: missing ers_configuration_id — hanging up\\n")
+    speak(s, "This emergency service is not configured. Please call emergency services directly.")
+    s:hangup("NORMAL_CLEARING")
     return nil
   end
 
@@ -533,7 +570,25 @@ local function exec_ers_ring_all(s, node)
     caller_name      = s:getVariable("caller_id_name") or nil,
   })
 
-  if d and d.conference_room then
+  -- d.success == false means the backend rejected the request (e.g. no
+  -- responders configured). Never fail silently — log ERR with the reason
+  -- and play an audible fallback so the caller is not left in silence.
+  if not d or not d.success then
+    local reason = (d and d.reason) or "no_response"
+    local err_detail = (d and d.error) or "no response from backend"
+    freeswitch.consoleLog("ERR",
+      "[ivr_executor] ers_ring_all: ring-all failed — reason=" .. reason ..
+      " detail=" .. err_detail .. "\\n")
+    if reason == "no_responders" then
+      speak(s, "No emergency responders are currently configured for this service. Please call emergency services directly.")
+    else
+      speak(s, "The emergency response service is currently unavailable. Please call emergency services directly.")
+    end
+    s:hangup("NORMAL_CLEARING")
+    return nil
+  end
+
+  if d.conference_room then
     s:setVariable("ers_incident_uuid", d.incident_uuid or "")
     -- Blocks until THIS leg leaves. The backend ring loop keeps re-ringing
     -- responders in parallel the whole time the caller waits in the room.
@@ -541,8 +596,6 @@ local function exec_ers_ring_all(s, node)
     if d.incident_uuid then
       post("/ers/incidents/" .. d.incident_uuid .. "/complete", {})
     end
-  else
-    freeswitch.consoleLog("ERR", "[ivr_executor] ers_ring_all: ring-all failed — " .. tostring(d and d.error or "no response") .. "\\n")
   end
   return nil
 end`,
@@ -558,6 +611,7 @@ end`,
     description: 'Route by LIVE tier occupancy: Level 1 → Level 2 → queue',
     ports: 'branches',
     footnote: 'Occupancy is judged by the LIVE conference member count via FreeSWITCH, never the incident status column — a room with members is occupied even if its DB row was marked completed, and vice versa. Branch keys: primary (Level 1 free), secondary (Level 2 free), full (both occupied).',
+    summaryTemplate: 'Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'branches', label: 'Routes (primary / secondary / full)', fieldType: 'branches_map', required: true, hint: 'primary: Level 1 free · secondary: Level 2 free · full: both occupied' },
@@ -589,6 +643,7 @@ end`,
     description: 'Hold in queue until a tier frees up (Level 1 priority)',
     ports: 'next',
     footnote: 'Plays the hold announcement, enqueues the caller, and polls tier occupancy (live member count). When a tier frees, the caller auto-connects with Level 1 priority. The Next Node is the FALLBACK when the wait cap is hit or the queue entry is cancelled.',
+    summaryTemplate: 'Wait ${max_wait_seconds}s · Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'hold_prompt_text', label: 'Hold announcement (TTS)', fieldType: 'textarea', placeholder: 'All emergency responders are currently engaged. Please remain on the line.' },
@@ -637,14 +692,15 @@ end`,
   },
 
   {
-    type: 'ens_blast_record',
-    label: 'ENS Blast (PIN + Record)',
-    icon: '📣',
-    bg: '#1e333b', border: '#2a6a8a', color: '#93e3fd',
-    category: 'Emergency',
-    description: 'PIN-gate, record a message, broadcast to all contacts',
-    ports: 'next',
-    footnote: 'Full blast trigger in one node: collects and verifies the PIN (3 attempts), records the initiator’s message, and broadcasts to every contact’s extension AND mobile number. Next Node runs after the blast is confirmed started.',
+    type: ‘ens_blast_record’,
+    label: ‘ENS Blast (PIN + Record)’,
+    icon: ‘📣’,
+    bg: ‘#1e333b’, border: ‘#2a6a8a’, color: ‘#93e3fd’,
+    category: ‘Emergency’,
+    description: ‘PIN-gate, record a message, broadcast to all contacts’,
+    ports: ‘next’,
+    footnote: ‘Full blast trigger in one node: collects and verifies the PIN (3 attempts), records the initiator\’s message, and broadcasts to every contact\’s extension AND mobile number. Next Node runs after the blast is confirmed started.’,
+    summaryTemplate: ‘Config ${ens_configuration_id}’,
     configSchema: [
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank to resolve from the dialed number' },
       { key: 'pin_prompt_text', label: 'PIN prompt (TTS)', fieldType: 'textarea', placeholder: 'Please enter your authorization PIN followed by pound.' },
@@ -731,6 +787,7 @@ end`,
     description: 'Authorized-caller check, then play the latest message',
     ports: 'true_false',
     footnote: 'The UUUU line: callers on the authorized list hear the latest recorded message if it is within its 24-hour window (or "no active message" after expiry) and route to the True node; unauthorized callers are logged and route to the False node.',
+    summaryTemplate: 'Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'no_message_text', label: '"No active message" text (TTS)', fieldType: 'textarea', placeholder: 'There is no active emergency message at this time.' },
@@ -767,6 +824,6 @@ export function getNodeType(type) {
 
 // Public shape for the frontend — never leak Lua handler source over the API.
 export function publicNodeTypes() {
-  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote }) =>
-    ({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote }));
+  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote, summaryTemplate }) =>
+    ({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote, summaryTemplate }));
 }

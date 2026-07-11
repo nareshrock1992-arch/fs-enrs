@@ -11,17 +11,24 @@ function genId() {
 // ── Default fields per node type ──────────────────────────────────────────────
 
 export const NODE_DEFAULTS = {
-  play:           { audio_url: '/media/', next: '' },
-  say:            { text: '', language: 'en-US', next: '' },
-  gather:         { max_digits: 4, timeout_seconds: 10, terminators: '#', variable_name: 'gather_result', branches: { _default: '', timeout: '', invalid: '' } },
-  goto:           { target_node_id: '' },
-  ens:            { ens_config_var: 'ens_configuration_id', recording_file_var: 'recorded_file_path', next: '' },
-  ers:            { ers_configuration_id: '' },
-  hangup:         {},
-  condition:      { variable: 'gather_result', operator: '==', expected_value: '', true_node: '', false_node: '' },
-  record_message: { variable_name: 'recorded_file_path', max_seconds: 60, silence_threshold: 500, silence_hits: 3, prompt_text: 'Please record your message after the tone. Press pound when done.', next: '' },
-  set_variable:   { variable: '', value: '', next: '' },
-  transfer:       { destination: '', dialplan: 'XML', context: 'default' },
+  play:              { audio_url: '/media/', next: '' },
+  say:               { text: '', language: 'en-US', next: '' },
+  gather:            { max_digits: 4, timeout_seconds: 10, terminators: '#', variable_name: 'gather_result', branches: { _default: '', timeout: '', invalid: '' } },
+  goto:              { target_node_id: '' },
+  ens:               { ens_config_var: 'ens_configuration_id', recording_file_var: 'recorded_file_path', next: '' },
+  ers:               { ers_configuration_id: '' },
+  hangup:            {},
+  condition:         { variable: 'gather_result', operator: '==', expected_value: '', true_node: '', false_node: '' },
+  record_message:    { variable_name: 'recorded_file_path', max_seconds: 60, silence_threshold: 500, silence_hits: 3, prompt_text: 'Please record your message after the tone. Press pound when done.', next: '' },
+  set_variable:      { variable: '', value: '', next: '' },
+  transfer:          { destination: '', dialplan: 'XML', context: 'default' },
+  webhook:           { url: '', body_template: '', next: '' },
+  // Phase-5 emergency nodes
+  ers_ring_all:      { ers_configuration_id: '', tier: 'primary' },
+  ers_overflow_check: { ers_configuration_id: '', branches: { primary: '', secondary: '', full: '' } },
+  ers_overflow_wait: { ers_configuration_id: '', hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
+  ens_blast_record:  { ens_configuration_id: '', pin_prompt_text: 'Please enter your authorization PIN followed by pound.', record_prompt_text: 'Record your emergency message after the tone. Press pound when finished.', max_record_seconds: 120, next: '' },
+  ens_playback_gate: { ers_configuration_id: '', no_message_text: 'There is no active emergency message at this time.', true_node: '', false_node: '' },
 };
 
 // ── Derive edges from node fields ─────────────────────────────────────────────
@@ -86,14 +93,16 @@ export function deserialiseGraph(apiGraph) {
 // ── Reducer ───────────────────────────────────────────────────────────────────
 
 const INIT = {
-  nodes:       {},
-  entryNodeId: '',
-  selected:    null,
-  dirty:       false,
-  saving:      false,
-  errors:      {},   // { [nodeId]: string[] }
-  warnings:    [],
-  flowMeta:    null, // { flow_uuid, name, latest_version, bound_numbers, ... }
+  nodes:        {},
+  entryNodeId:  '',
+  selected:     null,
+  dirty:        false,
+  saving:       false,
+  saveError:    null,   // string | null — last autosave failure message
+  errors:       {},     // { [nodeId]: string[] }
+  nodeWarnings: {},     // { [nodeId]: string[] } — per-node warning badges
+  warnings:     [],     // flat array for toolbar warning bar
+  flowMeta:     null,   // { flow_uuid, name, latest_version, bound_numbers, ... }
 };
 
 function reducer(state, action) {
@@ -234,17 +243,28 @@ function reducer(state, action) {
     case 'SET_ENTRY':
       return { ...state, entryNodeId: action.id, dirty: true };
 
-    case 'SET_ERRORS':
-      return { ...state, errors: action.errors || {}, warnings: action.warnings || [] };
+    case 'SET_ERRORS': {
+      // Map per-node warnings from the flat warnings array (same format as
+      // errors: "Node \"<id>\" is not reachable…")
+      const nodeWarnings = {};
+      for (const w of (action.warnings || [])) {
+        const m = w.match(/^Node "([^"]+)"/);
+        const nid = m?.[1];
+        if (nid) {
+          nodeWarnings[nid] = [...(nodeWarnings[nid] || []), w];
+        }
+      }
+      return { ...state, errors: action.errors || {}, warnings: action.warnings || [], nodeWarnings };
+    }
 
     case 'MARK_SAVING':
-      return { ...state, saving: true };
+      return { ...state, saving: true, saveError: null };
 
     case 'MARK_SAVED':
-      return { ...state, saving: false, dirty: false };
+      return { ...state, saving: false, dirty: false, saveError: null };
 
     case 'MARK_SAVE_ERROR':
-      return { ...state, saving: false };
+      return { ...state, saving: false, saveError: action.message || 'Autosave failed' };
 
     case 'UPDATE_META':
       return { ...state, flowMeta: { ...state.flowMeta, ...action.patch } };
@@ -270,33 +290,46 @@ export function useIvrGraph(flowUuid) {
     }).catch(console.error);
   }, [flowUuid]);
 
+  // Shared save implementation — used by both the debounced autosave and saveNow().
+  async function persistGraph() {
+    const s = stateRef.current;
+    if (!s.dirty || !s.flowMeta?.flow_uuid) return;
+    dispatch({ type: 'MARK_SAVING' });
+    try {
+      const graph = serialiseGraph(s.nodes, s.entryNodeId);
+      // Store layout positions in _layout key (stripped by backend Zod, ignored)
+      const layout = {};
+      for (const [id, node] of Object.entries(s.nodes)) {
+        layout[id] = { x: node.x, y: node.y };
+      }
+      graph._layout = layout;
+      await api.ivr.update(s.flowMeta.flow_uuid, { graph });
+      dispatch({ type: 'MARK_SAVED' });
+    } catch (e) {
+      console.error('[ivr] save failed', e);
+      dispatch({ type: 'MARK_SAVE_ERROR', message: e.message || 'Save failed' });
+      throw e;
+    }
+  }
+
   // Auto-save draft on dirty (debounced 800ms)
   useEffect(() => {
     if (!state.dirty || state.saving) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
 
-    saveTimer.current = setTimeout(async () => {
-      const s = stateRef.current;
-      if (!s.dirty || !s.flowMeta?.flow_uuid) return;
-      dispatch({ type: 'MARK_SAVING' });
-      try {
-        const graph = serialiseGraph(s.nodes, s.entryNodeId);
-        // Store layout positions in _layout key (stripped by backend Zod, ignored)
-        const layout = {};
-        for (const [id, node] of Object.entries(s.nodes)) {
-          layout[id] = { x: node.x, y: node.y };
-        }
-        graph._layout = layout;
-        await api.ivr.update(s.flowMeta.flow_uuid, { graph });
-        dispatch({ type: 'MARK_SAVED' });
-      } catch (e) {
-        console.error('[ivr] auto-save failed', e);
-        dispatch({ type: 'MARK_SAVE_ERROR' });
-      }
-    }, 800);
+    saveTimer.current = setTimeout(() => { persistGraph().catch(() => {}); }, 800);
 
     return () => clearTimeout(saveTimer.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.dirty, state.saving]);
+
+  // Immediate save — bypasses the debounce. Used by Publish/Deploy to ensure
+  // the server has the latest edits before publishing. Throws on save failure.
+  const saveNow = useCallback(async () => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    await persistGraph();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addNode    = useCallback((nodeType, x, y) => dispatch({ type: 'ADD_NODE', nodeType, x, y }), []);
   const updateNode = useCallback((id, patch) => dispatch({ type: 'UPDATE_NODE', id, patch }), []);
@@ -347,5 +380,6 @@ export function useIvrGraph(flowUuid) {
     setEntry,
     updateMeta,
     validate,
+    saveNow,
   };
 }

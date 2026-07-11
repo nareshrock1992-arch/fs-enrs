@@ -50,7 +50,7 @@ function edgeColor(portKey) {
 }
 
 export default function FlowCanvas({
-  nodes, edges, entryNodeId, errors,
+  nodes, edges, entryNodeId, errors, warnings,
   selected, onSelect,
   onMoveNode, onDeleteNode,
   onConnect, onDisconnect,
@@ -307,6 +307,7 @@ export default function FlowCanvas({
             isSelected={selected === node.id}
             isEntry={entryNodeId === node.id}
             hasErrors={!!(errors[node.id]?.length)}
+            hasWarnings={!!(warnings?.[node.id]?.length)}
             edges={edges}
             scale={transform.scale}
             onSelect={onSelect}

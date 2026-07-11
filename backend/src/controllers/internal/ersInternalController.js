@@ -452,7 +452,7 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
   // rejoin_number is a direct column on ers_configurations (migration 002 B7).
   // Also check emergency_numbers with type='REJOIN' (migration 002 B14) as fallback.
   const { rows: [cfg] } = await query(
-    `SELECT ec.id FROM ers_configurations ec
+    `SELECT ec.id, ec.rejoin_open_access FROM ers_configurations ec
      WHERE ec.deleted_at IS NULL AND ec.is_active = true
        AND (
          ec.rejoin_number = $1
@@ -466,107 +466,79 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
     [rejoinNumber]
   );
 
-  if (!cfg) return res.json({ authorized: false, reason: 'no_active_incident' });
+  if (!cfg) return res.json({ authorized: false, reason: 'no_config' });
 
-  const { rows: [incident] } = await query(
-    `SELECT id, incident_uuid, conference_room FROM ers_incidents
-     WHERE ers_configuration_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL
-     ORDER BY started_at DESC LIMIT 1`,
-    [cfg.id]
-  );
+  // Use deterministic room name — if the room has live members, there is
+  // an active conference. Do NOT rely on incident status column.
+  // Check primary tier first, then secondary.
+  let activeRoom = null;
+  let activeTier = null;
+  for (const tier of ['primary', 'secondary']) {
+    const room = deterministicRoom(cfg.id, tier);
+    const { rows: [inc] } = await query(
+      `SELECT incident_uuid FROM ers_incidents
+       WHERE ers_configuration_id = $1 AND group_type = $2
+         AND deleted_at IS NULL
+         AND started_at > now() - interval '24 hours'
+       ORDER BY started_at DESC LIMIT 1`,
+      [cfg.id, tier]
+    );
+    if (inc) {
+      const members = await getConferenceMemberCount(room);
+      if (members > 0) { activeRoom = room; activeTier = tier; break; }
+    }
+  }
 
-  if (!incident) return res.json({ authorized: false, reason: 'no_active_incident' });
+  if (!activeRoom) return res.json({ authorized: false, reason: 'no_active_incident' });
+
+  // rejoin_open_access: when true, any caller may rejoin — used for
+  // designated observer lines. Default is secure: only configured tier contacts.
+  if (cfg.rejoin_open_access) {
+    return res.json({ authorized: true, conference_room: activeRoom, role: 'observer' });
+  }
 
   const callerLast9 = caller.replace(/\D/g, '').slice(-9);
 
-  // Check primary responders (try ers_responders path, fall back to emergency_contacts)
-  const { rows: [primaryMatch] } = await query(
+  // Check membership via new tier tables first (ers_tier_contacts, ers_tier_groups),
+  // then fall back to legacy group FK columns for old configs.
+  const { rows: [tierMatch] } = await query(
     `SELECT 1
-     FROM ers_responders r
-     JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
-     JOIN ers_configurations ec ON ec.primary_ers_group_id = rgm.group_id
-     WHERE ec.id = $1
-       AND RIGHT(REGEXP_REPLACE(r.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-       AND r.deleted_at IS NULL
+     FROM emergency_contacts ec
+     WHERE ec.deleted_at IS NULL AND ec.is_active = true
+       AND RIGHT(REGEXP_REPLACE(COALESCE(ec.mobile_number, ec.extension_number, ''), '[^0-9]', '', 'g'), 9) = $1
+       AND (
+         ec.id IN (
+           SELECT contact_id FROM ers_tier_contacts
+           WHERE ers_configuration_id = $2
+         )
+         OR ec.id IN (
+           SELECT rgm.emergency_contact_id
+           FROM responder_group_members rgm
+           JOIN ers_tier_groups etg ON etg.group_id = rgm.responder_group_id
+           WHERE etg.ers_configuration_id = $2
+         )
+       )
      LIMIT 1`,
-    [cfg.id, callerLast9]
-  ).then(async ({ rows }) => {
-    if (rows[0]) return rows[0];
-    // Fall back to emergency_contacts / primary_group_id
-    const { rows: fb } = await query(
-      `SELECT 1
-       FROM emergency_contacts ec2
-       JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec2.id
-       JOIN ers_configurations e ON e.primary_group_id = rgm.responder_group_id
-       WHERE e.id = $1
-         AND RIGHT(REGEXP_REPLACE(ec2.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-         AND ec2.deleted_at IS NULL
-       LIMIT 1`,
-      [cfg.id, callerLast9]
-    );
-    return fb[0] ?? null;
-  });
+    [callerLast9, cfg.id]
+  );
 
-  if (primaryMatch) {
-    return res.json({
-      authorized:      true,
-      incident_uuid:   incident.incident_uuid,
-      conference_room: incident.conference_room,
-      role:            'primary',
-    });
+  if (tierMatch) {
+    return res.json({ authorized: true, conference_room: activeRoom, role: activeTier });
   }
 
-  // Check secondary responders
-  const { rows: [secondaryMatch] } = await query(
-    `SELECT 1
-     FROM ers_responders r
-     JOIN ers_responder_group_members rgm ON rgm.responder_id = r.id
-     JOIN ers_configurations ec ON ec.secondary_ers_group_id = rgm.group_id
-     WHERE ec.id = $1
-       AND RIGHT(REGEXP_REPLACE(r.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-       AND r.deleted_at IS NULL
-     LIMIT 1`,
-    [cfg.id, callerLast9]
-  ).then(async ({ rows }) => {
-    if (rows[0]) return rows[0];
-    const { rows: fb } = await query(
-      `SELECT 1
-       FROM emergency_contacts ec2
-       JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec2.id
-       JOIN ers_configurations e ON e.secondary_group_id = rgm.responder_group_id
-       WHERE e.id = $1
-         AND RIGHT(REGEXP_REPLACE(ec2.mobile_number, '[^0-9]', '', 'g'), 9) = $2
-         AND ec2.deleted_at IS NULL
-       LIMIT 1`,
-      [cfg.id, callerLast9]
-    );
-    return fb[0] ?? null;
-  });
-
-  if (secondaryMatch) {
-    return res.json({
-      authorized:      true,
-      incident_uuid:   incident.incident_uuid,
-      conference_room: incident.conference_room,
-      role:            'secondary',
-    });
-  }
-
-  // Check if caller was the original incident initiator
+  // Check if caller was the original incident initiator (fallback)
   const { rows: [initiatorMatch] } = await query(
-    `SELECT id FROM ers_incidents
-     WHERE id = $1
-       AND RIGHT(REGEXP_REPLACE(caller_number, '[^0-9]', '', 'g'), 9) = $2`,
-    [incident.id, callerLast9]
+    `SELECT 1 FROM ers_incidents
+     WHERE ers_configuration_id = $1
+       AND RIGHT(REGEXP_REPLACE(caller_number, '[^0-9]', '', 'g'), 9) = $2
+       AND started_at > now() - interval '24 hours'
+       AND deleted_at IS NULL
+     LIMIT 1`,
+    [cfg.id, callerLast9]
   );
 
   if (initiatorMatch) {
-    return res.json({
-      authorized:      true,
-      incident_uuid:   incident.incident_uuid,
-      conference_room: incident.conference_room,
-      role:            'initiator',
-    });
+    return res.json({ authorized: true, conference_room: activeRoom, role: 'initiator' });
   }
 
   res.json({ authorized: false, reason: 'not_a_member' });
@@ -694,33 +666,46 @@ export const ersIncidentStatus = asyncHandler(async (req, res) => {
 // Phase 5 — 3-scenario emergency flow endpoints
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Live occupancy for one tier: the newest non-completed incident's room's
-// LIVE member count. Phase 1 item 13 distinction, enforced here at the
-// source: an incident row marked COMPLETED only means "that leg's
-// completion call ran" — the room can still have live members, and a
-// room can be empty while its row still says ACTIVE (crash). The room's
-// member count via ESL is the only truth about occupancy.
+// Deterministic conference room name — stable across backend restarts and
+// calls. Replaces the prior timestamp-based name which made rejoin impossible
+// and caused tierLiveStatus to scan DB rows for the room name.
+// Format: ers_cfg<configId>_primary | ers_cfg<configId>_secondary
+export function deterministicRoom(configId, tier) {
+  return `ers_cfg${configId}_${tier}`;
+}
+
+// Strict tier occupancy: a tier is FREE only when LIVE FreeSWITCH member
+// count == 0. Never infers from ers_incidents.status — the DB row only
+// reflects the most recent /complete call, not real room state (a room can
+// have live members while its row says COMPLETED, and a room can be empty
+// while its row says ACTIVE after a crash). With deterministic room names
+// we can check the room directly without needing the DB row at all.
 async function tierLiveStatus(configId, tier) {
+  const room = deterministicRoom(configId, tier);
+  const liveMembers = await getConferenceMemberCount(room);
+
+  if (liveMembers === 0) {
+    return { tier, occupied: false, live_members: 0, incident_uuid: null, conference_room: room };
+  }
+
+  // Room has live members — look up the incident for its UUID (needed by
+  // the ring-all rejoin path to populate incident_participants and return
+  // a UUID to Lua). Status column is irrelevant here; only member_count matters.
   const { rows: [incident] } = await query(
-    `SELECT id, incident_uuid, conference_room, status
-     FROM ers_incidents
+    `SELECT incident_uuid FROM ers_incidents
      WHERE ers_configuration_id = $1 AND group_type = $2
-       AND deleted_at IS NULL AND conference_room IS NOT NULL
+       AND deleted_at IS NULL
        AND started_at > now() - interval '24 hours'
      ORDER BY started_at DESC LIMIT 1`,
     [configId, tier]
   );
 
-  if (!incident) return { tier, occupied: false, live_members: 0, incident_uuid: null, conference_room: null };
-
-  const liveMembers = await getConferenceMemberCount(incident.conference_room);
   return {
     tier,
-    occupied:        liveMembers > 0,
+    occupied:        true,
     live_members:    liveMembers,
-    incident_uuid:   incident.incident_uuid,
-    conference_room: incident.conference_room,
-    incident_status: incident.status,
+    incident_uuid:   incident?.incident_uuid ?? null,
+    conference_room: room,
   };
 }
 
@@ -768,12 +753,14 @@ export const ersRingAll = asyncHandler(async (req, res) => {
   const live = await tierLiveStatus(d.configuration_id, d.tier);
   if (live.occupied) {
     const identity = await lookupCallerIdentity(d.caller_number);
-    await query(
-      `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
-       SELECT i.id, NULL, $2, 'responder', now()
-       FROM ers_incidents i WHERE i.incident_uuid = $1`,
-      [live.incident_uuid, d.caller_number]
-    ).catch(() => {});
+    if (live.incident_uuid) {
+      await query(
+        `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
+         SELECT i.id, NULL, $2, 'responder', now()
+         FROM ers_incidents i WHERE i.incident_uuid = $1`,
+        [live.incident_uuid, d.caller_number]
+      ).catch(() => {});
+    }
     return res.json({
       success:         true,
       rejoin:          true,
@@ -783,9 +770,41 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fresh incident
+  // Pre-flight: verify at least one responder is configured before creating
+  // an incident. Zero responders means the caller would join a silent empty
+  // conference — instead return a clear error so the Lua node plays a
+  // fallback announcement and doesn't fail silently.
+  const { rows: [responderCount] } = await query(
+    `SELECT COUNT(*) AS cnt FROM (
+       SELECT 1 FROM emergency_contacts ec
+       JOIN ers_tier_contacts etc ON etc.contact_id = ec.id
+       WHERE etc.ers_configuration_id = $1 AND etc.tier = $2
+         AND ec.deleted_at IS NULL AND ec.is_active = true
+       UNION ALL
+       SELECT 1 FROM emergency_contacts ec
+       JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
+       JOIN ers_tier_groups etg ON etg.group_id = rgm.responder_group_id
+       WHERE etg.ers_configuration_id = $1 AND etg.tier = $2
+         AND ec.deleted_at IS NULL AND ec.is_active = true
+     ) sub`,
+    [d.configuration_id, d.tier]
+  );
+
+  if (parseInt(responderCount.cnt, 10) === 0) {
+    console.error(
+      `[ers-ring-all] ERR: no responders found for config=${d.configuration_id} tier=${d.tier}` +
+      ` — refusing to create conference`
+    );
+    return res.status(422).json({
+      success: false,
+      error:   'No responders configured for this tier',
+      reason:  'no_responders',
+    });
+  }
+
+  // Fresh incident — deterministic room name (stable across restarts)
   const incidentUuid = uuidv4();
-  const room = `ers_${d.configuration_id}_${d.tier}_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const room = deterministicRoom(d.configuration_id, d.tier);
 
   const { rows: [tierGroup] } = await query(
     `SELECT id FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2 LIMIT 1`,
@@ -1030,7 +1049,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
     [entry.ers_configuration_id]
   );
 
-  const room = `ers_${entry.ers_configuration_id}_${freedTier}_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const room = deterministicRoom(entry.ers_configuration_id, freedTier);
 
   const promoted = await withTransaction(async tq => {
     const { rows: [locked] } = await tq(

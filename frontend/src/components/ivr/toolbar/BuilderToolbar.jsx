@@ -7,6 +7,7 @@ export default function BuilderToolbar({
   flow,
   dirty,
   saving,
+  saveError,
   errors,
   warnings,
   onValidate,
@@ -14,6 +15,7 @@ export default function BuilderToolbar({
   onShowHistory,
   onShowBind,
   onFlowChange,
+  onSaveNow,
 }) {
   const [showPublish, setShowPublish] = useState(false);
   const [changeNotes, setChangeNotes] = useState('');
@@ -63,10 +65,25 @@ export default function BuilderToolbar({
     }
   }
 
-  // Open publish modal — auto-validate first
+  // Open publish modal — save any pending edits first, then validate.
+  // This is the fix for "edit → publish immediately → reload → changes gone":
+  // we flush the debounced autosave before publishing so the server always
+  // has the latest graph before we snapshot it as a published version.
   async function openPublish() {
     setLastValidation(null);
     setPubError('');
+
+    // Flush pending autosave if the graph is dirty.
+    if ((dirty || saving) && onSaveNow) {
+      try {
+        await onSaveNow();
+      } catch (e) {
+        setPubError('Could not save before publishing: ' + (e.message || 'Save failed'));
+        setShowPublish(true);
+        return;
+      }
+    }
+
     setShowPublish(true);
     setValidating(true);
     const result = await onValidate();
@@ -91,8 +108,9 @@ export default function BuilderToolbar({
         {/* Save status */}
         <div className="flex items-center gap-1 text-[10px] shrink-0">
           {saving && <><Loader2 size={11} className="animate-spin text-text-muted" /><span className="text-text-muted">Saving…</span></>}
-          {!saving && dirty && <><Save size={11} className="text-yellow-500" /><span className="text-yellow-500">Unsaved</span></>}
-          {!saving && !dirty && <span className="text-text-muted">Saved</span>}
+          {!saving && saveError && <><AlertTriangle size={11} className="text-red-400" /><span className="text-red-400" title={saveError}>Save failed</span></>}
+          {!saving && !saveError && dirty && <><Save size={11} className="text-yellow-500" /><span className="text-yellow-500">Unsaved</span></>}
+          {!saving && !saveError && !dirty && <span className="text-text-muted">Saved</span>}
         </div>
 
         {/* Published version pill */}

@@ -279,8 +279,17 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
         <div className="flex items-center gap-2">
           <span className="text-lg">{cfg.icon}</span>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-bold" style={{ color: cfg.color }}>{cfg.label}</p>
-            <p className="text-[9px] text-text-muted font-mono truncate">{node.id}</p>
+            <p className="text-[9px]" style={{ color: cfg.color + '99' }}>{cfg.label}</p>
+            {/* Editable nickname — shown as the node title on the canvas card */}
+            <input
+              value={node.nickname || ''}
+              onChange={e => onChange({ nickname: e.target.value || undefined })}
+              placeholder={cfg.label}
+              className="w-full bg-transparent text-xs font-bold outline-none border-b border-transparent
+                         focus:border-current placeholder:opacity-40 truncate"
+              style={{ color: cfg.color }}
+            />
+            <p className="text-[9px] text-text-muted font-mono truncate mt-0.5">{node.id}</p>
           </div>
         </div>
       </div>

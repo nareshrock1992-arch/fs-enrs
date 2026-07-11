@@ -464,3 +464,50 @@ setInterval(async () => {
     updateHeartbeat(false);
   }
 }, 30_000);
+
+// ─── Incident reconciliation sweep ──────────────────────────
+//
+// Finds every ACTIVE ers_incidents row within 48 h and checks its
+// deterministic conference room via ESL. If the room is empty (member
+// count == 0), the incident is an orphan — FreeSWITCH never sent the
+// conference-destroy event (missed while ESL was disconnected, or the
+// backend restarted mid-call). Mark it COMPLETED so the queue can drain.
+//
+// Called from server.js at startup and on a 60-second interval.
+// The real-time path (conference-destroy event → reconcileOrphanedIncident)
+// catches rooms as they empty; this sweep catches anything the event missed.
+//
+// Exported so server.js can call it at boot before the interval starts.
+export async function reconcileAllActiveIncidents() {
+  try {
+    const { rows } = await query(
+      `SELECT incident_uuid, conference_room FROM ers_incidents
+       WHERE status = 'ACTIVE' AND deleted_at IS NULL
+         AND started_at > now() - interval '48 hours'
+         AND conference_room IS NOT NULL`,
+    );
+    for (const { incident_uuid, conference_room } of rows) {
+      try {
+        const members = await getConferenceMemberCount(conference_room);
+        if (members === 0) {
+          const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
+          const result = await completeIncidentCore(incident_uuid, null);
+          if (result) {
+            console.log(`[esl] reconcile: completed orphaned incident ${incident_uuid} (room ${conference_room} was empty)`);
+          }
+        }
+      } catch (err) {
+        console.error(`[esl] reconcile: error for incident ${incident_uuid}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[esl] reconcileAllActiveIncidents failed:', err.message);
+  }
+}
+
+// 60-second safety sweep — catches anything the conference-destroy event
+// missed (e.g. ESL was disconnected when the room emptied).
+setInterval(() => {
+  if (!isConn) return; // only sweep when ESL is live (we need member counts)
+  reconcileAllActiveIncidents().catch(() => {});
+}, 60_000);
