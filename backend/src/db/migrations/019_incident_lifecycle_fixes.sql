@@ -1,33 +1,37 @@
 BEGIN;
 
--- ── 1. Backfill conference_room for any ACTIVE incidents missing it ─────────────
--- Uses the same deterministic formula as deterministicRoom():
--- ers_cfg<configuration_id>_<group_type>
+-- ── 1. Show what we're about to touch ─────────────────────────────────────────
+-- (Uncomment for debugging: SELECT id, status, conference_room, group_type
+--   FROM ers_incidents WHERE conference_room IS NULL AND status = 'ACTIVE';)
+
+-- ── 2. Backfill conference_room for ACTIVE incidents missing it ────────────────
+-- COALESCE on group_type handles any rows where group_type is also NULL
+-- (falls back to 'primary' — matches the default tier in ersRingAll).
 UPDATE ers_incidents
-SET conference_room = 'ers_cfg' || ers_configuration_id::text || '_' || group_type
+SET conference_room = 'ers_cfg' || ers_configuration_id::text
+                      || '_' || COALESCE(group_type, 'primary')
 WHERE status = 'ACTIVE'
   AND conference_room IS NULL
   AND deleted_at IS NULL;
 
--- ── 2. Enforce: ACTIVE incidents must always have a conference_room ─────────────
--- QUEUED incidents legitimately have no room until they are promoted.
+-- ── 3. Enforce: only future ACTIVE rows must have a conference_room ────────────
+-- Historical COMPLETED/QUEUED rows pre-dating room tracking may have
+-- conference_room IS NULL — the constraint must not reject those.
+-- Only status='ACTIVE' needs a non-null room going forward.
 ALTER TABLE ers_incidents
   DROP CONSTRAINT IF EXISTS ers_incidents_room_not_null;
 ALTER TABLE ers_incidents
   ADD CONSTRAINT ers_incidents_room_not_null
-  CHECK (conference_room IS NOT NULL OR status = 'QUEUED');
+  CHECK (status != 'ACTIVE' OR conference_room IS NOT NULL);
 
--- ── 3. Expand ers_queues.status to include CANCELLED and EXPIRED ────────────────
--- CANCELLED: caller hung up while waiting (Lua overflow_wait hangup detection).
--- EXPIRED:   swept out by the 2-hour safety cap in reconcileAllActiveIncidents.
+-- ── 4. Expand ers_queues.status to include CANCELLED and EXPIRED ────────────────
 ALTER TABLE ers_queues
   DROP CONSTRAINT IF EXISTS ers_queues_status_check;
 ALTER TABLE ers_queues
   ADD CONSTRAINT ers_queues_status_check
   CHECK (status IN ('QUEUED', 'DEQUEUED', 'CANCELLED', 'EXPIRED'));
 
--- ── 4. One-time hygiene: cancel stale QUEUED rows and complete their incidents ──
--- Rows older than 2 hours with no matching live call are abandoned sessions.
+-- ── 5. One-time hygiene: expire stale QUEUED rows + complete their incidents ───
 UPDATE ers_queues
 SET status = 'EXPIRED', updated_at = now()
 WHERE status = 'QUEUED'
