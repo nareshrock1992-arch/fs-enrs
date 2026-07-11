@@ -316,7 +316,7 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
        SET status = 'COMPLETED', ended_at = now(),
            recording_path = COALESCE($2, recording_path)
        WHERE incident_uuid = $1 AND deleted_at IS NULL AND status != 'COMPLETED'
-       RETURNING id, ers_configuration_id`,
+       RETURNING id, ers_configuration_id, group_type`,
       [incidentUuid, recordingFile]
     );
 
@@ -332,7 +332,12 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
     );
 
     if (queueEntry) {
-      // dequeued_at added to ers_queues by migration 002 B10
+      // Assign the freed tier's deterministic room to the promoted incident.
+      // The CHECK constraint (migration 019) requires conference_room IS NOT NULL
+      // for ACTIVE rows — we must set it here, not just flip the status.
+      const freedTier = updated[0].group_type || 'primary';
+      const promotedRoom = deterministicRoom(updated[0].ers_configuration_id, freedTier);
+
       await tq(
         `UPDATE ers_queues
          SET status = 'DEQUEUED', dequeued_at = now(), updated_at = now()
@@ -340,9 +345,11 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
         [queueEntry.id]
       );
       await tq(
-        `UPDATE ers_incidents SET status = 'ACTIVE', dequeued_at = now()
+        `UPDATE ers_incidents
+         SET status = 'ACTIVE', dequeued_at = now(),
+             group_type = $2, conference_room = $3
          WHERE id = $1`,
-        [queueEntry.incident_id]
+        [queueEntry.incident_id, freedTier, promotedRoom]
       );
     }
 
