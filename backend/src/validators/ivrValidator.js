@@ -145,24 +145,37 @@ const WebhookNodeSchema = z.object({
 // true_node / false_node) so refsOf() and the canvas port strategies work
 // with zero changes — see nodeTypes/registry.js.
 
+// Coerce empty string / null / 0 → undefined so draft nodes with no
+// config selected yet pass validation. The positive-integer constraint
+// still applies when a value IS present.
+const optionalConfigId = z.preprocess(
+  v => (v === '' || v === null || v === 0 ? undefined : v),
+  z.number().int().positive().optional()
+);
+
+// Branch target — accepts empty string (unconnected port on a draft canvas)
+// as well as a valid node ID. The graph-structure validator checks
+// connectivity separately; Zod only needs to accept the shape.
+const branchTarget = z.string().max(64);
+
 const ErsRingAllNodeSchema = z.object({
   type:                 z.literal('ers_ring_all'),
-  ers_configuration_id: z.number().int().positive(),
+  ers_configuration_id: optionalConfigId,
   tier:                 z.enum(['primary', 'secondary']).default('primary'),
+  ring_timeout_seconds: z.number().int().min(10).max(7200).optional(),
 });
 
 const ErsOverflowCheckNodeSchema = z.object({
   type:                 z.literal('ers_overflow_check'),
-  ers_configuration_id: z.number().int().positive(),
-  branches:             z.record(z.enum(['primary', 'secondary', 'full']), nodeId).refine(
-    b => b.primary && b.secondary && b.full,
-    'ers_overflow_check requires all three branches: primary, secondary, full'
-  ),
+  ers_configuration_id: optionalConfigId,
+  // Branches: keys are 'primary'|'secondary'|'full'; values may be '' while
+  // the user is still wiring the canvas (validated for connectivity at publish).
+  branches:             z.record(z.string().max(16), branchTarget).optional().default({}),
 });
 
 const ErsOverflowWaitNodeSchema = z.object({
   type:                 z.literal('ers_overflow_wait'),
-  ers_configuration_id: z.number().int().positive(),
+  ers_configuration_id: optionalConfigId,
   hold_prompt_text:     z.string().max(1000).optional(),
   hold_audio_url:       localAudioUrl.optional(),
   max_wait_seconds:     z.number().int().min(10).max(3600).optional().default(300),
@@ -171,7 +184,7 @@ const ErsOverflowWaitNodeSchema = z.object({
 
 const EnsBlastRecordNodeSchema = z.object({
   type:                 z.literal('ens_blast_record'),
-  ens_configuration_id: z.number().int().positive().optional(), // else resolved from dialed number
+  ens_configuration_id: optionalConfigId, // else resolved from dialed number
   pin_prompt_text:      z.string().max(1000).optional(),
   record_prompt_text:   z.string().max(1000).optional(),
   max_record_seconds:   z.number().int().min(5).max(300).optional().default(120),
@@ -180,7 +193,7 @@ const EnsBlastRecordNodeSchema = z.object({
 
 const EnsPlaybackGateNodeSchema = z.object({
   type:                 z.literal('ens_playback_gate'),
-  ers_configuration_id: z.number().int().positive(),
+  ers_configuration_id: optionalConfigId,
   no_message_text:      z.string().max(1000).optional(),
   true_node:            nodeId,
   false_node:           nodeId,

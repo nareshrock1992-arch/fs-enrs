@@ -23,12 +23,14 @@ export const NODE_DEFAULTS = {
   set_variable:      { variable: '', value: '', next: '' },
   transfer:          { destination: '', dialplan: 'XML', context: 'default' },
   webhook:           { url: '', body_template: '', next: '' },
-  // Phase-5 emergency nodes
-  ers_ring_all:      { ers_configuration_id: '', tier: 'primary' },
-  ers_overflow_check: { ers_configuration_id: '', branches: { primary: '', secondary: '', full: '' } },
-  ers_overflow_wait: { ers_configuration_id: '', hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
-  ens_blast_record:  { ens_configuration_id: '', pin_prompt_text: 'Please enter your authorization PIN followed by pound.', record_prompt_text: 'Record your emergency message after the tone. Press pound when finished.', max_record_seconds: 120, next: '' },
-  ens_playback_gate: { ers_configuration_id: '', no_message_text: 'There is no active emergency message at this time.', true_node: '', false_node: '' },
+  // Phase-5 emergency nodes — omit config IDs (undefined) so they are stripped
+  // from JSON payloads before the backend's Zod schema sees them. Empty string
+  // fails z.number(); undefined is correctly treated as "not yet set" (optional).
+  ers_ring_all:      { tier: 'primary' },
+  ers_overflow_check: { branches: { primary: '', secondary: '', full: '' } },
+  ers_overflow_wait: { hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
+  ens_blast_record:  { pin_prompt_text: 'Please enter your authorization PIN followed by pound.', record_prompt_text: 'Record your emergency message after the tone. Press pound when finished.', max_record_seconds: 120, next: '' },
+  ens_playback_gate: { no_message_text: 'There is no active emergency message at this time.', true_node: '', false_node: '' },
 };
 
 // ── Derive edges from node fields ─────────────────────────────────────────────
