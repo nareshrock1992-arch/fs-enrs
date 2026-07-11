@@ -11,6 +11,7 @@ router.get('/tier-status',        ctrl.ersTierStatus);      // live member count
 router.post('/ring-all',          ctrl.ersRingAll);         // simultaneous dial-all / rejoin path
 router.post('/overflow/enqueue',  ctrl.ersOverflowEnqueue); // Caller C: both tiers occupied
 router.get('/overflow/poll',      ctrl.ersOverflowPoll);    // hold-loop poll; promotes on tier free-up
+router.post('/overflow/cancel',   ctrl.ersOverflowCancel);  // caller hung up while queued
 router.get('/playback/authorize', ctrl.ersPlaybackAuthorize); // UUUU line: authorized-caller playback
 
 // Incident lifecycle

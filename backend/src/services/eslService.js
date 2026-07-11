@@ -454,17 +454,6 @@ export function eslStatus() {
   return { connected: isConn, host: config.esl.host, port: config.esl.port, reconnect_attempts: reconnectCount };
 }
 
-// ─── Heartbeat: ping FS every 30 s ──────────────────────────
-setInterval(async () => {
-  if (!isConn) return;
-  try {
-    await eslCommand('status');
-    updateHeartbeat(true);
-  } catch {
-    updateHeartbeat(false);
-  }
-}, 30_000);
-
 // ─── Incident reconciliation sweep ──────────────────────────
 //
 // Finds every ACTIVE ers_incidents row within 48 h and checks its
@@ -473,11 +462,14 @@ setInterval(async () => {
 // conference-destroy event (missed while ESL was disconnected, or the
 // backend restarted mid-call). Mark it COMPLETED so the queue can drain.
 //
-// Called from server.js at startup and on a 60-second interval.
-// The real-time path (conference-destroy event → reconcileOrphanedIncident)
-// catches rooms as they empty; this sweep catches anything the event missed.
+// Also expires QUEUED ers_queues rows older than 2 hours whose caller
+// has already hung up (they produce stale queue depth in the dashboard).
 //
-// Exported so server.js can call it at boot before the interval starts.
+// Called from server.js at startup (via setTimeout) and on a 60-second
+// interval started by startBackgroundJobs() below. Standalone CLI scripts
+// (cleanup_orphaned_ers_incidents.js, tests) must NOT import this file
+// without calling startBackgroundJobs(), but they DON'T — so no intervals
+// fire when the module is loaded by a script that never calls the starter.
 export async function reconcileAllActiveIncidents() {
   try {
     const { rows } = await query(
@@ -500,14 +492,47 @@ export async function reconcileAllActiveIncidents() {
         console.error(`[esl] reconcile: error for incident ${incident_uuid}:`, err.message);
       }
     }
+
+    // Expire QUEUED rows (and their incidents) abandoned for over 2 hours.
+    // These accumulate when a queued caller hangs up before the Lua loop
+    // can call /overflow/cancel (e.g. network drop, FS crash).
+    await query(
+      `UPDATE ers_queues SET status = 'EXPIRED', updated_at = now()
+       WHERE status = 'QUEUED' AND created_at < now() - interval '2 hours'`
+    );
+    await query(
+      `UPDATE ers_incidents SET status = 'COMPLETED', ended_at = now()
+       WHERE status = 'QUEUED' AND deleted_at IS NULL
+         AND id NOT IN (SELECT incident_id FROM ers_queues WHERE status = 'QUEUED')`
+    );
   } catch (err) {
     console.error('[esl] reconcileAllActiveIncidents failed:', err.message);
   }
 }
 
-// 60-second safety sweep — catches anything the conference-destroy event
-// missed (e.g. ESL was disconnected when the room emptied).
-setInterval(() => {
-  if (!isConn) return; // only sweep when ESL is live (we need member counts)
-  reconcileAllActiveIncidents().catch(() => {});
-}, 60_000);
+// ─── Background jobs (heartbeat + sweep) ────────────────────
+//
+// Intentionally NOT started at module load time so that standalone CLI
+// scripts and test files that import from this module don't inherit the
+// intervals and then break when the pool is ended.
+//
+// server.js calls this once during the boot sequence. Nothing else should.
+export function startBackgroundJobs() {
+  // Heartbeat: ping FS every 30 s
+  setInterval(async () => {
+    if (!isConn) return;
+    try {
+      await eslCommand('status');
+      updateHeartbeat(true);
+    } catch {
+      updateHeartbeat(false);
+    }
+  }, 30_000);
+
+  // 60-second safety sweep — catches anything the conference-destroy event
+  // missed (e.g. ESL was disconnected when the room emptied).
+  setInterval(() => {
+    if (!isConn) return;
+    reconcileAllActiveIncidents().catch(() => {});
+  }, 60_000);
+}

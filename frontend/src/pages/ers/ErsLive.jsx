@@ -148,13 +148,13 @@ export default function ErsLive() {
   const seed = useCallback(async () => {
     try {
       const [inc, q] = await Promise.all([
-        api.ers.incidents({ status: 'IN_PROGRESS' }),
+        api.ers.incidents({ status: 'ACTIVE' }),
         api.ers.queue(),
       ]);
 
       // Normalise incidents into keyed map
       const incidents = {};
-      for (const i of inc.incidents || []) {
+      for (const i of (Array.isArray(inc) ? inc : inc.incidents || [])) {
         incidents[i.incident_uuid || i.id] = {
           incident_uuid:   i.incident_uuid || i.id,
           conference_room: i.conference_room || i.conference_id,

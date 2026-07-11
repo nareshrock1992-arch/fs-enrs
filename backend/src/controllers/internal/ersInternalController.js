@@ -987,6 +987,37 @@ export const ersOverflowEnqueue = asyncHandler(async (req, res) => {
   });
 });
 
+// POST /api/v1/internal/ers/overflow/cancel
+// Lua overflow_wait loop calls this on session hangup so the queue row is
+// cleared immediately — without this, the row stays QUEUED until the 2-hour
+// safety sweep, and the dashboard shows a phantom queue entry.
+export const ersOverflowCancel = asyncHandler(async (req, res) => {
+  const queueId = parseInt(req.body.queue_id, 10);
+  if (!queueId) return res.status(400).json({ success: false, error: 'queue_id required' });
+
+  await withTransaction(async tq => {
+    const { rows: [entry] } = await tq(
+      `SELECT id, incident_id, status FROM ers_queues WHERE id = $1 FOR UPDATE`,
+      [queueId]
+    );
+    if (!entry || entry.status !== 'QUEUED') return; // already dequeued/cancelled — idempotent
+
+    await tq(
+      `UPDATE ers_queues SET status = 'CANCELLED', updated_at = now() WHERE id = $1`,
+      [entry.id]
+    );
+    // Mark the linked incident COMPLETED so it doesn't linger as QUEUED
+    await tq(
+      `UPDATE ers_incidents SET status = 'COMPLETED', ended_at = now()
+       WHERE id = $1 AND status = 'QUEUED'`,
+      [entry.incident_id]
+    );
+  });
+
+  emitInternal('enrs::ers_queue_changed', { action: 'cancelled', queue_id: queueId });
+  res.json({ success: true });
+});
+
 // GET /api/v1/internal/ers/overflow/poll?queue_id=X
 // Lua polls this every few seconds while playing hold music. When a tier's
 // LIVE member count reaches zero (Level 1 checked first — priority on

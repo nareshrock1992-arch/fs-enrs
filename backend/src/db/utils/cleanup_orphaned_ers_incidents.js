@@ -18,41 +18,51 @@
  *
  * Requires ESL to be connected (reads live conference member counts) —
  * refuses to run without it rather than guessing.
+ *
+ * NOTE: do NOT import eslService directly — importing it used to start
+ * background setInterval jobs which then fired after pool.end() and
+ * caused "Cannot use a pool after calling end on the pool". ESL is
+ * handled here via a minimal inline connection so the pool can be
+ * cleanly closed without racing timers.
  */
 
+import esl from 'modesl';
 import { pool } from '../pool.js';
-import { connect, eslCommand, eslStatus } from '../../services/eslService.js';
 import { completeIncidentCore } from '../../controllers/internal/ersInternalController.js';
+import { config } from '../../config/index.js';
 
+const { Connection } = esl;
 const APPLY = process.argv.includes('--apply');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function waitForEsl(timeoutMs = 5000) {
-  connect();
-  const start = Date.now();
-  while (!eslStatus().connected) {
-    if (Date.now() - start > timeoutMs) return false;
-    await sleep(200);
-  }
-  return true;
+async function connectEsl(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const c = new Connection(
+      config.esl.host,
+      config.esl.port,
+      config.esl.password,
+      () => resolve(c)
+    );
+    c.on('error', () => {});
+    setTimeout(() => resolve(null), timeoutMs);
+  });
 }
 
-async function isRoomLive(room) {
-  try {
-    const res = await eslCommand(`conference ${room} list count`);
-    // "0 total" or similar when the room exists but is empty; an error
-    // string (e.g. "Conference X not found") when it doesn't exist at all.
-    const match = /^(\d+)/.exec((res || '').trim());
-    return match ? Number(match[1]) > 0 : false;
-  } catch {
-    return false;
-  }
+async function roomMemberCount(conn, room) {
+  if (!room) return 0;
+  return new Promise(resolve => {
+    conn.bgapi(`conference ${room} list count`, res => {
+      const body  = res?.getBody?.() || '';
+      const match = /^(\d+)/.exec(body.trim());
+      resolve(match ? Number(match[1]) : 0);
+    });
+  });
 }
 
 async function main() {
-  const ok = await waitForEsl();
-  if (!ok) {
+  const conn = await connectEsl();
+  if (!conn) {
     console.error('[cleanup] ESL not connected — refusing to guess. Start FreeSWITCH/ESL and re-run.');
     process.exit(1);
   }
@@ -66,6 +76,7 @@ async function main() {
 
   if (rows.length === 0) {
     console.log('[cleanup] No ACTIVE incidents found — nothing to do.');
+    conn.end();
     await pool.end();
     return;
   }
@@ -74,20 +85,19 @@ async function main() {
 
   const orphans = [];
   for (const r of rows) {
-    const live = await isRoomLive(r.conference_room);
-    console.log(`  ${r.incident_uuid}  room=${r.conference_room}  started=${r.started_at}  live_members=${live ? '>0' : '0/not found'}`);
+    const members = await roomMemberCount(conn, r.conference_room);
+    const live = members > 0;
+    console.log(`  ${r.incident_uuid}  room=${r.conference_room}  started=${r.started_at}  live_members=${live ? String(members) : '0/not found'}`);
     if (!live) orphans.push(r);
   }
 
   console.log(`\n[cleanup] ${orphans.length} of ${rows.length} are orphaned (no live members).`);
 
-  if (orphans.length === 0) {
-    await pool.end();
-    return;
-  }
-
-  if (!APPLY) {
-    console.log('[cleanup] Dry run — re-run with --apply to mark these COMPLETED.');
+  if (orphans.length === 0 || !APPLY) {
+    if (!APPLY && orphans.length > 0) {
+      console.log('[cleanup] Dry run — re-run with --apply to mark these COMPLETED.');
+    }
+    conn.end();
     await pool.end();
     return;
   }
@@ -98,6 +108,7 @@ async function main() {
   }
 
   console.log(`\n[cleanup] Done — ${orphans.length} incident(s) marked COMPLETED.`);
+  conn.end();
   await pool.end();
 }
 
