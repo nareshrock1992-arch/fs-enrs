@@ -22,6 +22,7 @@ import {
   setEnergy,
   setFloor,
   transferMember,
+  debugConfSync,
 } from '../../controllers/monitoringController.js';
 
 const router = Router();
@@ -31,6 +32,7 @@ router.use(requireAuth);
 // Read-only (all authenticated users)
 router.get('/conferences', getConferences);
 router.get('/status', getStatus);
+router.get('/debug/conf-sync', adminOrSuper, debugConfSync);
 
 // Conference-level controls (supervisors+)
 router.post('/conferences/:room/lock', adminOrSuper, lockConference);

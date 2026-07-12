@@ -43,6 +43,92 @@ function registryGetOrCreate(confName) {
   return conferenceRegistry.get(confName);
 }
 
+// ─── Parse `conference list` (all conferences) ──────────────────────────────
+//
+// FreeSWITCH `conference list` (bgapi) output when conferences are active:
+//
+//   Conference 3010 (2 members rate: 8000 flags: dynamic)
+//   1;<uuid>;CallerName;1001;hear|speak;0;false;0;300;300;300;0;false
+//   2;<uuid>;CallerName;7001004;hear|speak|mute;0;false;0;300;300;300;0;false
+//
+// When no conferences exist FreeSWITCH returns "+OK" or an empty body.
+async function confListAll() {
+  try {
+    const raw = await eslCommand('conference list');
+    if (!raw || /^\+OK/.test(raw.trim()) || raw.includes('+ERR')) return [];
+    const result = [];
+    let current = null;
+    for (const line of raw.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      // Header: "Conference <name> (<n> member[s] ...)"
+      const hdr = t.match(/^Conference\s+(\S+)\s+\(\d+\s+members?/i);
+      if (hdr) {
+        current = { name: hdr[1], members: [] };
+        result.push(current);
+        continue;
+      }
+      // Member row: id;uuid;callerName;callerNum;flags;...
+      if (current && t.includes(';')) {
+        const p = t.split(';');
+        if (p.length < 4) continue;
+        const flags = (p[4] || '').split('|');
+        current.members.push({
+          id:        p[0]?.trim(),
+          uuid:      p[1]?.trim(),
+          callerName: p[2]?.trim() || '',
+          callerNum:  p[3]?.trim() || '',
+          muted:      flags.includes('mute') || !flags.includes('speak'),
+          deaf:       flags.includes('deaf'),
+          moderator:  flags.includes('moderator'),
+          talking:    false, // talking state from events only; list doesn't carry live audio
+          floor:      flags.includes('floor'),
+          joinedAt:   null,
+        });
+      }
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+// ─── Seed the in-memory registry from FreeSWITCH live state ─────────────────
+//
+// Called on ESL connect (recovers from backend restart mid-call) and from the
+// /monitoring/conferences API endpoint when the snapshot is empty.
+export async function seedConferenceRegistry() {
+  if (!isConn) return [];
+  const conferences = await confListAll();
+  let added = 0;
+  for (const conf of conferences) {
+    const entry = registryGetOrCreate(conf.name);
+    for (const member of conf.members) {
+      if (!entry.members.has(member.id)) {
+        entry.members.set(member.id, member);
+        added++;
+      }
+    }
+  }
+  if (conferences.length > 0) {
+    console.log(`[esl] Registry seeded: ${conferences.length} conference(s), ${added} member(s) restored`);
+    // Emit synthetic events so connected UIs update without a page refresh
+    for (const conf of conferences) {
+      emit('conference.created', { confName: conf.name });
+      for (const member of conf.members) {
+        emit('conference.member.joined', {
+          confName: conf.name,
+          member:   member.id,
+          callerNum:  member.callerNum,
+          callerName: member.callerName,
+          memberData: member,
+        });
+      }
+    }
+  }
+  return conferences;
+}
+
 // Returns a serialisable snapshot (no Maps)
 export function getConferenceSnapshot() {
   return Array.from(conferenceRegistry.entries()).map(([name, c]) => ({
@@ -356,6 +442,15 @@ export function connect() {
 
       emit('esl.status', { connected: true, host: config.esl.host, port: config.esl.port });
       updateHeartbeat(true);
+
+      // Seed registry with any conferences already active in FreeSWITCH.
+      // Without this, a backend restart while calls are in-progress leaves the
+      // registry empty because the conference-create / add-member events already
+      // fired before this ESL session opened.  Give FreeSWITCH 800 ms to finish
+      // processing the subscribe ACK before issuing the bgapi.
+      setTimeout(() => seedConferenceRegistry().catch(err =>
+        console.warn('[esl] startup seed failed:', err.message)
+      ), 800);
     }
   );
 

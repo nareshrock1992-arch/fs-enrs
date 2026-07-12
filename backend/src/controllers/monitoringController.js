@@ -8,7 +8,7 @@
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
 import {
-  getConferenceSnapshot,
+  getConferenceSnapshot, seedConferenceRegistry,
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
   confVolumeIn, confVolumeOut, confEnergy, confFloor,
   confTransfer, confLock, confUnlock,
@@ -23,7 +23,14 @@ import {
 // Members come entirely from ESL events — no DB participant query.
 
 export const getConferences = asyncHandler(async (req, res) => {
-  const snapshot = getConferenceSnapshot();
+  let snapshot = getConferenceSnapshot();
+
+  // If the registry is empty (e.g. backend restarted mid-call), seed from
+  // FreeSWITCH immediately so the first page load isn't blank.
+  if (snapshot.length === 0) {
+    await seedConferenceRegistry();
+    snapshot = getConferenceSnapshot();
+  }
 
   const rooms = snapshot.map(c => c.name).filter(Boolean);
   let incidentMap = {};
@@ -182,4 +189,47 @@ export const transferMember = asyncHandler(async (req, res) => {
   if (!extension) return res.status(400).json({ error: 'extension required' });
   await confTransfer(req.params.room, req.params.memberId, extension, dialplan, context);
   res.json({ ok: true });
+});
+
+// ── GET /monitoring/debug/conf-sync ──────────────────────────────────────────
+// Diagnostic: compare in-memory registry against live FreeSWITCH state.
+
+export const debugConfSync = asyncHandler(async (_req, res) => {
+  const esl = eslStatus();
+
+  // Snapshot before seed
+  const beforeSnapshot = getConferenceSnapshot();
+
+  // Seed pulls live state from FreeSWITCH and returns the parsed list
+  const liveConferences = await seedConferenceRegistry();
+
+  // Snapshot after seed (reflects any conferences just discovered)
+  const afterSnapshot = getConferenceSnapshot();
+
+  const registryMap = Object.fromEntries(
+    afterSnapshot.map(c => [c.name, { memberCount: c.members.length }])
+  );
+  const liveMap = Object.fromEntries(
+    liveConferences.map(c => [c.name, { memberCount: c.members.length }])
+  );
+
+  const allNames = new Set([...Object.keys(registryMap), ...Object.keys(liveMap)]);
+  const diff = [];
+  for (const name of allNames) {
+    const r = registryMap[name];
+    const l = liveMap[name];
+    if (!r) diff.push({ name, issue: 'in_freeswitch_not_in_registry', liveMembers: l.memberCount });
+    else if (!l) diff.push({ name, issue: 'in_registry_not_in_freeswitch', registryMembers: r.memberCount });
+    else if (r.memberCount !== l.memberCount) diff.push({ name, issue: 'member_count_mismatch', registry: r.memberCount, live: l.memberCount });
+  }
+
+  res.json({
+    esl,
+    registryBeforeSeed: beforeSnapshot.length,
+    registryAfterSeed: afterSnapshot.length,
+    conferenceRegistry: afterSnapshot.map(c => ({ name: c.name, memberCount: c.members.length })),
+    freeSwitchConferences: liveConferences.map(c => ({ name: c.name, memberCount: c.members.length })),
+    registryVsFreeSwitchMatch: diff.length === 0,
+    diff,
+  });
 });
