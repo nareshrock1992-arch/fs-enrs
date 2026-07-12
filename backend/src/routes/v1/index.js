@@ -18,6 +18,7 @@ import deploymentRoutes from './deployment.js';
 import serviceRoutes    from './services.js';
 import campaignRoutes   from './campaigns.js';
 import gatewayRoutes    from './gateways.js';
+import monitoringRoutes from './monitoring.js';
 
 const router = Router();
 
@@ -41,5 +42,6 @@ router.use('/reports',       reportRoutes);
 router.use('/media',         mediaRoutes);
 router.use('/settings',      settingRoutes);
 router.use('/gateways',      gatewayRoutes);
+router.use('/monitoring',    monitoringRoutes);
 
 export default router;

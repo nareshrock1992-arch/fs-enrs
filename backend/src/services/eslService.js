@@ -17,6 +17,44 @@ let isConn          = false;
 let retryTimer      = null;
 let reconnectCount  = 0;
 
+// ─── In-memory conference registry ──────────────────────────────────────────
+//
+// Authoritative real-time picture of every active FreeSWITCH conference and
+// its members. Updated purely by conference::maintenance ESL events — never
+// by polling. The monitoring API endpoint reads from here.
+//
+// Shape: confName → {
+//   name, createdAt, locked, recording, floorHolder,
+//   members: Map<memberId, MemberRecord>
+// }
+const conferenceRegistry = new Map();
+
+function registryGetOrCreate(confName) {
+  if (!conferenceRegistry.has(confName)) {
+    conferenceRegistry.set(confName, {
+      name:        confName,
+      createdAt:   new Date().toISOString(),
+      locked:      false,
+      recording:   false,
+      floorHolder: null,
+      members:     new Map(),
+    });
+  }
+  return conferenceRegistry.get(confName);
+}
+
+// Returns a serialisable snapshot (no Maps)
+export function getConferenceSnapshot() {
+  return Array.from(conferenceRegistry.entries()).map(([name, c]) => ({
+    name,
+    createdAt:   c.createdAt,
+    locked:      c.locked,
+    recording:   c.recording,
+    floorHolder: c.floorHolder,
+    members:     Array.from(c.members.values()),
+  }));
+}
+
 // ─── Inject Socket.IO instance ──────────────────────────────
 export function setSocketIO(ioInstance) {
   io = ioInstance;
@@ -46,42 +84,109 @@ function handleEvent(evt) {
 
   // Conference member join
   if (name === 'CUSTOM' && subclass === 'conference::maintenance') {
-    const action    = evt.getHeader('Action');
-    const confName  = evt.getHeader('Conference-Name');
-    const member    = evt.getHeader('Member-ID');
-    const callerNum = evt.getHeader('Caller-Caller-ID-Number');
-    const callerName = evt.getHeader('Caller-Caller-ID-Name') || '';
+    const action     = evt.getHeader('Action');
+    const confName   = evt.getHeader('Conference-Name');
+    const memberId   = evt.getHeader('Member-ID');
+    const callerNum  = evt.getHeader('Caller-Caller-ID-Number') || '';
+    const callerName = evt.getHeader('Caller-Caller-ID-Name')   || '';
+    const channelUuid = evt.getHeader('Caller-Unique-ID')       || '';
 
-    if (action === 'add-member') {
-      emit('conference.member.joined', { confName, member, callerNum, callerName });
-      persistEvent('conference.member.joined', { confName, member, callerNum });
-      trackParticipant(confName, callerNum, 'join');
-    } else if (action === 'del-member') {
-      emit('conference.member.left', { confName, member, callerNum });
-      trackParticipant(confName, callerNum, 'leave');
-    } else if (action === 'mute-member') {
-      emit('conference.member.muted', { confName, member, callerNum, muted: true });
-    } else if (action === 'unmute-member') {
-      emit('conference.member.muted', { confName, member, callerNum, muted: false });
-    } else if (action === 'start-talking') {
-      emit('conference.member.talking', { confName, member, callerNum, talking: true });
-    } else if (action === 'stop-talking') {
-      emit('conference.member.talking', { confName, member, callerNum, talking: false });
-    } else if (action === 'floor-change') {
-      const floorMember = evt.getHeader('New-ID');
-      emit('conference.floor.changed', { confName, member: floorMember });
-    } else if (action === 'conference-create') {
+    if (action === 'conference-create') {
+      registryGetOrCreate(confName);
       emit('conference.created', { confName });
+
     } else if (action === 'conference-destroy') {
+      conferenceRegistry.delete(confName);
       emit('conference.ended', { confName });
-      // Preferred fix over a periodic sweep (Phase 1 item 13): FreeSWITCH
-      // itself tells us the instant a room is truly empty and torn down —
-      // reconcile any ers_incidents row still marked ACTIVE for this exact
-      // room immediately, rather than polling. Catches orphans from an
-      // unclean process restart (crash mid-call, kill -9, etc.) where
-      // exec_ers's own /complete call never ran because the Lua process
-      // itself never got to finish executing.
       reconcileOrphanedIncident(confName);
+
+    } else if (action === 'add-member') {
+      const conf = registryGetOrCreate(confName);
+      const flags = (evt.getHeader('Conference-Member-Flags') || '').split('|');
+      const member = {
+        id:          memberId,
+        uuid:        channelUuid,
+        callerNum,
+        callerName,
+        muted:       flags.includes('mute'),
+        deaf:        flags.includes('deaf'),
+        moderator:   flags.includes('moderator'),
+        talking:     false,
+        floor:       false,
+        volIn:       0,
+        volOut:      0,
+        energy:      0,
+        joinedAt:    new Date().toISOString(),
+      };
+      conf.members.set(memberId, member);
+      emit('conference.member.joined', { confName, member: memberId, callerNum, callerName, memberData: member });
+      persistEvent('conference.member.joined', { confName, member: memberId, callerNum });
+      trackParticipant(confName, callerNum, 'join');
+
+    } else if (action === 'del-member') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) conf.members.delete(memberId);
+      emit('conference.member.left', { confName, member: memberId, callerNum });
+      trackParticipant(confName, callerNum, 'leave');
+
+    } else if (action === 'mute-member') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).muted = true;
+      emit('conference.member.muted', { confName, member: memberId, callerNum, muted: true });
+
+    } else if (action === 'unmute-member') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).muted = false;
+      emit('conference.member.muted', { confName, member: memberId, callerNum, muted: false });
+
+    } else if (action === 'deaf-member') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).deaf = true;
+      emit('conference.member.deaf', { confName, member: memberId, deaf: true });
+
+    } else if (action === 'undeaf-member') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).deaf = false;
+      emit('conference.member.deaf', { confName, member: memberId, deaf: false });
+
+    } else if (action === 'start-talking') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).talking = true;
+      emit('conference.member.talking', { confName, member: memberId, callerNum, talking: true });
+
+    } else if (action === 'stop-talking') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).talking = false;
+      emit('conference.member.talking', { confName, member: memberId, callerNum, talking: false });
+
+    } else if (action === 'floor-change') {
+      const newFloor = evt.getHeader('New-ID');
+      const conf = conferenceRegistry.get(confName);
+      if (conf) {
+        conf.floorHolder = newFloor;
+        for (const [mid, m] of conf.members) m.floor = (mid === newFloor);
+      }
+      emit('conference.floor.changed', { confName, member: newFloor });
+
+    } else if (action === 'lock') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) conf.locked = true;
+      emit('conference.locked', { confName, locked: true });
+
+    } else if (action === 'unlock') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) conf.locked = false;
+      emit('conference.locked', { confName, locked: false });
+
+    } else if (action === 'start-recording') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) conf.recording = true;
+      emit('conference.recording', { confName, recording: true });
+
+    } else if (action === 'stop-recording') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) conf.recording = false;
+      emit('conference.recording', { confName, recording: false });
     }
     return;
   }
@@ -397,6 +502,76 @@ export async function confMute(confName, memberId) {
 
 export async function confUnmute(confName, memberId) {
   return eslCommand(`conference ${confName} unmute ${memberId}`);
+}
+
+// ─── Lock / unlock ──────────────────────────────────────────
+export async function confLock(confName) {
+  return eslCommand(`conference ${confName} lock`);
+}
+
+export async function confUnlock(confName) {
+  return eslCommand(`conference ${confName} unlock`);
+}
+
+// ─── Deaf / Undeaf ──────────────────────────────────────────
+export async function confDeaf(confName, memberId) {
+  return eslCommand(`conference ${confName} deaf ${memberId}`);
+}
+
+export async function confUndeaf(confName, memberId) {
+  return eslCommand(`conference ${confName} undeaf ${memberId}`);
+}
+
+// ─── Volume ─────────────────────────────────────────────────
+export async function confVolumeIn(confName, memberId, level) {
+  return eslCommand(`conference ${confName} volume_in ${memberId} ${level}`);
+}
+
+export async function confVolumeOut(confName, memberId, level) {
+  return eslCommand(`conference ${confName} volume_out ${memberId} ${level}`);
+}
+
+// ─── Energy level ────────────────────────────────────────────
+export async function confEnergy(confName, memberId, level) {
+  return eslCommand(`conference ${confName} energy ${memberId} ${level}`);
+}
+
+// ─── Floor control ──────────────────────────────────────────
+export async function confFloor(confName, memberId) {
+  return eslCommand(`conference ${confName} floor ${memberId}`);
+}
+
+// ─── Transfer a member to another extension ─────────────────
+export async function confTransfer(confName, memberId, extension, dialplan = 'XML', context = 'default') {
+  return eslCommand(`conference ${confName} transfer ${memberId} ${extension} ${dialplan} ${context}`);
+}
+
+// ─── Recording ───────────────────────────────────────────────
+export async function confRecord(confName, path) {
+  return eslCommand(`conference ${confName} record ${path}`);
+}
+
+export async function confRecordPause(confName, path) {
+  return eslCommand(`conference ${confName} pauserec ${path}`);
+}
+
+export async function confRecordStop(confName, path) {
+  return eslCommand(`conference ${confName} norecord ${path}`);
+}
+
+// ─── Terminate (empty the room) ──────────────────────────────
+export async function confTerminate(confName) {
+  return eslCommand(`conference ${confName} kick all`);
+}
+
+// ─── TTS broadcast ───────────────────────────────────────────
+export async function confSay(confName, text) {
+  return eslCommand(`conference ${confName} say ${text}`);
+}
+
+// ─── Invite a number into the conference ────────────────────
+export async function confInvite(confName, dialString) {
+  return eslCommand(`conference ${confName} bgdial ${dialString}`);
 }
 
 // ─── Hold / unhold an entire conference ─────────────────────

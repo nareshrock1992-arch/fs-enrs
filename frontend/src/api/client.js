@@ -246,4 +246,30 @@ export const api = {
     disableLegacyExtension: (file, extensionName) =>
       request('POST', '/deployment/diagnostics/disable-legacy-extension', { file, extension_name: extensionName }),
   },
+
+  // Conference Operations Center
+  monitoring: {
+    conferences: ()       => request('GET', '/monitoring/conferences'),
+    status:      ()       => request('GET', '/monitoring/status'),
+    // Conference controls
+    lock:        (room)   => request('POST',   `/monitoring/conferences/${room}/lock`),
+    unlock:      (room)   => request('POST',   `/monitoring/conferences/${room}/unlock`),
+    recordStart: (room, path) => request('POST', `/monitoring/conferences/${room}/record/start`, { path }),
+    recordPause: (room, path) => request('POST', `/monitoring/conferences/${room}/record/pause`, { path }),
+    recordStop:  (room, path) => request('POST', `/monitoring/conferences/${room}/record/stop`,  { path }),
+    playAudio:   (room, audio_path) => request('POST', `/monitoring/conferences/${room}/play`, { audio_path }),
+    say:         (room, text) => request('POST', `/monitoring/conferences/${room}/say`, { text }),
+    invite:      (room, dial_string) => request('POST', `/monitoring/conferences/${room}/invite`, { dial_string }),
+    terminate:   (room)   => request('DELETE', `/monitoring/conferences/${room}`),
+    // Member controls
+    mute:     (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/mute`),
+    unmute:   (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/unmute`),
+    kick:     (room, id) => request('DELETE', `/monitoring/conferences/${room}/members/${id}`),
+    deaf:     (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/deaf`),
+    undeaf:   (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/undeaf`),
+    volume:   (room, id, direction, level) => request('POST', `/monitoring/conferences/${room}/members/${id}/volume`, { direction, level }),
+    energy:   (room, id, level) => request('POST', `/monitoring/conferences/${room}/members/${id}/energy`, { level }),
+    floor:    (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/floor`),
+    transfer: (room, id, extension) => request('POST', `/monitoring/conferences/${room}/members/${id}/transfer`, { extension }),
+  },
 };
