@@ -1,0 +1,168 @@
+Deployment Procedure
+Prerequisites
+Node.js 18+
+PostgreSQL 14+
+FreeSWITCH installed (Debian paths assumed by default)
+PM2 (npm install -g pm2)
+1. Clone & Install Dependencies
+git clone <repo>
+cd fs-enrs
+
+cd backend  && npm install
+cd ../frontend && npm install
+2. Environment Variables
+Create backend/.env:
+
+# Database
+DATABASE_URL=postgresql://enrs:yourpassword@localhost:5432/enrs_db
+
+# JWT
+JWT_SECRET=your-very-long-random-secret
+REFRESH_TOKEN_SECRET=another-long-random-secret
+
+# FreeSWITCH ESL
+ESL_HOST=127.0.0.1
+ESL_PORT=8021
+ESL_PASSWORD=ClueCon
+
+# Internal API key (shared with Lua scripts)
+INTERNAL_API_KEY=your-internal-key-here
+
+# FreeSWITCH paths (defaults to Debian locations)
+FS_SOUND_DIR=/usr/share/freeswitch/sounds
+FS_LUA_DIR=/usr/share/freeswitch/scripts
+FS_DIALPLAN_DIR=/etc/freeswitch/dialplan/default
+
+# ENS/ERS
+ENRS_INTERNAL_API=http://127.0.0.1:4100/api/v1/internal
+FS_INTERNAL_KEY=your-internal-key-here
+ENRS_TTS_ENGINE=flite
+ENRS_TTS_VOICE=slt
+ENRS_REC_DIR=/var/lib/freeswitch/recordings/ens
+ENRS_ERS_REC_DIR=/var/lib/freeswitch/recordings/ers
+
+# Upload dir
+UPLOAD_DIR=./uploads
+UPLOAD_MAX_MB=50
+
+# App
+PORT=4100
+NODE_ENV=production
+3. Database Setup
+# Create DB and user (run as postgres superuser)
+psql -U postgres -c "CREATE USER enrs WITH PASSWORD 'yourpassword';"
+psql -U postgres -c "CREATE DATABASE enrs_db OWNER enrs;"
+
+# Run migrations (auto-detects fresh vs existing DB)
+cd backend
+node src/db/migrate.js
+
+# Seed admin user + feature flags
+npm run seed
+Default admin credentials after seed: admin@enrs.local / Admin@12345
+
+4. Build Frontend
+cd frontend
+npm run build
+# Output goes to frontend/dist/
+5. Configure nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Serve React app
+    root /path/to/fs-enrs/frontend/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API + WebSocket to backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:4100;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:4100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:4100;
+    }
+}
+nginx -t && systemctl reload nginx
+6. Start Backend with PM2
+cd backend
+pm2 start server.js --name enrs-backend --interpreter node
+pm2 save
+pm2 startup   # follow the printed command to enable on boot
+7. Deploy IVR Flows to FreeSWITCH
+After logging into the UI:
+
+Go to IVR Builder → build/publish your flows
+Go to Deployment → click Deploy on each flow
+This generates Lua scripts → writes to $FS_LUA_DIR
+Generates XML dialplan → writes to $FS_DIALPLAN_DIR
+Triggers reloadxml via ESL automatically
+Or use Redeploy All to regenerate everything at once
+8. Deploy Lua Scripts (ERS/ENS)
+The Lua scripts in Lua-scripts/ need to be on the FreeSWITCH server:
+
+cp Lua-scripts/*.lua $FS_LUA_DIR/
+# e.g. /usr/share/freeswitch/scripts/
+Set environment variables that Lua reads (add to /etc/freeswitch/freeswitch.xml or FreeSWITCH env):
+
+<X-PRE-PROCESS cmd="set" data="ENRS_INTERNAL_API=http://127.0.0.1:4100/api/v1/internal"/>
+<X-PRE-PROCESS cmd="set" data="FS_INTERNAL_KEY=your-internal-key-here"/>
+<X-PRE-PROCESS cmd="set" data="ENRS_TTS_ENGINE=flite"/>
+<X-PRE-PROCESS cmd="set" data="ENRS_TTS_VOICE=slt"/>
+<X-PRE-PROCESS cmd="set" data="ENRS_REC_DIR=/var/lib/freeswitch/recordings/ens"/>
+<X-PRE-PROCESS cmd="set" data="ENRS_ERS_REC_DIR=/var/lib/freeswitch/recordings/ers"/>
+9. Audio Library
+Upload audio files via UI (Deployment → Audio Library → Upload), or:
+
+# Copy existing WAV files to FreeSWITCH sound dir
+cp /your/audio/*.wav $FS_SOUND_DIR/enrs/
+
+# Then click "Scan FS" in the Audio Library UI to import them into the DB
+10. Verify Everything
+# Check backend is running
+pm2 status
+
+# Check ESL connectivity (from UI)
+# Deployment → Diagnostics → ESL Status
+
+# Check FreeSWITCH can reach backend
+fs_cli -x "lua /usr/share/freeswitch/scripts/dial_911_conference.lua"
+
+# Run DB cleanup if needed (dry run first)
+cd backend
+node src/db/utils/cleanup_orphaned_ers_incidents.js
+node src/db/utils/cleanup_orphaned_ers_incidents.js --apply
+Upgrading (Existing Deployment)
+git pull
+
+cd backend  && npm install
+cd ../frontend && npm install && npm run build
+
+# Run any new migrations
+cd ../backend
+node src/db/migrate.js
+
+# Restart backend
+pm2 restart enrs-backend
+Quick Health Check After Deploy
+Check	How
+Backend responding	curl http://localhost:4100/api/v1/auth/login → should get 400 (not 502)
+DB connected	PM2 logs show no pool errors
+ESL connected	Deployment → Diagnostics → ESL shows green
+Dialplan loaded	fs_cli -x "show dialplan" lists your extensions
+Audio files	Audio Library → Scan FS → files appear

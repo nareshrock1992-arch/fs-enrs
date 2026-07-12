@@ -31,7 +31,7 @@ import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
 import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
 import {
-  listAudio, listCategories, uploadAudio, audioUploadMiddleware,
+  listAudio, scanAudio, listCategories, uploadAudio, audioUploadMiddleware,
   deployAudio, streamAudio, deleteAudio,
   listFlowStatus, previewDeploy, triggerDeploy, deployHistory, triggerRedeployAll,
   getDiagnostics, triggerReloadXml, getPaths, getEslStatus, disableLegacyExtensionRoute,
@@ -44,6 +44,7 @@ router.use(requireAuth);
 
 router.get('/audio/categories',    adminOrOp, listCategories);
 router.get('/audio',               adminOrOp, listAudio);
+router.post('/audio/scan',         adminOnly, scanAudio);
 router.post('/audio/upload',       adminOnly, audioUploadMiddleware, uploadAudio);
 router.post('/audio/:id/deploy',   adminOnly, deployAudio);
 router.get('/audio/:id/stream',    adminOrOp, streamAudio);

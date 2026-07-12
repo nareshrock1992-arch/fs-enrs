@@ -152,7 +152,8 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, t
             );
             if (cfg?.record_conferences) {
               const dir  = cfg.recording_directory || '/var/lib/freeswitch/recordings/ers';
-              const path = `${dir}/${room}_${Date.now()}.wav`;
+              const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+              const path = `${dir}/ers_${room}_${dateStr}.wav`;
               await eslCommand(`conference ${room} record ${path}`).catch(() => {});
               await query(
                 `UPDATE ers_incidents SET recording_path = $2 WHERE id = $1`,

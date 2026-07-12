@@ -223,6 +223,7 @@ export const api = {
   // Audio Library + Deployment
   deployment: {
     listAudio:      (q)       => request('GET',    `/deployment/audio?${new URLSearchParams(q || {})}`),
+    scanAudio:      ()        => request('POST',   '/deployment/audio/scan'),
     listCategories: ()        => request('GET',    '/deployment/audio/categories'),
     uploadAudio:    (formData) => request('POST',  '/deployment/audio/upload', formData),
     deployAudio:    (id)      => request('POST',   `/deployment/audio/${id}/deploy`),

@@ -1,41 +1,25 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import ConnectionDot from './ConnectionDot.jsx';
 
-// Phase 3: per-type visual config (icon/colors/label) comes from the
-// node-type registry (GET /api/v1/ivr/node-types) instead of being
-// hardcoded here — see backend/src/nodeTypes/registry.js. This fallback
-// is used only for the brief window before the registry fetch resolves,
-// or if a node references a type the registry doesn't know about (e.g. a
-// flow saved before a type was removed).
 const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc' };
 
-// Registry-driven node card summary line.
-// Each node type in the registry supplies a summaryTemplate string with
-// ${fieldName} placeholders; missing/empty fields render as '?'.
-// Returns null when the type has no summaryTemplate (e.g. hangup).
 function nodeSummary(node, cfg) {
   const tmpl = cfg?.summaryTemplate;
   if (!tmpl) return null;
-
   const text = tmpl.replace(/\$\{(\w+)\}/g, (_, key) => {
     const v = node[key];
     if (v === undefined || v === null || v === '') return '?';
     return String(v).slice(0, 24);
   });
-
   return <span className="truncate block">{text}</span>;
 }
 
-// ── FlowNode ──────────────────────────────────────────────────────────────────
-
-const NODE_WIDTH  = 148;
-const NODE_HEIGHT = 80; // approximate — used for port position calculation
-
-export { NODE_WIDTH, NODE_HEIGHT };
+export const NODE_WIDTH  = 148;
+export const NODE_HEIGHT = 80;
 
 export default function FlowNode({
   node,
@@ -50,22 +34,30 @@ export default function FlowNode({
   onDelete,
   onPortDragStart,
   onPortClick,
+  onDragStart,
+  onDragEnd,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
   const ports = getPortsForNode(node, cfg.ports);
-  const nodeRef = useRef(null);
+  const nodeRef   = useRef(null);
+  const startPos  = useRef({ x: node.x, y: node.y });
+  const [isDragging, setIsDragging] = useState(false);
 
-  const startPos = useRef({ x: node.x, y: node.y });
-
-  // Drag is attached only to the HEADER div (5px threshold) so body
-  // clicks can open the settings panel without accidentally moving the node.
   const { onPointerDown: headerPointerDown } = useDrag({
     threshold: 5,
-    onStart: () => { startPos.current = { x: node.x, y: node.y }; },
-    onMove:  (dx, dy) => onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale),
-    onEnd:   (dx, dy, _e, moved) => {
+    onStart: (e) => {
+      startPos.current = { x: node.x, y: node.y };
+      setIsDragging(true);
+      onDragStart?.(node.id, e);
+    },
+    onMove: (dx, dy) => {
+      onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
+    },
+    onEnd: (dx, dy, e, moved) => {
+      setIsDragging(false);
       if (moved) onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
+      onDragEnd?.(node.id, e);
     },
   });
 
@@ -84,16 +76,20 @@ export default function FlowNode({
       ref={nodeRef}
       data-node-id={node.id}
       style={{
-        position:    'absolute',
-        left:        node.x,
-        top:         node.y,
-        width:       NODE_WIDTH,
-        zIndex:      isSelected ? 10 : 1,
+        position:        'absolute',
+        left:            node.x,
+        top:             node.y,
+        width:           NODE_WIDTH,
+        zIndex:          isDragging ? 100 : isSelected ? 10 : 1,
+        // will-change lets the compositor layer this node independently
+        willChange:      isDragging ? 'transform' : undefined,
+        // No CSS transition during drag — it adds latency.
+        // Transition only when not dragging (e.g. snap-into-place on drop).
+        transition:      isDragging ? 'none' : 'box-shadow 0.1s',
       }}
       onClick={e => { e.stopPropagation(); }}
       onPointerUp={e => { e.stopPropagation(); onPortClick?.(node.id); }}
     >
-      {/* Entry badge */}
       {isEntry && (
         <div className="absolute -top-5 left-0 text-[9px] text-brand font-bold uppercase tracking-widest">
           ▼ Entry
@@ -105,20 +101,28 @@ export default function FlowNode({
           background:   cfg.bg,
           border:       `1.5px solid ${borderColor}`,
           borderRadius: 10,
-          boxShadow: isSelected
+          boxShadow: isDragging
+            ? `0 0 0 2px #f1f5f940, 0 16px 48px #00000080, 0 4px 12px #00000060`
+            : isSelected
             ? `0 0 0 2px #f1f5f960, 0 4px 20px #00000060`
             : hasErrors
             ? `0 0 0 2px #ef444440`
             : hasWarnings
             ? `0 0 0 2px #f59e0b30`
             : '0 2px 8px #00000040',
-          overflow:     'hidden',
-          userSelect:   'none',
+          overflow:  'hidden',
+          userSelect: 'none',
+          // Slight scale lift while dragging — gives tactile "picked up" feel
+          transform: isDragging ? 'scale(1.025)' : undefined,
+          transformOrigin: '50% 50%',
         }}
       >
-        {/* Header — drag handle. 5px threshold prevents accidental drags. */}
+        {/* Header — drag handle */}
         <div
-          style={{ borderBottom: `1px solid ${cfg.border}30`, cursor: 'grab' }}
+          style={{
+            borderBottom: `1px solid ${cfg.border}30`,
+            cursor: isDragging ? 'grabbing' : 'grab',
+          }}
           className="px-2.5 py-1.5 flex items-center gap-1.5"
           onPointerDown={headerPointerDown}
         >
@@ -138,7 +142,7 @@ export default function FlowNode({
           )}
         </div>
 
-        {/* Body — click opens settings panel (onPortClick selects node) */}
+        {/* Body — click opens settings panel */}
         <div
           className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5 cursor-pointer"
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}

@@ -234,6 +234,8 @@ export default function AudioLibrary() {
   const [search,     setSearch]     = useState('');
   const [catFilter,  setCatFilter]  = useState('');
   const [loading,    setLoading]    = useState(true);
+  const [scanning,   setScanning]   = useState(false);
+  const [scanResult, setScanResult] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [deploying,  setDeploying]  = useState({});
   const [deleting,   setDeleting]   = useState({});
@@ -241,24 +243,50 @@ export default function AudioLibrary() {
   const user    = useAuthStore(s => s.user);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (triggerScanIfEmpty = false) => {
     setLoading(true);
     try {
       const [filesRes, catRes] = await Promise.all([
         api.deployment.listAudio({ search: search || undefined, category: catFilter || undefined }),
         api.deployment.listCategories(),
       ]);
-      setFiles(filesRes.files || []);
+      const fetched = filesRes.files || [];
+      setFiles(fetched);
       setTotal(filesRes.total || 0);
       setCategories(catRes.categories || []);
+
+      // Auto-scan when there are no files on first load
+      if (triggerScanIfEmpty && fetched.length === 0 && canEdit) {
+        handleScan(true);
+      }
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [search, catFilter]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, catFilter, canEdit]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(true); }, [load]);
+
+  const handleScan = useCallback(async (silent = false) => {
+    setScanning(true);
+    if (!silent) setScanResult(null);
+    try {
+      const result = await api.deployment.scanAudio();
+      setScanResult(result);
+      if (result.imported > 0) {
+        // Reload the list to show newly imported files
+        const filesRes = await api.deployment.listAudio({ search: search || undefined, category: catFilter || undefined });
+        setFiles(filesRes.files || []);
+        setTotal(filesRes.total || 0);
+      }
+    } catch (e) {
+      if (!silent) setScanResult({ message: 'Scan failed: ' + e.message, imported: 0, skipped: 0, errors: 1 });
+    } finally {
+      setScanning(false);
+    }
+  }, [search, catFilter]);
 
   const handleDeploy = async (id) => {
     setDeploying(d => ({ ...d, [id]: true }));
@@ -300,6 +328,19 @@ export default function AudioLibrary() {
         </div>
         {canEdit && (
           <button
+            onClick={() => handleScan()}
+            disabled={scanning}
+            title="Scan FreeSWITCH sound directory for existing files"
+            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
+                       bg-surface border border-surface-border text-text-muted
+                       hover:text-brand hover:border-brand/50 font-medium transition-colors disabled:opacity-50"
+          >
+            <HardDrive size={14} className={scanning ? 'animate-pulse' : ''} />
+            {scanning ? 'Scanning…' : 'Scan FS'}
+          </button>
+        )}
+        {canEdit && (
+          <button
             onClick={() => setShowUpload(true)}
             className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
                        bg-brand text-white hover:bg-brand/90 font-medium transition-colors"
@@ -308,6 +349,22 @@ export default function AudioLibrary() {
           </button>
         )}
       </div>
+
+      {/* Scan result banner */}
+      {scanResult && (
+        <div className={`px-4 py-3 rounded-lg border text-[11px] flex items-start gap-2
+          ${scanResult.errors > 0 || scanResult.imported === 0
+            ? 'bg-amber-500/5 border-amber-500/20 text-amber-600 dark:text-amber-400'
+            : 'bg-green-500/5 border-green-500/20 text-green-600 dark:text-green-400'}`}>
+          {scanResult.errors > 0
+            ? <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            : <CheckCircle size={13} className="mt-0.5 shrink-0" />}
+          <span className="flex-1">{scanResult.message}</span>
+          <button onClick={() => setScanResult(null)} className="opacity-50 hover:opacity-100">
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       {/* Info banner */}
       <div className="px-4 py-3 rounded-lg bg-brand/5 border border-brand/20 text-[11px] text-text-muted leading-relaxed">
@@ -351,12 +408,23 @@ export default function AudioLibrary() {
       ) : files.length === 0 ? (
         <div className="card text-center py-12">
           <Music size={32} className="mx-auto text-text-muted mb-3" />
-          <p className="text-sm text-text-muted">No audio files yet</p>
+          <p className="text-sm text-text-muted">No audio files found in database</p>
           {canEdit && (
-            <button onClick={() => setShowUpload(true)}
-                    className="mt-3 text-xs text-brand hover:underline">
-              Upload your first audio file
-            </button>
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <button
+                onClick={() => handleScan()}
+                disabled={scanning}
+                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg
+                           bg-surface border border-surface-border text-text-muted
+                           hover:text-brand hover:border-brand/50 transition-colors"
+              >
+                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan FreeSWITCH sound dir'}
+              </button>
+              <button onClick={() => setShowUpload(true)}
+                      className="text-xs text-brand hover:underline">
+                Upload a file
+              </button>
+            </div>
           )}
         </div>
       ) : (

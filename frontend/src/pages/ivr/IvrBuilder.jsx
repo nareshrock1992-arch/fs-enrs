@@ -123,6 +123,9 @@ export default function IvrBuilder() {
             onConnect={graph.connect}
             onDisconnect={graph.disconnect}
             onAddNode={graph.addNode}
+            onDuplicateNode={graph.duplicateNode}
+            onUndo={graph.undo}
+            onRedo={graph.redo}
           />
 
           {/* Zoom controls and stats are rendered by FlowCanvas */}

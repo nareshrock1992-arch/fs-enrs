@@ -164,24 +164,39 @@ session:sleep(400)
 local conf_room, responders, tier_retry_count, tier_retry_interval_sec
 
 if cfg.slot == 1 then
-  conf_room              = string.format("ers_%d_p", cfg.configuration_id)
+  -- Use configured bridge number (e.g. 7000) as room name so participants
+  -- can dial that extension to rejoin. Falls back to legacy name if not set.
+  if cfg.primary_bridge_number and tostring(cfg.primary_bridge_number) ~= "" then
+    conf_room = tostring(cfg.primary_bridge_number)
+  else
+    conf_room = string.format("ers_cfg%d_primary", cfg.configuration_id)
+  end
   responders             = cfg.primary_responders or {}
   tier_retry_count       = cfg.primary_retry_count or 3
   tier_retry_interval_sec = cfg.primary_retry_interval_sec or RETRY_RING_S
-  log("INFO", "Slot 1 — primary bridge. Responders: " .. #responders)
+  log("INFO", "Slot 1 — primary bridge room=" .. conf_room .. " responders=" .. #responders)
 elseif cfg.slot == 2 then
-  conf_room              = string.format("ers_%d_s", cfg.configuration_id)
+  if cfg.secondary_bridge_number and tostring(cfg.secondary_bridge_number) ~= "" then
+    conf_room = tostring(cfg.secondary_bridge_number)
+  else
+    conf_room = string.format("ers_cfg%d_secondary", cfg.configuration_id)
+  end
   responders             = cfg.secondary_responders or {}
   tier_retry_count       = cfg.secondary_retry_count or 3
   tier_retry_interval_sec = cfg.secondary_retry_interval_sec or RETRY_RING_S
-  log("INFO", "Slot 2 — secondary bridge. Responders: " .. #responders)
+  log("INFO", "Slot 2 — secondary bridge room=" .. conf_room .. " responders=" .. #responders)
 else
-  -- Will be queued — placeholder room until dequeued
-  conf_room              = string.format("ers_%d_q%d", cfg.configuration_id, cfg.slot)
+  -- Will be queued — use primary bridge number as placeholder (backend will
+  -- assign the real room when the call is promoted from the queue)
+  if cfg.primary_bridge_number and tostring(cfg.primary_bridge_number) ~= "" then
+    conf_room = tostring(cfg.primary_bridge_number)
+  else
+    conf_room = string.format("ers_cfg%d_primary", cfg.configuration_id)
+  end
   responders             = {}
   tier_retry_count       = cfg.primary_retry_count or 3
   tier_retry_interval_sec = cfg.primary_retry_interval_sec or RETRY_RING_S
-  log("INFO", "Slot " .. cfg.slot .. " — will be queued")
+  log("INFO", "Slot " .. cfg.slot .. " — will be queued, room=" .. conf_room)
 end
 
 local conf_profile = cfg.conference_profile or "default"
@@ -281,7 +296,8 @@ end
 local rec_path = nil
 if cfg.record_conferences then
   local rec_dir = (cfg.recording_directory ~= "" and cfg.recording_directory) or REC_DIR
-  rec_path = string.format("%s/ers_%s_%d.wav", rec_dir, incident_uuid, os.time())
+  local date_str = os.date("%Y-%m-%d")
+  rec_path = string.format("%s/ers_%s_%s.wav", rec_dir, conf_room, date_str)
   session:execute("record_session", rec_path)
   log("INFO", "Recording to: " .. rec_path)
 end

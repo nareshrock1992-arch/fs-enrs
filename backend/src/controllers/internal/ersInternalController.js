@@ -336,7 +336,7 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
       // The CHECK constraint (migration 019) requires conference_room IS NOT NULL
       // for ACTIVE rows — we must set it here, not just flip the status.
       const freedTier = updated[0].group_type || 'primary';
-      const promotedRoom = deterministicRoom(updated[0].ers_configuration_id, freedTier);
+      const promotedRoom = await resolveRoom(updated[0].ers_configuration_id, freedTier);
 
       await tq(
         `UPDATE ers_queues
@@ -481,7 +481,7 @@ export const ersRejoinLookup = asyncHandler(async (req, res) => {
   let activeRoom = null;
   let activeTier = null;
   for (const tier of ['primary', 'secondary']) {
-    const room = deterministicRoom(cfg.id, tier);
+    const room = await resolveRoom(cfg.id, tier);
     const { rows: [inc] } = await query(
       `SELECT incident_uuid FROM ers_incidents
        WHERE ers_configuration_id = $1 AND group_type = $2
@@ -673,10 +673,29 @@ export const ersIncidentStatus = asyncHandler(async (req, res) => {
 // Phase 5 — 3-scenario emergency flow endpoints
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Deterministic conference room name — stable across backend restarts and
-// calls. Replaces the prior timestamp-based name which made rejoin impossible
-// and caused tierLiveStatus to scan DB rows for the room name.
-// Format: ers_cfg<configId>_primary | ers_cfg<configId>_secondary
+// Conference room name from a bridge number.
+// When a bridge number (e.g. 7000) is configured, the room IS the bridge
+// number — callers dial that extension to join directly. Falls back to the
+// legacy deterministic name when no bridge number is configured.
+export function roomFromBridgeNumber(bridgeNumber, configId, tier) {
+  if (bridgeNumber) return String(bridgeNumber);
+  return `ers_cfg${configId}_${tier}`;
+}
+
+// Async variant — queries DB for bridge number then computes room name.
+// Use this wherever you only have configId + tier and need the room name.
+async function resolveRoom(configId, tier) {
+  const col = tier === 'primary' ? 'primary_bridge_number' : 'secondary_bridge_number';
+  const { rows: [row] } = await query(
+    `SELECT ${col} AS bridge_number FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL`,
+    [configId]
+  );
+  return roomFromBridgeNumber(row?.bridge_number, configId, tier);
+}
+
+// Keep deterministicRoom exported for callers that already have the bridge
+// number in scope — they should call roomFromBridgeNumber directly, but this
+// alias avoids a wider rename sweep.
 export function deterministicRoom(configId, tier) {
   return `ers_cfg${configId}_${tier}`;
 }
@@ -688,7 +707,7 @@ export function deterministicRoom(configId, tier) {
 // while its row says ACTIVE after a crash). With deterministic room names
 // we can check the room directly without needing the DB row at all.
 async function tierLiveStatus(configId, tier) {
-  const room = deterministicRoom(configId, tier);
+  const room = await resolveRoom(configId, tier);
   const liveMembers = await getConferenceMemberCount(room);
 
   if (liveMembers === 0) {
@@ -750,7 +769,9 @@ export const ersRingAll = asyncHandler(async (req, res) => {
   const d = RingAllSchema.parse(req.body);
 
   const { rows: [cfg] } = await query(
-    `SELECT id, tenant_id, ring_timeout_seconds FROM ers_configurations
+    `SELECT id, tenant_id, ring_timeout_seconds,
+            primary_bridge_number, secondary_bridge_number
+     FROM ers_configurations
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
   );
@@ -809,9 +830,12 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fresh incident — deterministic room name (stable across restarts)
+  // Fresh incident — use bridge number as room name when configured
   const incidentUuid = uuidv4();
-  const room = deterministicRoom(d.configuration_id, d.tier);
+  const bridgeNumber = d.tier === 'primary'
+    ? cfg.primary_bridge_number
+    : cfg.secondary_bridge_number;
+  const room = roomFromBridgeNumber(bridgeNumber, d.configuration_id, d.tier);
 
   const { rows: [tierGroup] } = await query(
     `SELECT id FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2 LIMIT 1`,
@@ -1087,7 +1111,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
     [entry.ers_configuration_id]
   );
 
-  const room = deterministicRoom(entry.ers_configuration_id, freedTier);
+  const room = await resolveRoom(entry.ers_configuration_id, freedTier);
 
   const promoted = await withTransaction(async tq => {
     const { rows: [locked] } = await tq(

@@ -95,6 +95,99 @@ export const listAudio = asyncHandler(async (req, res) => {
   res.json({ files: rows, total, page, limit });
 });
 
+/** POST /deployment/audio/scan
+ *  Scans $FS_SOUND_DIR/enrs/ for audio files not yet in the database and
+ *  imports them. Safe to call repeatedly — already-known files are skipped.
+ *  Returns { imported, skipped, errors } counts + the newly-imported records.
+ */
+export const scanAudio = asyncHandler(async (req, res) => {
+  const soundDir = fsPathService.getEnrsSoundDir();
+
+  // Ensure the directory exists before scanning
+  let dirEntries;
+  try {
+    dirEntries = await fs.readdir(soundDir, { withFileTypes: true });
+  } catch {
+    return res.json({
+      imported:  0,
+      skipped:   0,
+      errors:    0,
+      files:     [],
+      sound_dir: soundDir,
+      message:   `Sound directory not found: ${soundDir}`,
+    });
+  }
+
+  const audioFiles = dirEntries.filter(
+    e => e.isFile() && AUDIO_EXTS.includes(path.extname(e.name).toLowerCase())
+  );
+
+  // Load existing fs_path records to avoid duplicate imports
+  const { rows: existing } = await query(
+    `SELECT fs_path, name FROM media_files WHERE deleted_at IS NULL AND fs_path IS NOT NULL`
+  );
+  const knownPaths = new Set(existing.map(r => r.fs_path));
+  const knownNames = new Set(existing.map(r => r.name));
+
+  const imported = [];
+  let skipped = 0;
+  let errors  = 0;
+
+  for (const entry of audioFiles) {
+    const filePath = path.join(soundDir, entry.name);
+    const baseName = entry.name;
+
+    // Skip if already tracked by path or name
+    if (knownPaths.has(filePath) || knownNames.has(baseName)) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const stat = await fs.stat(filePath);
+      const meta = await parseWavMetadata(filePath);
+
+      const { rows: [record] } = await query(
+        `INSERT INTO media_files
+           (type, name, path_or_uri, fs_path, size_bytes, category,
+            description, is_deployed, deployed_at, duration_sec, tenant_id)
+         VALUES ('PROMPT', $1, $2, $2, $3, 'general',
+                 'Auto-imported from FreeSWITCH sound directory',
+                 true, now(), $4, $5)
+         ON CONFLICT DO NOTHING
+         RETURNING *`,
+        [
+          baseName,
+          filePath,
+          stat.size,
+          meta.duration_sec,
+          req.user?.tenantId || null,
+        ]
+      );
+
+      if (record) {
+        imported.push(record);
+        knownPaths.add(filePath);
+        knownNames.add(baseName);
+      } else {
+        skipped++; // ON CONFLICT DO NOTHING fired — race with another request
+      }
+    } catch (err) {
+      console.error('[audio-scan] Failed to import', filePath, err.message);
+      errors++;
+    }
+  }
+
+  res.json({
+    imported:  imported.length,
+    skipped,
+    errors,
+    files:     imported,
+    sound_dir: soundDir,
+    message:   `Scan complete — ${imported.length} imported, ${skipped} already known, ${errors} errors`,
+  });
+});
+
 /** GET /deployment/audio/categories */
 export const listCategories = asyncHandler(async (req, res) => {
   const { rows } = await query(
@@ -123,7 +216,7 @@ export const uploadAudio = asyncHandler(async (req, res) => {
     `INSERT INTO media_files
        (organization_id, uploaded_by_user_id, type, name, path_or_uri,
         size_bytes, category, description, tenant_id)
-     VALUES ($1,$2,'IVR_PROMPT',$3,$4,$5,$6,$7,$8)
+     VALUES ($1,$2,'PROMPT',$3,$4,$5,$6,$7,$8)
      RETURNING *`,
     [
       organization_id || null,
@@ -302,7 +395,7 @@ export const disableLegacyExtensionRoute = asyncHandler(async (req, res) => {
 
 async function copyToFreeSwitch(mediaId, srcPath, filename) {
   const destDir  = fsPathService.getEnrsSoundDir();
-  const destPath = path.posix.join(destDir, path.basename(filename));
+  const destPath = path.join(destDir, path.basename(filename));
 
   await fs.mkdir(destDir, { recursive: true });
   await fs.copyFile(srcPath, destPath);
@@ -321,6 +414,29 @@ async function copyToFreeSwitch(mediaId, srcPath, filename) {
     dest:     destPath,
     media_uri: '/media/' + path.basename(filename),
   };
+}
+
+/** Parse WAV header for duration. Falls back gracefully for non-WAV files. */
+async function parseWavMetadata(filePath) {
+  try {
+    const fd = await fs.open(filePath, 'r');
+    const buf = Buffer.alloc(44);
+    await fd.read(buf, 0, 44, 0);
+    await fd.close();
+
+    if (buf.toString('ascii', 0, 4) !== 'RIFF') return { duration_sec: null };
+    if (buf.toString('ascii', 8, 12) !== 'WAVE') return { duration_sec: null };
+
+    const sampleRate   = buf.readUInt32LE(24);
+    const byteRate     = buf.readUInt32LE(28);
+    const dataSize     = buf.readUInt32LE(40);
+
+    if (!byteRate || byteRate === 0) return { duration_sec: null };
+    const duration_sec = Math.round((dataSize / byteRate) * 10) / 10;
+    return { duration_sec, sample_rate: sampleRate };
+  } catch {
+    return { duration_sec: null };
+  }
 }
 
 function mimeForExt(ext) {

@@ -23,9 +23,6 @@ export const NODE_DEFAULTS = {
   set_variable:      { variable: '', value: '', next: '' },
   transfer:          { destination: '', dialplan: 'XML', context: 'default' },
   webhook:           { url: '', body_template: '', next: '' },
-  // Phase-5 emergency nodes — omit config IDs (undefined) so they are stripped
-  // from JSON payloads before the backend's Zod schema sees them. Empty string
-  // fails z.number(); undefined is correctly treated as "not yet set" (optional).
   ers_ring_all:      { tier: 'primary' },
   ers_overflow_check: { branches: { primary: '', secondary: '', full: '' } },
   ers_overflow_wait: { hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
@@ -34,7 +31,6 @@ export const NODE_DEFAULTS = {
 };
 
 // ── Derive edges from node fields ─────────────────────────────────────────────
-// Edges are not stored explicitly — they are computed from node connections.
 
 export function deriveEdges(nodes) {
   const edges = [];
@@ -100,11 +96,11 @@ const INIT = {
   selected:     null,
   dirty:        false,
   saving:       false,
-  saveError:    null,   // string | null — last autosave failure message
-  errors:       {},     // { [nodeId]: string[] }
-  nodeWarnings: {},     // { [nodeId]: string[] } — per-node warning badges
-  warnings:     [],     // flat array for toolbar warning bar
-  flowMeta:     null,   // { flow_uuid, name, latest_version, bound_numbers, ... }
+  saveError:    null,
+  errors:       {},
+  nodeWarnings: {},
+  warnings:     [],
+  flowMeta:     null,
 };
 
 function reducer(state, action) {
@@ -112,13 +108,17 @@ function reducer(state, action) {
 
     case 'SEED': {
       const { nodes, entryNodeId } = deserialiseGraph(action.flow.graph);
-      return {
-        ...INIT,
-        nodes,
-        entryNodeId,
-        flowMeta: action.flow,
-      };
+      return { ...INIT, nodes, entryNodeId, flowMeta: action.flow };
     }
+
+    case 'RESTORE_SNAPSHOT':
+      return {
+        ...state,
+        nodes:       action.nodes,
+        entryNodeId: action.entryNodeId,
+        selected:    action.selected ?? state.selected,
+        dirty:       true,
+      };
 
     case 'ADD_NODE': {
       const id = genId();
@@ -126,18 +126,26 @@ function reducer(state, action) {
         ...state,
         nodes: {
           ...state.nodes,
-          [id]: {
-            id,
-            type: action.nodeType,
-            x: action.x,
-            y: action.y,
-            ...NODE_DEFAULTS[action.nodeType],
-          },
+          [id]: { id, type: action.nodeType, x: action.x, y: action.y, ...NODE_DEFAULTS[action.nodeType] },
         },
-        // Auto-set entry if first node
         entryNodeId: state.entryNodeId || id,
+        selected:    id,
+        dirty:       true,
+      };
+    }
+
+    case 'DUPLICATE_NODE': {
+      const id = genId();
+      // eslint-disable-next-line no-unused-vars
+      const { id: _srcId, x: _sx, y: _sy, ...fields } = action.sourceNode;
+      return {
+        ...state,
+        nodes: {
+          ...state.nodes,
+          [id]: { id, ...fields, x: action.x, y: action.y },
+        },
         selected: id,
-        dirty: true,
+        dirty:    true,
       };
     }
 
@@ -163,8 +171,6 @@ function reducer(state, action) {
 
     case 'DELETE_NODE': {
       const { [action.id]: _removed, ...remaining } = state.nodes;
-
-      // Remove all references to this node from other nodes
       const cleaned = {};
       for (const [nid, node] of Object.entries(remaining)) {
         const patched = { ...node };
@@ -180,12 +186,11 @@ function reducer(state, action) {
         }
         cleaned[nid] = patched;
       }
-
       return {
         ...state,
         nodes:       cleaned,
         entryNodeId: state.entryNodeId === action.id ? '' : state.entryNodeId,
-        selected:    state.selected === action.id ? null : state.selected,
+        selected:    state.selected    === action.id ? null : state.selected,
         dirty:       true,
       };
     }
@@ -194,95 +199,74 @@ function reducer(state, action) {
       const node = state.nodes[action.from];
       if (!node) return state;
       let patched = { ...node };
-
-      if (action.fromPort === 'next') {
-        patched.next = action.to;
-      } else if (action.fromPort === 'goto') {
-        patched.target_node_id = action.to;
-      } else if (action.fromPort === 'true') {
-        patched.true_node = action.to;
-      } else if (action.fromPort === 'false') {
-        patched.false_node = action.to;
-      } else {
-        // branch key
-        patched.branches = { ...patched.branches, [action.fromPort]: action.to };
-      }
-
-      return {
-        ...state,
-        nodes: { ...state.nodes, [action.from]: patched },
-        dirty: true,
-      };
+      if      (action.fromPort === 'next')  patched.next = action.to;
+      else if (action.fromPort === 'goto')  patched.target_node_id = action.to;
+      else if (action.fromPort === 'true')  patched.true_node = action.to;
+      else if (action.fromPort === 'false') patched.false_node = action.to;
+      else patched.branches = { ...patched.branches, [action.fromPort]: action.to };
+      return { ...state, nodes: { ...state.nodes, [action.from]: patched }, dirty: true };
     }
 
     case 'DISCONNECT': {
       const node = state.nodes[action.from];
       if (!node) return state;
       let patched = { ...node };
-
-      if (action.fromPort === 'next') {
-        patched.next = '';
-      } else if (action.fromPort === 'goto') {
-        patched.target_node_id = '';
-      } else if (action.fromPort === 'true') {
-        patched.true_node = '';
-      } else if (action.fromPort === 'false') {
-        patched.false_node = '';
-      } else {
-        patched.branches = { ...patched.branches, [action.fromPort]: '' };
-      }
-
-      return {
-        ...state,
-        nodes: { ...state.nodes, [action.from]: patched },
-        dirty: true,
-      };
+      if      (action.fromPort === 'next')  patched.next = '';
+      else if (action.fromPort === 'goto')  patched.target_node_id = '';
+      else if (action.fromPort === 'true')  patched.true_node = '';
+      else if (action.fromPort === 'false') patched.false_node = '';
+      else patched.branches = { ...patched.branches, [action.fromPort]: '' };
+      return { ...state, nodes: { ...state.nodes, [action.from]: patched }, dirty: true };
     }
 
-    case 'SET_SELECTED':
-      return { ...state, selected: action.id };
-
-    case 'SET_ENTRY':
-      return { ...state, entryNodeId: action.id, dirty: true };
+    case 'SET_SELECTED':  return { ...state, selected: action.id };
+    case 'SET_ENTRY':     return { ...state, entryNodeId: action.id, dirty: true };
 
     case 'SET_ERRORS': {
-      // Map per-node warnings from the flat warnings array (same format as
-      // errors: "Node \"<id>\" is not reachable…")
       const nodeWarnings = {};
       for (const w of (action.warnings || [])) {
         const m = w.match(/^Node "([^"]+)"/);
         const nid = m?.[1];
-        if (nid) {
-          nodeWarnings[nid] = [...(nodeWarnings[nid] || []), w];
-        }
+        if (nid) nodeWarnings[nid] = [...(nodeWarnings[nid] || []), w];
       }
       return { ...state, errors: action.errors || {}, warnings: action.warnings || [], nodeWarnings };
     }
 
-    case 'MARK_SAVING':
-      return { ...state, saving: true, saveError: null };
+    case 'MARK_SAVING':      return { ...state, saving: true,  saveError: null };
+    case 'MARK_SAVED':       return { ...state, saving: false, dirty: false, saveError: null };
+    case 'MARK_SAVE_ERROR':  return { ...state, saving: false, saveError: action.message || 'Autosave failed' };
+    case 'UPDATE_META':      return { ...state, flowMeta: { ...state.flowMeta, ...action.patch } };
 
-    case 'MARK_SAVED':
-      return { ...state, saving: false, dirty: false, saveError: null };
-
-    case 'MARK_SAVE_ERROR':
-      return { ...state, saving: false, saveError: action.message || 'Autosave failed' };
-
-    case 'UPDATE_META':
-      return { ...state, flowMeta: { ...state.flowMeta, ...action.patch } };
-
-    default:
-      return state;
+    default: return state;
   }
 }
 
 // ── useIvrGraph hook ──────────────────────────────────────────────────────────
 
+const MAX_UNDO_STEPS = 100;
+
 export function useIvrGraph(flowUuid) {
   const [state, dispatch] = useReducer(reducer, INIT);
-  const saveTimer = useRef(null);
-  const stateRef  = useRef(state);
+  const saveTimer  = useRef(null);
+  const stateRef   = useRef(state);
   stateRef.current = state;
+
+  // ── Undo / redo history (stored in refs — not React state, no re-renders) ──
+  const undoStack = useRef([]); // [ { nodes, entryNodeId }, ... ]
+  const redoStack = useRef([]); // [ { nodes, entryNodeId }, ... ]
+
+  // Capture snapshot of current nodes/entryNodeId into the undo stack.
+  // Must be called BEFORE the mutating dispatch.
+  const pushUndoRef = useRef(null);
+  pushUndoRef.current = () => {
+    undoStack.current.push({
+      nodes:       stateRef.current.nodes,
+      entryNodeId: stateRef.current.entryNodeId,
+      selected:    stateRef.current.selected,
+    });
+    if (undoStack.current.length > MAX_UNDO_STEPS) undoStack.current.shift();
+    redoStack.current = []; // new action wipes redo future
+  };
 
   // Load flow on mount
   useEffect(() => {
@@ -292,18 +276,16 @@ export function useIvrGraph(flowUuid) {
     }).catch(console.error);
   }, [flowUuid]);
 
-  // Shared save implementation — used by both the debounced autosave and saveNow().
+  // ── Persist ───────────────────────────────────────────────────────────────
+
   async function persistGraph() {
     const s = stateRef.current;
     if (!s.dirty || !s.flowMeta?.flow_uuid) return;
     dispatch({ type: 'MARK_SAVING' });
     try {
       const graph = serialiseGraph(s.nodes, s.entryNodeId);
-      // Store layout positions in _layout key (stripped by backend Zod, ignored)
       const layout = {};
-      for (const [id, node] of Object.entries(s.nodes)) {
-        layout[id] = { x: node.x, y: node.y };
-      }
+      for (const [id, node] of Object.entries(s.nodes)) layout[id] = { x: node.x, y: node.y };
       graph._layout = layout;
       await api.ivr.update(s.flowMeta.flow_uuid, { graph });
       dispatch({ type: 'MARK_SAVED' });
@@ -314,50 +296,101 @@ export function useIvrGraph(flowUuid) {
     }
   }
 
-  // Auto-save draft on dirty (debounced 800ms)
   useEffect(() => {
     if (!state.dirty || state.saving) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-
     saveTimer.current = setTimeout(() => { persistGraph().catch(() => {}); }, 800);
-
     return () => clearTimeout(saveTimer.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.dirty, state.saving]);
 
-  // Immediate save — bypasses the debounce. Used by Publish/Deploy to ensure
-  // the server has the latest edits before publishing. Throws on save failure.
   const saveNow = useCallback(async () => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     await persistGraph();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const addNode    = useCallback((nodeType, x, y) => dispatch({ type: 'ADD_NODE', nodeType, x, y }), []);
-  const updateNode = useCallback((id, patch) => dispatch({ type: 'UPDATE_NODE', id, patch }), []);
-  const moveNode   = useCallback((id, x, y) => dispatch({ type: 'MOVE_NODE', id, x, y }), []);
-  const deleteNode = useCallback((id) => dispatch({ type: 'DELETE_NODE', id }), []);
-  const connect    = useCallback((from, fromPort, to) => dispatch({ type: 'CONNECT', from, fromPort, to }), []);
-  const disconnect = useCallback((from, fromPort) => dispatch({ type: 'DISCONNECT', from, fromPort }), []);
+  // ── Public actions (undoable mutations push snapshot first) ──────────────
+
+  const addNode = useCallback((nodeType, x, y) => {
+    pushUndoRef.current();
+    dispatch({ type: 'ADD_NODE', nodeType, x, y });
+  }, []);
+
+  const duplicateNode = useCallback((sourceNode, x, y) => {
+    pushUndoRef.current();
+    dispatch({ type: 'DUPLICATE_NODE', sourceNode, x, y });
+  }, []);
+
+  const updateNode = useCallback((id, patch) => {
+    pushUndoRef.current();
+    dispatch({ type: 'UPDATE_NODE', id, patch });
+  }, []);
+
+  // moveNode is NOT pushed to undo history per-move (too many steps).
+  // Arrow-key nudge calls moveNode too, so we keep it fast and non-undoable
+  // for now — position is cheap to fix by re-dragging.
+  const moveNode = useCallback((id, x, y) => {
+    dispatch({ type: 'MOVE_NODE', id, x, y });
+  }, []);
+
+  const deleteNode = useCallback((id) => {
+    pushUndoRef.current();
+    dispatch({ type: 'DELETE_NODE', id });
+  }, []);
+
+  const connect = useCallback((from, fromPort, to) => {
+    pushUndoRef.current();
+    dispatch({ type: 'CONNECT', from, fromPort, to });
+  }, []);
+
+  const disconnect = useCallback((from, fromPort) => {
+    pushUndoRef.current();
+    dispatch({ type: 'DISCONNECT', from, fromPort });
+  }, []);
+
   const setSelected = useCallback((id) => dispatch({ type: 'SET_SELECTED', id }), []);
-  const setEntry   = useCallback((id) => dispatch({ type: 'SET_ENTRY', id }), []);
-  const updateMeta = useCallback((patch) => dispatch({ type: 'UPDATE_META', patch }), []);
+  const setEntry    = useCallback((id) => dispatch({ type: 'SET_ENTRY',    id }), []);
+  const updateMeta  = useCallback((patch) => dispatch({ type: 'UPDATE_META', patch }), []);
+
+  // ── Undo / Redo ──────────────────────────────────────────────────────────
+
+  const undo = useCallback(() => {
+    if (undoStack.current.length === 0) return;
+    // Save current state to redo stack before restoring
+    redoStack.current.push({
+      nodes:       stateRef.current.nodes,
+      entryNodeId: stateRef.current.entryNodeId,
+      selected:    stateRef.current.selected,
+    });
+    const snapshot = undoStack.current.pop();
+    dispatch({ type: 'RESTORE_SNAPSHOT', ...snapshot });
+  }, []);
+
+  const redo = useCallback(() => {
+    if (redoStack.current.length === 0) return;
+    undoStack.current.push({
+      nodes:       stateRef.current.nodes,
+      entryNodeId: stateRef.current.entryNodeId,
+      selected:    stateRef.current.selected,
+    });
+    const snapshot = redoStack.current.pop();
+    dispatch({ type: 'RESTORE_SNAPSHOT', ...snapshot });
+  }, []);
+
+  // ── Validate ─────────────────────────────────────────────────────────────
 
   const validate = useCallback(async () => {
     const s = stateRef.current;
     if (!s.flowMeta?.flow_uuid) return;
     try {
       const result = await api.ivr.validate(s.flowMeta.flow_uuid);
-      // Map errors to node IDs where possible
       const errorMap = {};
       for (const err of result.errors || []) {
         const match = err.match(/^node ([^\s:]+)/);
         const nodeId = match?.[1];
-        if (nodeId && s.nodes[nodeId]) {
-          errorMap[nodeId] = [...(errorMap[nodeId] || []), err];
-        } else {
-          errorMap['__global'] = [...(errorMap['__global'] || []), err];
-        }
+        if (nodeId && s.nodes[nodeId]) errorMap[nodeId] = [...(errorMap[nodeId] || []), err];
+        else errorMap['__global'] = [...(errorMap['__global'] || []), err];
       }
       dispatch({ type: 'SET_ERRORS', errors: errorMap, warnings: result.warnings || [] });
       return result;
@@ -372,16 +405,12 @@ export function useIvrGraph(flowUuid) {
     ...state,
     edges,
     dispatch,
-    addNode,
-    updateNode,
-    moveNode,
-    deleteNode,
-    connect,
-    disconnect,
-    setSelected,
-    setEntry,
-    updateMeta,
-    validate,
-    saveNow,
+    addNode, duplicateNode, updateNode, moveNode, deleteNode,
+    connect, disconnect,
+    setSelected, setEntry, updateMeta,
+    validate, saveNow,
+    undo, redo,
+    canUndo: undoStack.current.length > 0,
+    canRedo: redoStack.current.length > 0,
   };
 }
