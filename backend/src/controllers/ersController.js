@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
 
 const str    = (max) => z.string().max(max).optional().nullable();
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
@@ -586,7 +587,7 @@ export const listResponders = asyncHandler(async (req, res) => {
 
 export const getQueue = asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT q.*, e.name AS ers_name, i.emergency_call_number, i.started_at
+    `SELECT q.*, e.name AS ers_name, i.started_at
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
      LEFT JOIN ers_incidents  i ON i.id = q.incident_id
@@ -594,4 +595,156 @@ export const getQueue = asyncHandler(async (req, res) => {
      ORDER BY q.ers_configuration_id, q.position`
   );
   res.json(rows);
+});
+
+// ── Single incident detail (with responders + participants) ───────────────────
+
+export const getIncident = asyncHandler(async (req, res) => {
+  const { uuid } = req.params;
+  const { rows: [incident] } = await query(
+    `SELECT i.*, e.name AS ers_name,
+            e.primary_bridge_number, e.secondary_bridge_number,
+            e.record_conferences, e.queue_enabled
+     FROM ers_incidents i
+     JOIN ers_configurations e ON e.id = i.ers_configuration_id
+     WHERE i.incident_uuid = $1 AND i.deleted_at IS NULL`,
+    [uuid]
+  );
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+  const [{ rows: responders }, { rows: participants }] = await Promise.all([
+    query(
+      `SELECT r.*,
+              c.first_name, c.last_name, c.mobile_number, c.extension_number, c.role AS contact_role
+       FROM ers_incident_responders r
+       LEFT JOIN emergency_contacts c ON c.id = r.emergency_contact_id
+       WHERE r.ers_incident_id = $1
+       ORDER BY r.join_time NULLS LAST`,
+      [incident.id]
+    ),
+    query(
+      `SELECT p.*, c.first_name, c.last_name
+       FROM ers_incident_participants p
+       LEFT JOIN emergency_contacts c ON c.id = p.contact_id
+       WHERE p.incident_id = $1
+       ORDER BY p.joined_at`,
+      [incident.id]
+    ).catch(() => ({ rows: [] })), // participants table may not exist in all envs
+  ]);
+
+  res.json({ ...incident, responders, participants });
+});
+
+// ── Complete incident (external / supervisor-facing) ──────────────────────────
+
+export const completeIncidentExternal = asyncHandler(async (req, res) => {
+  // Delegate to internal completion logic for consistent queue promotion
+  const { completeIncidentCore } = await import('./internal/ersInternalController.js');
+  const result = await completeIncidentCore(req.params.uuid, req.body?.recording_file || null);
+  if (!result) return res.status(404).json({ error: 'Incident not found or already completed' });
+  res.json({ ok: true, ...result });
+});
+
+// ── Cancel a queued incident ──────────────────────────────────────────────────
+
+export const cancelQueuedIncident = asyncHandler(async (req, res) => {
+  const { uuid } = req.params;
+  const result = await withTransaction(async tq => {
+    const { rows: [incident] } = await tq(
+      `UPDATE ers_incidents
+       SET status = 'CANCELLED', cancelled_at = now()
+       WHERE incident_uuid = $1 AND status = 'QUEUED' AND deleted_at IS NULL
+       RETURNING *`,
+      [uuid]
+    );
+    if (!incident) throw Object.assign(new Error('Queued incident not found'), { status: 404 });
+
+    await tq(
+      `UPDATE ers_queues SET status = 'CANCELLED', cancelled_at = now(), updated_at = now()
+       WHERE incident_id = $1 AND status = 'QUEUED'`,
+      [incident.id]
+    );
+
+    try {
+      const { emitInternal } = await import('../services/socketService.js');
+      emitInternal('enrs::ers_incident_ended', { incident_uuid: uuid, ended_at: new Date().toISOString(), status: 'CANCELLED' });
+    } catch {}
+
+    return incident;
+  });
+  res.json({ ok: true, incident: result });
+});
+
+// ── Conference control — live member list ─────────────────────────────────────
+
+export const getConferenceMembers = asyncHandler(async (req, res) => {
+  const { room } = req.params;
+  const members = await confList(room);
+  // Enrich with DB responder data where possible
+  const numbers = members.map(m => m.callerNum).filter(Boolean);
+  let dbMap = {};
+  if (numbers.length) {
+    const { rows } = await query(
+      `SELECT c.mobile_number, c.extension_number, c.first_name, c.last_name, c.role
+       FROM emergency_contacts c
+       WHERE c.deleted_at IS NULL
+         AND (c.extension_number = ANY($1) OR
+              RIGHT(REGEXP_REPLACE(c.mobile_number,'[^0-9]','','g'),9) = ANY(
+                SELECT RIGHT(REGEXP_REPLACE(n,'[^0-9]','','g'),9) FROM unnest($1::text[]) n
+              ))`,
+      [numbers]
+    );
+    for (const r of rows) {
+      const key = r.extension_number || r.mobile_number?.replace(/\D/g,'').slice(-9);
+      if (key) dbMap[key] = r;
+    }
+  }
+
+  const enriched = members.map(m => {
+    const key = m.callerNum?.replace(/\D/g,'').slice(-9);
+    const contact = dbMap[m.callerNum] || dbMap[key] || null;
+    return {
+      ...m,
+      displayName: contact
+        ? `${contact.first_name} ${contact.last_name}`.trim()
+        : m.callerName || m.callerNum,
+      contactRole: contact?.role || null,
+    };
+  });
+
+  res.json({ room, members: enriched });
+});
+
+// ── Conference control — kick member ─────────────────────────────────────────
+
+export const kickConferenceMember = asyncHandler(async (req, res) => {
+  const { room } = req.params;
+  const { member_id } = req.body;
+  if (!member_id) return res.status(400).json({ error: 'member_id required' });
+  await confKick(room, member_id);
+  res.json({ ok: true, room, member_id });
+});
+
+// ── Conference control — mute / unmute member ─────────────────────────────────
+
+export const muteConferenceMember = asyncHandler(async (req, res) => {
+  const { room } = req.params;
+  const { member_id, muted } = req.body;
+  if (!member_id) return res.status(400).json({ error: 'member_id required' });
+  if (muted) {
+    await confMute(room, member_id);
+  } else {
+    await confUnmute(room, member_id);
+  }
+  res.json({ ok: true, room, member_id, muted: !!muted });
+});
+
+// ── Conference control — inject audio ────────────────────────────────────────
+
+export const playConferenceAudio = asyncHandler(async (req, res) => {
+  const { room } = req.params;
+  const { audio_path } = req.body;
+  if (!audio_path) return res.status(400).json({ error: 'audio_path required' });
+  await confPlay(room, audio_path);
+  res.json({ ok: true, room, audio_path });
 });

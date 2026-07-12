@@ -19,6 +19,7 @@ const NAV = [
       { label: 'ENS Campaigns',      to: '/ens/campaigns' },
       { label: 'ERS Configurations', to: '/ers' },
       { label: 'ERS Live View',      to: '/ers/live' },
+      { label: 'ERS Operations',     to: '/ers/monitoring' },
     ]
   },
 

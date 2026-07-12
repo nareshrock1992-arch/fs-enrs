@@ -46,18 +46,30 @@ function handleEvent(evt) {
 
   // Conference member join
   if (name === 'CUSTOM' && subclass === 'conference::maintenance') {
-    const action  = evt.getHeader('Action');
-    const confName = evt.getHeader('Conference-Name');
-    const member   = evt.getHeader('Member-ID');
+    const action    = evt.getHeader('Action');
+    const confName  = evt.getHeader('Conference-Name');
+    const member    = evt.getHeader('Member-ID');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
+    const callerName = evt.getHeader('Caller-Caller-ID-Name') || '';
 
     if (action === 'add-member') {
-      emit('conference.member.joined', { confName, member, callerNum });
+      emit('conference.member.joined', { confName, member, callerNum, callerName });
       persistEvent('conference.member.joined', { confName, member, callerNum });
       trackParticipant(confName, callerNum, 'join');
     } else if (action === 'del-member') {
       emit('conference.member.left', { confName, member, callerNum });
       trackParticipant(confName, callerNum, 'leave');
+    } else if (action === 'mute-member') {
+      emit('conference.member.muted', { confName, member, callerNum, muted: true });
+    } else if (action === 'unmute-member') {
+      emit('conference.member.muted', { confName, member, callerNum, muted: false });
+    } else if (action === 'start-talking') {
+      emit('conference.member.talking', { confName, member, callerNum, talking: true });
+    } else if (action === 'stop-talking') {
+      emit('conference.member.talking', { confName, member, callerNum, talking: false });
+    } else if (action === 'floor-change') {
+      const floorMember = evt.getHeader('New-ID');
+      emit('conference.floor.changed', { confName, member: floorMember });
     } else if (action === 'conference-create') {
       emit('conference.created', { confName });
     } else if (action === 'conference-destroy') {
@@ -376,6 +388,62 @@ export async function confPlay(confName, audioPath) {
 // ─── Kick a member from conference ──────────────────────────
 export async function confKick(confName, memberId) {
   return eslCommand(`conference ${confName} kick ${memberId}`);
+}
+
+// ─── Mute / unmute a conference member ──────────────────────
+export async function confMute(confName, memberId) {
+  return eslCommand(`conference ${confName} mute ${memberId}`);
+}
+
+export async function confUnmute(confName, memberId) {
+  return eslCommand(`conference ${confName} unmute ${memberId}`);
+}
+
+// ─── Hold / unhold an entire conference ─────────────────────
+export async function confHold(confName) {
+  return eslCommand(`conference ${confName} hold`);
+}
+
+export async function confUnhold(confName) {
+  return eslCommand(`conference ${confName} unhold`);
+}
+
+// ─── List all members in a conference ───────────────────────
+//
+// mod_conference "list" output format (one line per member):
+//   id;uuid;caller_id_name;caller_id_number;flags;talking;vol_in;vol_out;energy;join_ts
+// flags is pipe-separated: hear|speak|mute|deaf|moderator|floor|talking
+//
+// Returns empty array when the conference doesn't exist or ESL is down.
+export async function confList(confName) {
+  if (!confName) return [];
+  try {
+    const raw = await eslCommand(`conference ${confName} list`);
+    if (!raw || raw.includes('No conference') || raw.includes('not found')) return [];
+    const members = [];
+    for (const line of raw.trim().split('\n')) {
+      const parts = line.split(';');
+      if (parts.length < 4) continue;
+      const flags   = (parts[4] || '').split('|');
+      const muted   = !flags.includes('speak') || flags.includes('mute');
+      const talking = flags.includes('talking');
+      const deaf    = flags.includes('deaf');
+      members.push({
+        id:         parts[0]?.trim(),
+        uuid:       parts[1]?.trim(),
+        callerName: parts[2]?.trim() || '',
+        callerNum:  parts[3]?.trim() || '',
+        muted,
+        talking,
+        deaf,
+        flags:      parts[4]?.trim() || '',
+        joinTs:     parts[9]?.trim() || null,
+      });
+    }
+    return members;
+  } catch {
+    return [];
+  }
 }
 
 // ─── Live conference member count — Phase 5's tier-status distinction ──

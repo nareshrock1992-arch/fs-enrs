@@ -135,8 +135,14 @@ export const api = {
     tierGroups:       (id)   => request('GET', `/ers/configurations/${id}/tier-groups`),
     updateTierGroups: (id, d) => request('PUT', `/ers/configurations/${id}/tier-groups`, d),
     incidents:        (q)    => request('GET',  `/ers/incidents?${new URLSearchParams(q || {})}`),
+    incident:         (uuid) => request('GET',  `/ers/incidents/${uuid}/detail`),
     queue:            ()     => request('GET',  '/ers/queue'),
-    completeIncident: (uuid) => request('POST', `/ers/incidents/${uuid}/complete`),
+    completeIncident: (uuid, body) => request('POST', `/ers/incidents/${uuid}/complete`, body || {}),
+    cancelIncident:   (uuid) => request('POST', `/ers/incidents/${uuid}/cancel`),
+    confMembers:      (room) => request('GET',  `/ers/conference/${room}/members`),
+    confKick:         (room, memberId) => request('POST', `/ers/conference/${room}/kick`, { member_id: memberId }),
+    confMute:         (room, memberId, muted) => request('POST', `/ers/conference/${room}/mute`, { member_id: memberId, muted }),
+    confPlay:         (room, audioPath) => request('POST', `/ers/conference/${room}/play`, { audio_path: audioPath }),
   },
 
   // Service Registry (emergency numbers — full CRUD)
