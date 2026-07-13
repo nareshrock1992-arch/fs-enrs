@@ -1068,16 +1068,19 @@ export default function Monitoring() {
         upConf(confName, c => ({ ...c, locked }));
         pushEvent('conference.locked', `${confName} ${locked ? 'locked' : 'unlocked'}`);
       },
-      'conference.recording': ({ confName, recording, recordingState, recordingPath }) => {
+      'conference.recording': ({ confName, recording, recordingState, recordingPath, recordingError }) => {
         upConf(confName, c => ({
           ...c,
           recording,
           recordingState: recordingState || (recording ? 'ACTIVE' : 'OFF'),
           recordingPath:  recordingPath ?? c.recordingPath,
+          recordingError: recordingError ?? (recordingState === 'FAILED' ? c.recordingError : null),
         }));
         const state = recordingState || (recording ? 'ACTIVE' : 'OFF');
         pushEvent('conference.recording',
-          `${confName}: recording ${state === 'ACTIVE' ? 'started' : state === 'PAUSED' ? 'paused' : 'stopped'}`);
+          state === 'FAILED'
+            ? `${confName}: recording FAILED — ${recordingError || 'unknown error'}`
+            : `${confName}: recording ${state === 'ACTIVE' ? 'started' : state === 'PAUSED' ? 'paused' : 'stopped'}`);
       },
     };
 

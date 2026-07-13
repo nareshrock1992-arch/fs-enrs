@@ -89,6 +89,22 @@ export function setConferenceRecordingPath(confName, path) {
   }
 }
 
+export function setConferenceRecordingError(confName, reason) {
+  const entry = conferenceRegistry.get(confName);
+  if (entry) {
+    entry.recordingState = 'FAILED';
+    entry.recordingError = reason || 'Unknown error';
+    entry.recording      = false;
+  }
+  emit('conference.recording', {
+    confName,
+    recording:      false,
+    recordingState: 'FAILED',
+    recordingPath:  conferenceRegistry.get(confName)?.recordingPath || null,
+    recordingError: reason || 'Unknown error',
+  });
+}
+
 // ─── ESL command with explicit timeout ──────────────────────────────────────
 //
 // bgapi callbacks can silently hang if the ESL connection drops between the
@@ -598,9 +614,10 @@ function handleEvent(evt) {
       }
       emit('conference.recording', {
         confName,
-        recording: true,
+        recording:      true,
         recordingState: 'ACTIVE',
-        recordingPath: conf?.recordingPath || recPath,
+        recordingPath:  conf?.recordingPath || recPath,
+        recordingError: null,
       });
 
     } else if (action === 'stop-recording') {

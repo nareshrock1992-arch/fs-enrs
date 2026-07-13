@@ -5,8 +5,11 @@
  * DB is used only for enrichment (ERS incident info, org names).
  */
 
+import fs from 'fs';
+import path from 'path';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
+import { fsConfig } from '../config/fsConfig.js';
 import {
   getConferenceSnapshot, seedConferenceRegistry,
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
@@ -14,7 +17,7 @@ import {
   confTransfer, confLock, confUnlock,
   confRecord, confRecordPause, confRecordStop,
   confPlay, confSay, confInvite, confTerminate,
-  setConferenceRecordingPath,
+  setConferenceRecordingPath, setConferenceRecordingError,
   eslStatus,
 } from '../services/eslService.js';
 
@@ -90,12 +93,41 @@ export const unlockConference = asyncHandler(async (req, res) => {
 
 export const startRecording = asyncHandler(async (req, res) => {
   const room = req.params.room;
-  // Auto-generate a path when the caller doesn't specify one.
-  // The path includes the room name + ISO timestamp to guarantee uniqueness.
   const ts   = new Date().toISOString().replace(/[:.]/g, '-');
-  const recPath = req.body?.path || `/var/lib/freeswitch/recordings/conf_${room}_${ts}.wav`;
-  await confRecord(room, recPath);
-  // Optimistically update registry — confirmed by start-recording ESL event
+
+  // Path is resolved exclusively from FS_RECORDING_DIR (via fsConfig.recordingDir).
+  // A sub-directory per conference keeps recordings organised and avoids root-dir clutter.
+  const recDir  = path.join(fsConfig.recordingDir, 'conf');
+  const recPath = req.body?.path || path.join(recDir, `conf_${room}_${ts}.wav`);
+
+  // Ensure the directory exists on the backend host (FreeSWITCH writes to the same path).
+  try {
+    fs.mkdirSync(recDir, { recursive: true });
+  } catch (mkdirErr) {
+    console.error(`[monitoring] startRecording: cannot create recording dir "${recDir}": ${mkdirErr.message}`);
+    return res.status(500).json({ error: `Recording directory unavailable: ${mkdirErr.message}` });
+  }
+
+  let result;
+  try {
+    result = await confRecord(room, recPath);
+  } catch (eslErr) {
+    const reason = eslErr.message || String(eslErr);
+    console.error(`[monitoring] startRecording ESL error for conf="${room}" path="${recPath}": ${reason}`);
+    setConferenceRecordingError(room, reason);
+    return res.status(502).json({ error: `FreeSWITCH recording failed: ${reason}` });
+  }
+
+  // FreeSWITCH returns "-ERR ..." on failure (e.g. file open error, bad path).
+  if (typeof result === 'string' && result.trimStart().startsWith('-ERR')) {
+    const reason = result.trim();
+    console.error(`[monitoring] startRecording FreeSWITCH rejected conf="${room}" path="${recPath}": ${reason}`);
+    setConferenceRecordingError(room, reason);
+    return res.status(502).json({ error: `FreeSWITCH rejected recording: ${reason}` });
+  }
+
+  console.log(`[monitoring] startRecording OK conf="${room}" path="${recPath}" fs_response="${String(result).trim()}"`);
+  // Optimistically update registry — confirmed (or corrected) by the start-recording ESL event.
   setConferenceRecordingPath(room, recPath);
   res.json({ ok: true, recordingPath: recPath });
 });
@@ -105,7 +137,22 @@ export const pauseRecording = asyncHandler(async (req, res) => {
   const snap = getConferenceSnapshot().find(c => c.name === room);
   const recPath = req.body?.path || snap?.recordingPath;
   if (!recPath) return res.status(400).json({ error: 'No active recording path known for this conference' });
-  await confRecordPause(room, recPath);
+
+  let result;
+  try {
+    result = await confRecordPause(room, recPath);
+  } catch (eslErr) {
+    const reason = eslErr.message || String(eslErr);
+    console.error(`[monitoring] pauseRecording ESL error for conf="${room}": ${reason}`);
+    return res.status(502).json({ error: `FreeSWITCH pause failed: ${reason}` });
+  }
+
+  if (typeof result === 'string' && result.trimStart().startsWith('-ERR')) {
+    const reason = result.trim();
+    console.error(`[monitoring] pauseRecording FreeSWITCH rejected conf="${room}": ${reason}`);
+    return res.status(502).json({ error: `FreeSWITCH rejected pause: ${reason}` });
+  }
+
   res.json({ ok: true });
 });
 
@@ -114,7 +161,22 @@ export const stopRecording = asyncHandler(async (req, res) => {
   const snap = getConferenceSnapshot().find(c => c.name === room);
   const recPath = req.body?.path || snap?.recordingPath;
   if (!recPath) return res.status(400).json({ error: 'No active recording path known for this conference' });
-  await confRecordStop(room, recPath);
+
+  let result;
+  try {
+    result = await confRecordStop(room, recPath);
+  } catch (eslErr) {
+    const reason = eslErr.message || String(eslErr);
+    console.error(`[monitoring] stopRecording ESL error for conf="${room}": ${reason}`);
+    return res.status(502).json({ error: `FreeSWITCH stop failed: ${reason}` });
+  }
+
+  if (typeof result === 'string' && result.trimStart().startsWith('-ERR')) {
+    const reason = result.trim();
+    console.error(`[monitoring] stopRecording FreeSWITCH rejected conf="${room}": ${reason}`);
+    return res.status(502).json({ error: `FreeSWITCH rejected stop: ${reason}` });
+  }
+
   setConferenceRecordingPath(room, null);
   res.json({ ok: true });
 });
