@@ -24,6 +24,10 @@ export function initSocket(httpServer) {
   setSocketIO(io);
 
   io.on('connection', (socket) => {
+    // Immediately send ESL status to every new connection so the UI header
+    // pill shows the correct connected/disconnected state before authenticate.
+    socket.emit('esl.status', eslStatus());
+
     // Authenticate socket with JWT
     socket.on('authenticate', ({ token } = {}) => {
       if (!token) return socket.emit('auth.error', 'No token');
@@ -33,6 +37,8 @@ export function initSocket(httpServer) {
         socket.join(`user:${user.id}`);
         socket.join(`role:${user.role}`);
         socket.emit('authenticated', { userId: user.id, role: user.role });
+        // Re-send ESL status now that we know the user — also seeds their
+        // initial state with the current esl host/port which the UI displays.
         socket.emit('esl.status', eslStatus());
       } catch {
         socket.emit('auth.error', 'Invalid token');

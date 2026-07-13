@@ -43,89 +43,166 @@ function registryGetOrCreate(confName) {
   return conferenceRegistry.get(confName);
 }
 
-// ─── Parse `conference list` (all conferences) ──────────────────────────────
+// ─── ESL command with explicit timeout ──────────────────────────────────────
 //
-// FreeSWITCH `conference list` (bgapi) output when conferences are active:
+// bgapi callbacks can silently hang if the ESL connection drops between the
+// isConn check and the actual send. Without a timeout the caller waits forever,
+// blocking every HTTP request that arrives during that window.
+function eslCommandTimeout(cmd, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    if (!conn || !isConn) return reject(new Error('ESL not connected'));
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`ESL bgapi timeout after ${timeoutMs}ms: ${cmd}`));
+    }, timeoutMs);
+
+    conn.bgapi(cmd, (res) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(res?.getBody?.() || '');
+    });
+  });
+}
+
+// ─── Discover all active conference names ────────────────────────────────────
 //
-//   Conference 3010 (2 members rate: 8000 flags: dynamic)
-//   1;<uuid>;CallerName;1001;hear|speak;0;false;0;300;300;300;0;false
-//   2;<uuid>;CallerName;7001004;hear|speak|mute;0;false;0;300;300;300;0;false
+// Uses `show conferences` (the reliable cross-version FreeSWITCH API) instead
+// of `conference list` which behaves differently across FS versions — some
+// treat the first token as a required room name and return +ERR when omitted,
+// others silently return an empty body.
 //
-// When no conferences exist FreeSWITCH returns "+OK" or an empty body.
-async function confListAll() {
+// `show conferences` returns CSV:
+//   name,rate,running,answered,members,locked,dynamicFlagString
+//   3010,8000,true,true,2,false,none
+// or when empty:
+//   +OK 0 row(s) in set (0.00 sec)
+async function listConferenceNames() {
   try {
-    const raw = await eslCommand('conference list');
-    if (!raw || /^\+OK/.test(raw.trim()) || raw.includes('+ERR')) return [];
-    const result = [];
-    let current = null;
-    for (const line of raw.split('\n')) {
+    const raw = await eslCommandTimeout('show conferences');
+    if (!raw) return [];
+    // Empty set — several possible formats
+    if (/0 row/i.test(raw) || /^\+OK\s*$/m.test(raw.trim())) return [];
+
+    const names = [];
+    for (const line of raw.trim().split('\n')) {
       const t = line.trim();
       if (!t) continue;
-      // Header: "Conference <name> (<n> member[s] ...)"
-      const hdr = t.match(/^Conference\s+(\S+)\s+\(\d+\s+members?/i);
-      if (hdr) {
-        current = { name: hdr[1], members: [] };
-        result.push(current);
-        continue;
-      }
-      // Member row: id;uuid;callerName;callerNum;flags;...
-      if (current && t.includes(';')) {
-        const p = t.split(';');
-        if (p.length < 4) continue;
-        const flags = (p[4] || '').split('|');
-        current.members.push({
-          id:        p[0]?.trim(),
-          uuid:      p[1]?.trim(),
-          callerName: p[2]?.trim() || '',
-          callerNum:  p[3]?.trim() || '',
-          muted:      flags.includes('mute') || !flags.includes('speak'),
-          deaf:       flags.includes('deaf'),
-          moderator:  flags.includes('moderator'),
-          talking:    false, // talking state from events only; list doesn't carry live audio
-          floor:      flags.includes('floor'),
-          joinedAt:   null,
-        });
-      }
+      // Skip the CSV header row and the trailing "N row(s) in set" summary
+      if (t.startsWith('name,') || /row\(s\) in set/i.test(t) || t.startsWith('+')) continue;
+      const cols = t.split(',');
+      if (cols[0]) names.push(cols[0].trim());
+    }
+    return names;
+  } catch (err) {
+    console.warn('[esl] listConferenceNames failed:', err.message);
+    return [];
+  }
+}
+
+// ─── Parse `conference list` (all conferences) ──────────────────────────────
+//
+// Two-step approach for reliability:
+//  1. `show conferences`     → discover active conference names
+//  2. `conference <n> list`  → get members (reuses the already-proven confList)
+//
+// This avoids `conference list` (no room name) which returns +ERR on some FS
+// versions when interpreted as "conference <name> list" with name="list".
+async function confListAll() {
+  try {
+    const names = await listConferenceNames();
+    if (!names.length) return [];
+
+    console.log(`[esl] confListAll: discovered ${names.length} conference(s): ${names.join(', ')}`);
+
+    const result = [];
+    for (const name of names) {
+      const members = await confList(name).catch(err => {
+        console.warn(`[esl] confListAll: member list for ${name} failed:`, err.message);
+        return [];
+      });
+      result.push({ name, members });
     }
     return result;
-  } catch {
+  } catch (err) {
+    console.warn('[esl] confListAll failed:', err.message);
     return [];
   }
 }
 
 // ─── Seed the in-memory registry from FreeSWITCH live state ─────────────────
 //
-// Called on ESL connect (recovers from backend restart mid-call) and from the
-// /monitoring/conferences API endpoint when the snapshot is empty.
+// Called:
+//  • 800 ms after ESL connect (catches backend restarts mid-call)
+//  • Every 30 s by startBackgroundJobs (ongoing drift correction)
+//  • On demand by GET /monitoring/conferences when snapshot is empty
+//
+// Each call is idempotent: conferences already in the registry are not
+// re-added, and no duplicate socket events are emitted for them.
 export async function seedConferenceRegistry() {
-  if (!isConn) return [];
+  if (!isConn) {
+    console.log('[esl] seedConferenceRegistry: skipped — ESL not connected');
+    return [];
+  }
+
+  console.log('[esl] seedConferenceRegistry: querying FreeSWITCH live state…');
   const conferences = await confListAll();
-  let added = 0;
+
+  if (conferences.length === 0) {
+    console.log('[esl] seedConferenceRegistry: FreeSWITCH reports no active conferences');
+    return [];
+  }
+
+  let addedConfs = 0;
+  let addedMembers = 0;
+
   for (const conf of conferences) {
+    const isNew = !conferenceRegistry.has(conf.name);
     const entry = registryGetOrCreate(conf.name);
+
+    if (isNew) {
+      addedConfs++;
+      emit('conference.created', { confName: conf.name });
+    }
+
     for (const member of conf.members) {
       if (!entry.members.has(member.id)) {
-        entry.members.set(member.id, member);
-        added++;
-      }
-    }
-  }
-  if (conferences.length > 0) {
-    console.log(`[esl] Registry seeded: ${conferences.length} conference(s), ${added} member(s) restored`);
-    // Emit synthetic events so connected UIs update without a page refresh
-    for (const conf of conferences) {
-      emit('conference.created', { confName: conf.name });
-      for (const member of conf.members) {
+        // Normalise member shape so registry always has consistent fields
+        entry.members.set(member.id, {
+          id:         member.id,
+          uuid:       member.uuid       || '',
+          callerNum:  member.callerNum  || '',
+          callerName: member.callerName || '',
+          muted:      member.muted      ?? false,
+          deaf:       member.deaf       ?? false,
+          moderator:  member.moderator  ?? false,
+          talking:    false,
+          floor:      false,
+          volIn:      0,
+          volOut:     0,
+          energy:     0,
+          joinedAt:   member.joinedAt   || null,
+        });
+        addedMembers++;
         emit('conference.member.joined', {
-          confName: conf.name,
-          member:   member.id,
-          callerNum:  member.callerNum,
-          callerName: member.callerName,
-          memberData: member,
+          confName:  conf.name,
+          member:    member.id,
+          callerNum:  member.callerNum  || '',
+          callerName: member.callerName || '',
+          memberData: entry.members.get(member.id),
         });
       }
     }
   }
+
+  console.log(
+    `[esl] seedConferenceRegistry: ${conferences.length} conf(s) found — ` +
+    `added ${addedConfs} new conf(s), ${addedMembers} new member(s) to registry`
+  );
+
   return conferences;
 }
 
@@ -418,7 +495,11 @@ async function persistEvent(action, details) {
 export function connect() {
   if (conn) { try { conn.end(); } catch {} }
 
-  console.log(`[esl] Connecting to ${config.esl.host}:${config.esl.port}…`);
+  // Log the resolved host/port so we can immediately verify env vars loaded
+  console.log(
+    `[esl] Connecting to ${config.esl.host}:${config.esl.port}` +
+    ` (ESL_HOST=${process.env.ESL_HOST || '(unset — using default)'})`
+  );
 
   conn = new Connection(
     config.esl.host,
@@ -478,13 +559,12 @@ function scheduleReconnect() {
 }
 
 // ─── Execute an ESL command, return result ───────────────────
+//
+// Uses a 10-second timeout so a stale/dropped connection doesn't hang
+// indefinitely. Callers that need a different timeout use eslCommandTimeout
+// directly.
 export function eslCommand(cmd) {
-  return new Promise((resolve, reject) => {
-    if (!conn || !isConn) return reject(new Error('ESL not connected'));
-    conn.bgapi(cmd, (res) => {
-      resolve(res?.getBody?.() || '');
-    });
-  });
+  return eslCommandTimeout(cmd, 10_000);
 }
 
 // ─── Originate a call leg ────────────────────────────────────
@@ -694,10 +774,12 @@ export async function confList(confName) {
     for (const line of raw.trim().split('\n')) {
       const parts = line.split(';');
       if (parts.length < 4) continue;
-      const flags   = (parts[4] || '').split('|');
-      const muted   = !flags.includes('speak') || flags.includes('mute');
-      const talking = flags.includes('talking');
-      const deaf    = flags.includes('deaf');
+      const flags     = (parts[4] || '').split('|');
+      const muted     = !flags.includes('speak') || flags.includes('mute');
+      const talking   = flags.includes('talking');
+      const deaf      = flags.includes('deaf');
+      const moderator = flags.includes('moderator');
+      const floor     = flags.includes('floor');
       members.push({
         id:         parts[0]?.trim(),
         uuid:       parts[1]?.trim(),
@@ -706,8 +788,11 @@ export async function confList(confName) {
         muted,
         talking,
         deaf,
+        moderator,
+        floor,
         flags:      parts[4]?.trim() || '',
         joinTs:     parts[9]?.trim() || null,
+        joinedAt:   null, // live; populated by add-member event timestamps
       });
     }
     return members;
@@ -856,15 +941,21 @@ export async function reconcileAllActiveIncidents() {
 //
 // server.js calls this once during the boot sequence. Nothing else should.
 export function startBackgroundJobs() {
-  // Heartbeat: ping FS every 30 s
+  // Heartbeat: ping FS every 30 s + drift-correction re-seed
   setInterval(async () => {
     if (!isConn) return;
     try {
-      await eslCommand('status');
+      await eslCommandTimeout('status', 5000);
       updateHeartbeat(true);
     } catch {
       updateHeartbeat(false);
     }
+    // Re-seed on every heartbeat tick so the registry never drifts more
+    // than 30 s behind FreeSWITCH — catches any add-member/del-member event
+    // that was dropped while ESL was briefly disconnected.
+    seedConferenceRegistry().catch(err =>
+      console.warn('[esl] periodic reseed failed:', err.message)
+    );
   }, 30_000);
 
   // 60-second safety sweep — catches anything the conference-destroy event

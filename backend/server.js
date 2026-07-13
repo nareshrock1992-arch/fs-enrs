@@ -1,4 +1,17 @@
 import 'dotenv/config';
+
+// ── Global safety net ─────────────────────────────────────────
+// Unhandled promise rejections that escape asyncHandler or try/catch would
+// silently disappear in Node 20+ (no crash, no log). Surface them so they
+// appear in PM2 logs and can be investigated.
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[boot] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[boot] Uncaught exception — process will exit:', err);
+  process.exit(1);
+});
+
 import http            from 'http';
 import express         from 'express';
 import cors            from 'cors';
