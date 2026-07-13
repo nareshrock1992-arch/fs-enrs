@@ -20,11 +20,12 @@ let reconnectCount  = 0;
 // ─── In-memory conference registry ──────────────────────────────────────────
 //
 // Authoritative real-time picture of every active FreeSWITCH conference and
-// its members. Updated purely by conference::maintenance ESL events — never
-// by polling. The monitoring API endpoint reads from here.
+// its members. Updated by conference::maintenance ESL events + seedConferenceRegistry.
+// The monitoring API endpoint reads from here (no DB query for live data).
 //
 // Shape: confName → {
 //   name, createdAt, locked, recording, floorHolder,
+//   rate, flags,
 //   members: Map<memberId, MemberRecord>
 // }
 const conferenceRegistry = new Map();
@@ -37,6 +38,8 @@ function registryGetOrCreate(confName) {
       locked:      false,
       recording:   false,
       floorHolder: null,
+      rate:        null,   // Hz — populated by seedConferenceRegistry from FS header
+      flags:       null,   // e.g. "dynamic" — populated by seedConferenceRegistry
       members:     new Map(),
     });
   }
@@ -70,18 +73,29 @@ function eslCommandTimeout(cmd, timeoutMs = 5000) {
 
 // ─── Parse multi-conference `conference list` output ────────────────────────
 //
-// `conference list` (no room name) emits all active conferences in one shot.
-// Confirmed output format from this FreeSWITCH installation:
+// `conference list` (no room name) lists every active conference in one shot.
+//
+// FreeSWITCH output (both "+OK Conference" and bare "Conference" headers seen
+// across FS versions — we accept either):
 //
 //   +OK Conference 3010 (2 members rate: 8000 flags: dynamic)
-//   64;6b13-uuid;7001004;7001004;hear|speak|floor|moderator|...
-//   63;7c22-uuid;1001;1001;hear|speak;...
-//   +OK Conference 3011 (1 member rate: 8000 flags: dynamic)
-//   65;...
+//   64;6b13-uuid;7001004;7001004;hear|speak|floor|moderator|talking
+//   63;7c22-uuid;1001;1001;hear|speak
 //
-// Member fields (;-separated):
-//   0=id  1=uuid  2=callerName  3=callerNum  4=flags  5=talking  6=volIn
-//   7=volOut  8=energy  9=joinTs
+// Member fields (;-separated, 0-indexed):
+//   0  = member_id          e.g. 64
+//   1  = channel uuid       e.g. 6b13-...
+//   2  = caller_id_name     e.g. 7001004
+//   3  = caller_id_number   e.g. 7001004
+//   4  = flags              pipe-separated: hear|speak|floor|moderator|talking
+//   5  = talking            0 or 1 (some FS versions move this here)
+//   6  = vol_in
+//   7  = vol_out
+//   8  = energy_score
+//   9  = join_epoch
+//
+// If parsing fails for any line we log the raw line and skip it — never
+// silently continue and never render raw output to the UI.
 function parseConferenceListAll(raw) {
   const conferences = [];
   let current = null;
@@ -90,41 +104,69 @@ function parseConferenceListAll(raw) {
     const t = line.trim();
     if (!t) continue;
 
-    // Header: "+OK Conference 3010 (2 members rate: 8000 flags: dynamic)"
-    const hdr = /^\+OK Conference (\S+) \((\d+) member/i.exec(t);
+    // Conference header — accept with or without leading "+OK "
+    // "+OK Conference 3010 (2 members rate: 8000 flags: dynamic)"
+    // "Conference 3010 (2 members rate: 8000 flags: dynamic)"
+    const hdr = /^(?:\+OK )?Conference (\S+) \((\d+) member/i.exec(t);
     if (hdr) {
       if (current) conferences.push(current);
-      current = { name: hdr[1], members: [] };
-      console.log(`[esl] confListAll: detected conference "${hdr[1]}" (${hdr[2]} member(s))`);
+      const rateMatch  = /rate:\s*(\d+)/.exec(t);
+      const flagsMatch = /flags:\s*(\S+)/.exec(t);
+      current = {
+        name:        hdr[1],
+        memberCount: parseInt(hdr[2], 10),
+        rate:        rateMatch  ? parseInt(rateMatch[1],  10) : null,
+        flags:       flagsMatch ? flagsMatch[1] : null,
+        members:     [],
+      };
+      console.log(
+        `[esl] confListAll: conference detected — name="${current.name}"` +
+        ` members=${current.memberCount} rate=${current.rate ?? 'unknown'}` +
+        ` flags=${current.flags ?? 'unknown'}`
+      );
       continue;
     }
 
-    // Member row: starts with numeric id
+    // Member row — starts with a numeric member ID
     if (current && /^\d+;/.test(t)) {
       const parts = t.split(';');
-      if (parts.length >= 4) {
-        const flags     = (parts[4] || '').split('|');
-        const member = {
-          id:         parts[0].trim(),
-          uuid:       parts[1].trim(),
-          callerName: parts[2].trim() || '',
-          callerNum:  parts[3].trim() || '',
-          muted:      !flags.includes('speak') || flags.includes('mute'),
-          talking:    flags.includes('talking'),
-          deaf:       flags.includes('deaf'),
-          moderator:  flags.includes('moderator'),
-          floor:      flags.includes('floor'),
-          flags:      parts[4]?.trim() || '',
-          joinTs:     parts[9]?.trim() || null,
-          joinedAt:   null,
-        };
-        current.members.push(member);
-        console.log(`[esl] confListAll: member inserted — conf="${current.name}" id=${member.id} num=${member.callerNum} flags=${member.flags}`);
+      if (parts.length < 4) {
+        console.warn(`[esl] confListAll: malformed member line in conf "${current.name}" — raw: ${t}`);
+        continue;
       }
+      const rawFlags = parts[4]?.trim() || '';
+      const flags    = rawFlags.split('|');
+      // Some FS versions encode talking as a flag; others put 0/1 in parts[5]
+      const talking  = flags.includes('talking') || parts[5] === '1';
+      const member = {
+        id:         parts[0].trim(),
+        uuid:       parts[1].trim(),
+        callerName: parts[2].trim() || '',
+        callerNum:  parts[3].trim() || '',
+        muted:      !flags.includes('speak') || flags.includes('mute'),
+        talking,
+        deaf:       flags.includes('deaf'),
+        moderator:  flags.includes('moderator'),
+        floor:      flags.includes('floor'),
+        flags:      rawFlags,
+        volIn:      parseInt(parts[6] || '0', 10)  || 0,
+        volOut:     parseInt(parts[7] || '0', 10)  || 0,
+        energy:     parseInt(parts[8] || '0', 10)  || 0,
+        joinTs:     parts[9]?.trim() || null,
+        joinedAt:   null,
+      };
+      current.members.push(member);
+      console.log(
+        `[esl] confListAll: member parsed — conf="${current.name}"` +
+        ` id=${member.id} num=${member.callerNum} flags="${member.flags}"`
+      );
       continue;
     }
 
-    // Anything else (e.g. trailing status lines) — ignore
+    // Trailing summary lines like "+OK 1 row(s) in set" — log and skip
+    if (t.startsWith('+OK') || t.startsWith('-ERR')) {
+      console.log(`[esl] confListAll: trailing line ignored — "${t}"`);
+    }
   }
 
   if (current) conferences.push(current);
@@ -133,34 +175,51 @@ function parseConferenceListAll(raw) {
 
 // ─── Enumerate all active FreeSWITCH conferences with their members ──────────
 //
-// Calls `conference list` (no room name) which lists every active conference
-// in a single response. `show conferences` is NOT used — it produces
-// `-USAGE: codec|endpoint|application|...` on this FreeSWITCH build, proving
-// that bgapi `show` requires a subcommand the installed version doesn't support.
+// Sends bgapi "conference list" (no room argument). On this FreeSWITCH build,
+// "show conferences" produces -USAGE: because `show` is handled differently
+// by bgapi on older FS versions. "conference list" (no room) is the correct
+// command — confirmed working on the FreeSWITCH CLI with:
+//   freeswitch> conference list
+//   Conference 3010 (2 members rate: 8000 flags: dynamic)
+//   64;...
 //
-// Fails loudly (throws) if FreeSWITCH responds with -USAGE: so callers can
-// distinguish "no active conferences" from "wrong command executed".
+// Throws loudly when FreeSWITCH returns -USAGE: so the caller can log it
+// rather than silently returning an empty list and hiding the error.
 async function confListAll() {
   const raw = await eslCommandTimeout('conference list', 8000);
 
-  if (!raw) return [];
-
-  if (raw.startsWith('-USAGE:')) {
-    throw new Error(`[esl] ESL command rejected by FreeSWITCH — "conference list" returned: ${raw.split('\n')[0]}`);
+  if (!raw) {
+    console.warn('[esl] confListAll: empty response from FreeSWITCH');
+    return [];
   }
 
-  // No active conferences — several possible response patterns
+  // Bad command — fail loudly so we know immediately which command is wrong
+  if (raw.trimStart().startsWith('-USAGE:') || raw.trimStart().startsWith('-ERR')) {
+    throw new Error(
+      `[esl] confListAll: FreeSWITCH rejected command — ` +
+      `raw response: ${raw.split('\n')[0].trim()}`
+    );
+  }
+
+  // No active conferences (empty room list)
   if (
-    raw.includes('No conference') ||
-    raw.includes('not found') ||
+    /no active conference/i.test(raw) ||
+    /no conference/i.test(raw)        ||
     /^\+OK\s*$/m.test(raw.trim())
   ) {
-    console.log('[esl] confListAll: FreeSWITCH reports no active conferences');
+    console.log('[esl] confListAll: no active conferences reported by FreeSWITCH');
     return [];
   }
 
   const result = parseConferenceListAll(raw);
-  console.log(`[esl] confListAll: parsed ${result.length} conference(s) from FreeSWITCH`);
+
+  if (result.length === 0) {
+    // Parsed but got nothing — log the raw output so we can diagnose
+    console.warn('[esl] confListAll: parsed 0 conferences from response. Raw output:\n' + raw);
+  } else {
+    console.log(`[esl] confListAll: parsed ${result.length} conference(s) successfully`);
+  }
+
   return result;
 }
 
@@ -193,22 +252,30 @@ export async function seedConferenceRegistry() {
     return [];
   }
 
-  let addedConfs = 0;
+  let addedConfs   = 0;
   let addedMembers = 0;
+  let updMembers   = 0;
 
   for (const conf of conferences) {
     const isNew = !conferenceRegistry.has(conf.name);
     const entry = registryGetOrCreate(conf.name);
 
+    // Always refresh rate/flags from the live header — they don't change mid-call
+    // but we may not have had them on first registry creation via an ESL event.
+    if (conf.rate  != null) entry.rate  = conf.rate;
+    if (conf.flags != null) entry.flags = conf.flags;
+
     if (isNew) {
       addedConfs++;
+      console.log(`[esl] seedConferenceRegistry: conference inserted — name="${conf.name}" rate=${conf.rate} flags=${conf.flags}`);
       emit('conference.created', { confName: conf.name });
+    } else {
+      console.log(`[esl] seedConferenceRegistry: conference updated — name="${conf.name}" members=${conf.members.length}`);
     }
 
     for (const member of conf.members) {
       if (!entry.members.has(member.id)) {
-        // Normalise member shape so registry always has consistent fields
-        entry.members.set(member.id, {
+        const rec = {
           id:         member.id,
           uuid:       member.uuid       || '',
           callerNum:  member.callerNum  || '',
@@ -216,34 +283,70 @@ export async function seedConferenceRegistry() {
           muted:      member.muted      ?? false,
           deaf:       member.deaf       ?? false,
           moderator:  member.moderator  ?? false,
-          talking:    false,
-          floor:      false,
-          volIn:      0,
-          volOut:     0,
-          energy:     0,
+          talking:    member.talking    ?? false,
+          floor:      member.floor      ?? false,
+          volIn:      member.volIn      ?? 0,
+          volOut:     member.volOut     ?? 0,
+          energy:     member.energy     ?? 0,
           joinedAt:   member.joinedAt   || null,
-        });
+        };
+        entry.members.set(member.id, rec);
         addedMembers++;
+        console.log(
+          `[esl] seedConferenceRegistry: member inserted — conf="${conf.name}"` +
+          ` id=${member.id} num=${member.callerNum} mod=${member.moderator}`
+        );
         emit('conference.member.joined', {
-          confName:  conf.name,
-          member:    member.id,
+          confName:   conf.name,
+          member:     member.id,
           callerNum:  member.callerNum  || '',
           callerName: member.callerName || '',
-          memberData: entry.members.get(member.id),
+          memberData: rec,
         });
+      } else {
+        // Member already in registry — update mutable fields from live state
+        const existing = entry.members.get(member.id);
+        existing.muted     = member.muted     ?? existing.muted;
+        existing.deaf      = member.deaf      ?? existing.deaf;
+        existing.moderator = member.moderator ?? existing.moderator;
+        existing.floor     = member.floor     ?? existing.floor;
+        existing.energy    = member.energy    ?? existing.energy;
+        existing.volIn     = member.volIn     ?? existing.volIn;
+        existing.volOut    = member.volOut    ?? existing.volOut;
+        if (!existing.uuid && member.uuid) existing.uuid = member.uuid;
+        updMembers++;
+        console.log(`[esl] seedConferenceRegistry: member updated — conf="${conf.name}" id=${member.id}`);
+      }
+    }
+
+    // Remove members that are no longer in the live list (left while ESL was down)
+    for (const [id] of entry.members) {
+      if (!conf.members.find(m => m.id === id)) {
+        entry.members.delete(id);
+        console.log(`[esl] seedConferenceRegistry: member removed (no longer live) — conf="${conf.name}" id=${id}`);
+        emit('conference.member.left', { confName: conf.name, member: id });
       }
     }
   }
 
+  // Remove conferences that are no longer live
+  for (const [name] of conferenceRegistry) {
+    if (!conferences.find(c => c.name === name)) {
+      conferenceRegistry.delete(name);
+      console.log(`[esl] seedConferenceRegistry: conference removed (no longer live) — name="${name}"`);
+      emit('conference.ended', { confName: name });
+    }
+  }
+
   console.log(
-    `[esl] seedConferenceRegistry: ${conferences.length} conf(s) found — ` +
-    `added ${addedConfs} new conf(s), ${addedMembers} new member(s) to registry`
+    `[esl] seedConferenceRegistry: done — ${conferences.length} conference(s),` +
+    ` +${addedConfs} new conf(s), +${addedMembers} new member(s), ~${updMembers} updated`
   );
 
   return conferences;
 }
 
-// Returns a serialisable snapshot (no Maps)
+// Returns a serialisable snapshot (Maps converted to arrays/plain objects)
 export function getConferenceSnapshot() {
   return Array.from(conferenceRegistry.entries()).map(([name, c]) => ({
     name,
@@ -251,6 +354,8 @@ export function getConferenceSnapshot() {
     locked:      c.locked,
     recording:   c.recording,
     floorHolder: c.floorHolder,
+    rate:        c.rate,    // Hz — from FS conference header
+    flags:       c.flags,   // e.g. "dynamic" — from FS conference header
     members:     Array.from(c.members.values()),
   }));
 }
