@@ -46,13 +46,19 @@ router.get('/', adminOrOp, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+const VALID_MEDIA_TYPES = new Set(['RECORDING', 'PROMPT', 'IVR_PROMPT', 'MUSIC', 'OTHER']);
+
 router.post('/upload', adminOnly, upload.single('file'), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File required' });
+  const mediaType = req.body.type || 'RECORDING';
+  if (!VALID_MEDIA_TYPES.has(mediaType)) {
+    return res.status(400).json({ error: `Invalid type "${mediaType}". Must be one of: ${[...VALID_MEDIA_TYPES].join(', ')}` });
+  }
   const { rows } = await query(
     `INSERT INTO media_files
        (organization_id, uploaded_by_user_id, type, name, path_or_uri, size_bytes)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [req.body.organization_id, req.user.id, req.body.type || 'RECORDING',
+    [req.body.organization_id, req.user.id, mediaType,
      req.file.originalname, req.file.path, req.file.size]
   );
   res.status(201).json(rows[0]);

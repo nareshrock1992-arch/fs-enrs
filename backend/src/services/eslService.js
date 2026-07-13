@@ -68,69 +68,100 @@ function eslCommandTimeout(cmd, timeoutMs = 5000) {
   });
 }
 
-// ─── Discover all active conference names ────────────────────────────────────
+// ─── Parse multi-conference `conference list` output ────────────────────────
 //
-// Uses `show conferences` (the reliable cross-version FreeSWITCH API) instead
-// of `conference list` which behaves differently across FS versions — some
-// treat the first token as a required room name and return +ERR when omitted,
-// others silently return an empty body.
+// `conference list` (no room name) emits all active conferences in one shot.
+// Confirmed output format from this FreeSWITCH installation:
 //
-// `show conferences` returns CSV:
-//   name,rate,running,answered,members,locked,dynamicFlagString
-//   3010,8000,true,true,2,false,none
-// or when empty:
-//   +OK 0 row(s) in set (0.00 sec)
-async function listConferenceNames() {
-  try {
-    const raw = await eslCommandTimeout('show conferences');
-    if (!raw) return [];
-    // Empty set — several possible formats
-    if (/0 row/i.test(raw) || /^\+OK\s*$/m.test(raw.trim())) return [];
+//   +OK Conference 3010 (2 members rate: 8000 flags: dynamic)
+//   64;6b13-uuid;7001004;7001004;hear|speak|floor|moderator|...
+//   63;7c22-uuid;1001;1001;hear|speak;...
+//   +OK Conference 3011 (1 member rate: 8000 flags: dynamic)
+//   65;...
+//
+// Member fields (;-separated):
+//   0=id  1=uuid  2=callerName  3=callerNum  4=flags  5=talking  6=volIn
+//   7=volOut  8=energy  9=joinTs
+function parseConferenceListAll(raw) {
+  const conferences = [];
+  let current = null;
 
-    const names = [];
-    for (const line of raw.trim().split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      // Skip the CSV header row and the trailing "N row(s) in set" summary
-      if (t.startsWith('name,') || /row\(s\) in set/i.test(t) || t.startsWith('+')) continue;
-      const cols = t.split(',');
-      if (cols[0]) names.push(cols[0].trim());
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+
+    // Header: "+OK Conference 3010 (2 members rate: 8000 flags: dynamic)"
+    const hdr = /^\+OK Conference (\S+) \((\d+) member/i.exec(t);
+    if (hdr) {
+      if (current) conferences.push(current);
+      current = { name: hdr[1], members: [] };
+      console.log(`[esl] confListAll: detected conference "${hdr[1]}" (${hdr[2]} member(s))`);
+      continue;
     }
-    return names;
-  } catch (err) {
-    console.warn('[esl] listConferenceNames failed:', err.message);
-    return [];
+
+    // Member row: starts with numeric id
+    if (current && /^\d+;/.test(t)) {
+      const parts = t.split(';');
+      if (parts.length >= 4) {
+        const flags     = (parts[4] || '').split('|');
+        const member = {
+          id:         parts[0].trim(),
+          uuid:       parts[1].trim(),
+          callerName: parts[2].trim() || '',
+          callerNum:  parts[3].trim() || '',
+          muted:      !flags.includes('speak') || flags.includes('mute'),
+          talking:    flags.includes('talking'),
+          deaf:       flags.includes('deaf'),
+          moderator:  flags.includes('moderator'),
+          floor:      flags.includes('floor'),
+          flags:      parts[4]?.trim() || '',
+          joinTs:     parts[9]?.trim() || null,
+          joinedAt:   null,
+        };
+        current.members.push(member);
+        console.log(`[esl] confListAll: member inserted — conf="${current.name}" id=${member.id} num=${member.callerNum} flags=${member.flags}`);
+      }
+      continue;
+    }
+
+    // Anything else (e.g. trailing status lines) — ignore
   }
+
+  if (current) conferences.push(current);
+  return conferences;
 }
 
-// ─── Parse `conference list` (all conferences) ──────────────────────────────
+// ─── Enumerate all active FreeSWITCH conferences with their members ──────────
 //
-// Two-step approach for reliability:
-//  1. `show conferences`     → discover active conference names
-//  2. `conference <n> list`  → get members (reuses the already-proven confList)
+// Calls `conference list` (no room name) which lists every active conference
+// in a single response. `show conferences` is NOT used — it produces
+// `-USAGE: codec|endpoint|application|...` on this FreeSWITCH build, proving
+// that bgapi `show` requires a subcommand the installed version doesn't support.
 //
-// This avoids `conference list` (no room name) which returns +ERR on some FS
-// versions when interpreted as "conference <name> list" with name="list".
+// Fails loudly (throws) if FreeSWITCH responds with -USAGE: so callers can
+// distinguish "no active conferences" from "wrong command executed".
 async function confListAll() {
-  try {
-    const names = await listConferenceNames();
-    if (!names.length) return [];
+  const raw = await eslCommandTimeout('conference list', 8000);
 
-    console.log(`[esl] confListAll: discovered ${names.length} conference(s): ${names.join(', ')}`);
+  if (!raw) return [];
 
-    const result = [];
-    for (const name of names) {
-      const members = await confList(name).catch(err => {
-        console.warn(`[esl] confListAll: member list for ${name} failed:`, err.message);
-        return [];
-      });
-      result.push({ name, members });
-    }
-    return result;
-  } catch (err) {
-    console.warn('[esl] confListAll failed:', err.message);
+  if (raw.startsWith('-USAGE:')) {
+    throw new Error(`[esl] ESL command rejected by FreeSWITCH — "conference list" returned: ${raw.split('\n')[0]}`);
+  }
+
+  // No active conferences — several possible response patterns
+  if (
+    raw.includes('No conference') ||
+    raw.includes('not found') ||
+    /^\+OK\s*$/m.test(raw.trim())
+  ) {
+    console.log('[esl] confListAll: FreeSWITCH reports no active conferences');
     return [];
   }
+
+  const result = parseConferenceListAll(raw);
+  console.log(`[esl] confListAll: parsed ${result.length} conference(s) from FreeSWITCH`);
+  return result;
 }
 
 // ─── Seed the in-memory registry from FreeSWITCH live state ─────────────────
@@ -149,7 +180,13 @@ export async function seedConferenceRegistry() {
   }
 
   console.log('[esl] seedConferenceRegistry: querying FreeSWITCH live state…');
-  const conferences = await confListAll();
+  let conferences;
+  try {
+    conferences = await confListAll();
+  } catch (err) {
+    console.error('[esl] seedConferenceRegistry: confListAll failed —', err.message);
+    return [];
+  }
 
   if (conferences.length === 0) {
     console.log('[esl] seedConferenceRegistry: FreeSWITCH reports no active conferences');
@@ -770,6 +807,9 @@ export async function confList(confName) {
   try {
     const raw = await eslCommand(`conference ${confName} list`);
     if (!raw || raw.includes('No conference') || raw.includes('not found')) return [];
+    if (raw.startsWith('-USAGE:')) {
+      throw new Error(`ESL command rejected: "conference ${confName} list" → ${raw.split('\n')[0]}`);
+    }
     const members = [];
     for (const line of raw.trim().split('\n')) {
       const parts = line.split(';');
@@ -813,7 +853,8 @@ export async function confList(confName) {
 export async function getConferenceMemberCount(room) {
   if (!room) return 0;
   try {
-    const res = await eslCommand(`conference ${room} list count`);
+    const res = await eslCommand(`conference ${room} count`);
+    if (!res || res.startsWith('-USAGE:') || res.startsWith('-ERR')) return 0;
     const match = /^(\d+)/.exec((res || '').trim());
     return match ? Number(match[1]) : 0;
   } catch {
