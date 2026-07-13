@@ -14,6 +14,7 @@ import {
   confTransfer, confLock, confUnlock,
   confRecord, confRecordPause, confRecordStop,
   confPlay, confSay, confInvite, confTerminate,
+  setConferenceRecordingPath,
   eslStatus,
 } from '../services/eslService.js';
 
@@ -88,23 +89,33 @@ export const unlockConference = asyncHandler(async (req, res) => {
 });
 
 export const startRecording = asyncHandler(async (req, res) => {
-  const { path: recPath } = req.body;
-  if (!recPath) return res.status(400).json({ error: 'path required' });
-  await confRecord(req.params.room, recPath);
-  res.json({ ok: true });
+  const room = req.params.room;
+  // Auto-generate a path when the caller doesn't specify one.
+  // The path includes the room name + ISO timestamp to guarantee uniqueness.
+  const ts   = new Date().toISOString().replace(/[:.]/g, '-');
+  const recPath = req.body?.path || `/var/lib/freeswitch/recordings/conf_${room}_${ts}.wav`;
+  await confRecord(room, recPath);
+  // Optimistically update registry — confirmed by start-recording ESL event
+  setConferenceRecordingPath(room, recPath);
+  res.json({ ok: true, recordingPath: recPath });
 });
 
 export const pauseRecording = asyncHandler(async (req, res) => {
-  const { path: recPath } = req.body;
-  if (!recPath) return res.status(400).json({ error: 'path required' });
-  await confRecordPause(req.params.room, recPath);
+  const room = req.params.room;
+  const snap = getConferenceSnapshot().find(c => c.name === room);
+  const recPath = req.body?.path || snap?.recordingPath;
+  if (!recPath) return res.status(400).json({ error: 'No active recording path known for this conference' });
+  await confRecordPause(room, recPath);
   res.json({ ok: true });
 });
 
 export const stopRecording = asyncHandler(async (req, res) => {
-  const { path: recPath } = req.body;
-  if (!recPath) return res.status(400).json({ error: 'path required' });
-  await confRecordStop(req.params.room, recPath);
+  const room = req.params.room;
+  const snap = getConferenceSnapshot().find(c => c.name === room);
+  const recPath = req.body?.path || snap?.recordingPath;
+  if (!recPath) return res.status(400).json({ error: 'No active recording path known for this conference' });
+  await confRecordStop(room, recPath);
+  setConferenceRecordingPath(room, null);
   res.json({ ok: true });
 });
 

@@ -156,10 +156,16 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
         </div>
         {/* Status badges */}
         <div className="flex flex-col items-end gap-1 shrink-0">
-          {conf.recording && (
+          {conf.recordingState === 'ACTIVE' && (
             <span className="text-[8px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500
                              font-bold flex items-center gap-0.5 animate-pulse">
               <Radio size={6} /> REC
+            </span>
+          )}
+          {conf.recordingState === 'PAUSED' && (
+            <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
+                             font-bold flex items-center gap-0.5">
+              <Pause size={6} /> PAUSE
             </span>
           )}
           {conf.locked && (
@@ -276,7 +282,7 @@ function ParticipantTable({ members, room, now }) {
       <table className="w-full text-left border-collapse">
         <thead>
           <tr>
-            {['ID', 'Name', 'Number', 'Role', 'Audio', 'Speaking', 'Energy', 'Joined', 'UUID', 'Actions'].map(h => (
+            {['ID', 'Display Name', 'Extension', 'Role', 'Audio', 'Speaking', 'Energy', 'Joined', 'Actions'].map(h => (
               <th key={h}
                   className="px-2.5 py-2 text-[9px] font-bold uppercase tracking-wider
                              text-text-muted bg-surface-hover/40 whitespace-nowrap
@@ -288,11 +294,9 @@ function ParticipantTable({ members, room, now }) {
         </thead>
         <tbody>
           {sorted.map(m => {
-            const name       = m.callerName || '';
-            const num        = m.callerNum  || '';
-            const display    = name || num || `#${m.id}`;
-            const joinSecs   = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
-            const shortUuid  = m.uuid ? m.uuid.split('-')[0] : '—';
+            const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
+            const ext      = m.extension   || m.callerNum  || '';
+            const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
 
             return (
               <tr key={m.id}
@@ -324,14 +328,14 @@ function ParticipantTable({ members, room, now }) {
                       </div>
                     )}
                     <span className="text-xs font-medium text-text-primary truncate">
-                      {name || <span className="text-text-muted italic text-[10px]">—</span>}
+                      {display}
                     </span>
                   </div>
                 </td>
 
-                {/* Number */}
+                {/* Extension */}
                 <td className="px-2.5 py-2">
-                  <span className="text-[10px] font-mono text-text-secondary">{num || '—'}</span>
+                  <span className="text-[10px] font-mono text-text-secondary">{ext || '—'}</span>
                 </td>
 
                 {/* Role */}
@@ -397,13 +401,6 @@ function ParticipantTable({ members, room, now }) {
                 <td className="px-2.5 py-2 whitespace-nowrap">
                   <span className="text-[9px] font-mono text-text-muted tabular-nums">
                     {joinSecs != null ? fmtDur(joinSecs) : '—'}
-                  </span>
-                </td>
-
-                {/* UUID (truncated) */}
-                <td className="px-2.5 py-2">
-                  <span className="text-[9px] font-mono text-text-muted/60" title={m.uuid}>
-                    {shortUuid}
                   </span>
                 </td>
 
@@ -496,13 +493,34 @@ function CenterPanel({ conf, now }) {
           </div>
           <div>
             <MetaItem label="Recording">
-              {conf.recording ? (
+              {conf.recordingState === 'ACTIVE' ? (
+                <div className="flex flex-col gap-0.5">
+                  <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
+                                   bg-red-500/15 text-red-500 font-bold animate-pulse w-fit">
+                    <Radio size={8} /> RECORDING
+                  </span>
+                  {conf.recordingPath && (
+                    <span className="text-[9px] text-text-muted truncate max-w-[160px]" title={conf.recordingPath}>
+                      {conf.recordingPath.split('/').pop()}
+                    </span>
+                  )}
+                </div>
+              ) : conf.recordingState === 'PAUSED' ? (
                 <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
-                                 bg-red-500/15 text-red-500 font-bold animate-pulse w-fit">
-                  <Radio size={8} /> ACTIVE
+                                 bg-amber-500/15 text-amber-500 font-bold w-fit">
+                  <Pause size={8} /> PAUSED
                 </span>
+              ) : conf.recordingState === 'FAILED' ? (
+                <div className="flex flex-col gap-0.5">
+                  <span className="flex items-center gap-1 text-[10px] text-red-500 font-bold">
+                    ✗ Failed
+                  </span>
+                  {conf.recordingError && (
+                    <span className="text-[9px] text-red-400">{conf.recordingError}</span>
+                  )}
+                </div>
               ) : (
-                <span className="text-text-muted text-[10px]">None</span>
+                <span className="text-text-muted text-[10px]">Off</span>
               )}
             </MetaItem>
             <MetaItem label="Lock State">
@@ -516,7 +534,15 @@ function CenterPanel({ conf, now }) {
               )}
             </MetaItem>
             <MetaItem label="Type">
-              <span className="font-mono text-[10px]">{conf.flags || 'dynamic'}</span>
+              <div className="flex flex-wrap gap-1">
+                {conf.isDynamic  && <span className="text-[9px] px-1.5 py-px rounded bg-blue-500/15 text-blue-400 font-bold">Dynamic</span>}
+                {conf.isRunning  && <span className="text-[9px] px-1.5 py-px rounded bg-emerald-500/15 text-emerald-500 font-bold">Running</span>}
+                {conf.isAnswered && <span className="text-[9px] px-1.5 py-px rounded bg-slate-500/15 text-slate-400 font-bold">Answered</span>}
+                {conf.isModerated && <span className="text-[9px] px-1.5 py-px rounded bg-purple-500/15 text-purple-400 font-bold">Moderated</span>}
+                {!conf.isDynamic && !conf.isRunning && !conf.isModerated && (
+                  <span className="text-[9px] text-text-muted">Standard</span>
+                )}
+              </div>
             </MetaItem>
             {conf.incident?.organization_name && (
               <MetaItem label="Organization">
@@ -583,8 +609,11 @@ function RightPanel({ conf }) {
   const [showSay,    setShowSay]    = useState(false);
   const [showInvite, setShowInvite] = useState(false);
 
-  const disabled = !conf;
-  const name     = conf?.name;
+  const disabled       = !conf;
+  const name           = conf?.name;
+  const recState       = conf?.recordingState || 'OFF';
+  const isRecording    = recState === 'ACTIVE';
+  const isPaused       = recState === 'PAUSED';
 
   async function act(fn, ...args) {
     if (!name) return;
@@ -592,20 +621,21 @@ function RightPanel({ conf }) {
     catch (e) { alert('Command failed: ' + (e.message || 'Unknown error')); }
   }
 
-  function recPath() {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    return `/var/lib/freeswitch/recordings/conf_${name}_${ts}.wav`;
-  }
-
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <Zap size={12} className="text-amber-500" />
         <span className="text-xs font-bold text-text-primary">Controls</span>
-        {conf?.recording && (
+        {conf?.recordingState === 'ACTIVE' && (
           <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
                            bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5">
             <Radio size={7} /> REC
+          </span>
+        )}
+        {conf?.recordingState === 'PAUSED' && (
+          <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
+                           bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5">
+            <Pause size={7} /> PAUSED
           </span>
         )}
         {!conf && (
@@ -644,15 +674,35 @@ function RightPanel({ conf }) {
             Recording
           </p>
           <div className="space-y-1.5">
-            {!conf?.recording ? (
+            {/* State indicator */}
+            {isRecording && (
+              <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-medium">
+                <Radio size={9} className="animate-pulse" /> Recording active
+              </div>
+            )}
+            {isPaused && (
+              <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium">
+                <Pause size={9} /> Recording paused
+              </div>
+            )}
+
+            {/* Action buttons — state-aware */}
+            {!isRecording && !isPaused && (
               <CtrlBtn icon={Radio} label="Start Recording" disabled={disabled} wide
-                onClick={() => act(api.monitoring.recordStart, recPath())} />
-            ) : (
+                onClick={() => act(api.monitoring.recordStart)} />
+            )}
+            {(isRecording || isPaused) && (
               <>
-                <CtrlBtn icon={Pause} label="Pause Recording" active wide
-                  onClick={() => act(api.monitoring.recordPause, conf.recording)} />
+                {isRecording && (
+                  <CtrlBtn icon={Pause} label="Pause" active wide
+                    onClick={() => act(api.monitoring.recordPause)} />
+                )}
+                {isPaused && (
+                  <CtrlBtn icon={Radio} label="Resume" wide
+                    onClick={() => act(api.monitoring.recordStart)} />
+                )}
                 <CtrlBtn icon={Square} label="Stop Recording" variant="danger" wide
-                  onClick={() => act(api.monitoring.recordStop, conf.recording)} />
+                  onClick={() => act(api.monitoring.recordStop)} />
               </>
             )}
           </div>
@@ -939,9 +989,19 @@ export default function Monitoring() {
         setConferences(prev => {
           if (prev.find(c => c.name === confName)) return prev;
           return [...prev, {
-            name: confName, members: [], locked: false,
-            recording: false, rate: null, flags: null,
-            createdAt: new Date().toISOString(),
+            name:           confName,
+            members:        [],
+            locked:         false,
+            recording:      false,
+            recordingState: 'OFF',
+            recordingPath:  null,
+            recordingError: null,
+            rate:           null,
+            isDynamic:      true,
+            isRunning:      false,
+            isAnswered:     false,
+            isModerated:    false,
+            createdAt:      new Date().toISOString(),
           }];
         });
         pushEvent('conference.created', `Conference ${confName} created`);
@@ -951,20 +1011,28 @@ export default function Monitoring() {
         setSelectedConf(s => s === confName ? null : s);
         pushEvent('conference.ended', `Conference ${confName} ended`);
       },
-      'conference.member.joined': ({ confName, memberData, callerNum, callerName }) => {
+      'conference.member.joined': ({ confName, memberData, callerNum, callerName, member: memberId }) => {
         const data = memberData || {
-          id: callerNum || String(Date.now()),
-          callerNum, callerName,
-          muted: false, deaf: false, moderator: false,
-          talking: false, floor: false, energy: 0,
-          joinedAt: new Date().toISOString(),
+          id:          memberId || callerNum || String(Date.now()),
+          displayName: callerName || callerNum || `Member #${memberId}`,
+          extension:   callerNum || '',
+          callerNum:   callerNum || '',
+          callerName:  callerName || '',
+          role:        'participant',
+          muted:       false,
+          deaf:        false,
+          moderator:   false,
+          talking:     false,
+          floor:       false,
+          energy:      0,
+          joinedAt:    new Date().toISOString(),
         };
         upConf(confName, c => {
           if (c.members.find(m => m.id === data.id)) return c;
           return { ...c, members: [...c.members, data] };
         });
-        pushEvent('conference.member.joined',
-          `${callerName || callerNum || 'Member'} joined ${confName}`);
+        const display = data.displayName || callerName || callerNum || 'Member';
+        pushEvent('conference.member.joined', `${display} joined ${confName}`);
       },
       'conference.member.left': ({ confName, member: id, callerNum }) => {
         upConf(confName, c => ({
@@ -1000,10 +1068,16 @@ export default function Monitoring() {
         upConf(confName, c => ({ ...c, locked }));
         pushEvent('conference.locked', `${confName} ${locked ? 'locked' : 'unlocked'}`);
       },
-      'conference.recording': ({ confName, recording }) => {
-        upConf(confName, c => ({ ...c, recording }));
+      'conference.recording': ({ confName, recording, recordingState, recordingPath }) => {
+        upConf(confName, c => ({
+          ...c,
+          recording,
+          recordingState: recordingState || (recording ? 'ACTIVE' : 'OFF'),
+          recordingPath:  recordingPath ?? c.recordingPath,
+        }));
+        const state = recordingState || (recording ? 'ACTIVE' : 'OFF');
         pushEvent('conference.recording',
-          `${confName}: recording ${recording ? 'started' : 'stopped'}`);
+          `${confName}: recording ${state === 'ACTIVE' ? 'started' : state === 'PAUSED' ? 'paused' : 'stopped'}`);
       },
     };
 
@@ -1023,7 +1097,7 @@ export default function Monitoring() {
     [conferences]
   );
   const recordingCount  = useMemo(
-    () => conferences.filter(c => c.recording).length,
+    () => conferences.filter(c => c.recordingState === 'ACTIVE').length,
     [conferences]
   );
   const selectedConference = useMemo(
