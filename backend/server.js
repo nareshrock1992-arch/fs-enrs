@@ -21,6 +21,7 @@ import rateLimit       from 'express-rate-limit';
 
 import { config }      from './src/config/index.js';
 import { testConnection } from './src/db/pool.js';
+import { validateSchema }  from './src/db/validateSchema.js';
 import { connect as eslConnect, eslEvents, reconcileAllActiveIncidents, startBackgroundJobs } from './src/services/eslService.js';
 import { initSocket }  from './src/services/socketService.js';
 import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/services/campaignEngine.js';
@@ -102,6 +103,10 @@ async function start() {
     console.error('[boot] Cannot reach PostgreSQL — check DB_HOST/DB_NAME/DB_PASSWORD in .env');
     process.exit(1);
   }
+
+  // Verify that all required columns exist — exits with a clear message if
+  // migrations haven't been run yet (catches controller/schema drift at boot)
+  await validateSchema();
 
   // Start listening
   server.listen(config.port, () => {

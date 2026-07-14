@@ -253,8 +253,16 @@ function emitMediaEvent(event, data) {
 
 // ── List ──────────────────────────────────────────────────────────────────────
 
+// Treat undefined, null, empty string, and the literal string "undefined" as absent.
+// This guards against frontend URLSearchParams serializing JS undefined as "undefined".
+function qs(v) {
+  return (v == null || v === '' || v === 'undefined' || v === 'null') ? null : v;
+}
+
 export const listMedia = asyncHandler(async (req, res) => {
-  const { search, category, deployed, tenant_id } = req.query;
+  const search   = qs(req.query.search);
+  const category = qs(req.query.category);
+  const deployed = qs(req.query.deployed);
   const page   = Math.max(1, Number(req.query.page)  || 1);
   const limit  = Math.min(200, Number(req.query.limit) || 50);
   const offset = (page - 1) * limit;
@@ -287,9 +295,9 @@ export const listMedia = asyncHandler(async (req, res) => {
      LIMIT $5 OFFSET $6`,
     [
       req.user?.tenantId || null,
-      category || null,
-      search   || null,
-      deployed != null ? deployed === 'true' : null,
+      category,
+      search,
+      deployed !== null ? deployed === 'true' : null,
       limit, offset,
     ]
   );
@@ -301,8 +309,8 @@ export const listMedia = asyncHandler(async (req, res) => {
        AND ($2::text IS NULL OR category  = $2)
        AND ($3::text IS NULL OR (name ILIKE '%' || $3 || '%' OR description ILIKE '%' || $3 || '%' OR $3 = ANY(tags)))
        AND ($4::boolean IS NULL OR is_deployed = $4)`,
-    [req.user?.tenantId || null, category || null, search || null,
-     deployed != null ? deployed === 'true' : null]
+    [req.user?.tenantId || null, category, search,
+     deployed !== null ? deployed === 'true' : null]
   );
 
   res.json({ files: rows, total, page, limit });

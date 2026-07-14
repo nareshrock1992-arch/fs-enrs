@@ -228,7 +228,13 @@ export const api = {
 
   // Media Library (enterprise replacement for Audio Library)
   mediaLibrary: {
-    list:        (q)    => request('GET',    `/media-library?${new URLSearchParams(q || {})}`),
+    list: (q) => {
+      const p = new URLSearchParams();
+      Object.entries(q || {}).forEach(([k, v]) => {
+        if (v != null && v !== '' && v !== 'undefined') p.set(k, v);
+      });
+      return request('GET', `/media-library?${p}`);
+    },
     categories:  ()     => request('GET',    '/media-library/categories'),
     get:         (id)   => request('GET',    `/media-library/${id}`),
     upload:      (fd)   => request('POST',   '/media-library/upload', fd),
@@ -244,7 +250,13 @@ export const api = {
 
   // Conference Recording Management
   recordings: {
-    list:        (q)    => request('GET',    `/recordings?${new URLSearchParams(q || {})}`),
+    list: (q) => {
+      const p = new URLSearchParams();
+      Object.entries(q || {}).forEach(([k, v]) => {
+        if (v != null && v !== '' && v !== 'undefined') p.set(k, v);
+      });
+      return request('GET', `/recordings?${p}`);
+    },
     get:         (id)   => request('GET',    `/recordings/${id}`),
     update:      (id,d) => request('PUT',    `/recordings/${id}`, d),
     archive:     (id)   => request('POST',   `/recordings/${id}/archive`),

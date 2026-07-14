@@ -152,10 +152,30 @@ CREATE TABLE IF NOT EXISTS media_files (
                         CHECK (type IN ('RECORDING','PROMPT','MUSIC','OTHER')),
   name                VARCHAR(255) NOT NULL,
   path_or_uri         VARCHAR(512) NOT NULL,
+  -- Added by migration 007:
+  category            VARCHAR(64)  NOT NULL DEFAULT 'general',
+  fs_path             VARCHAR(512),
+  is_deployed         BOOLEAN      NOT NULL DEFAULT false,
+  deployed_at         TIMESTAMPTZ,
+  description         TEXT,
+  duration_sec        NUMERIC(8,2),
+  tenant_id           INT          REFERENCES tenants(id) ON DELETE SET NULL,
+  -- Added by migration 022:
+  sample_rate         INT,
+  channels            INT,
+  codec               VARCHAR(32),
+  bitrate_kbps        INT,
+  checksum            VARCHAR(64),
+  version             INT          NOT NULL DEFAULT 1,
+  tags                TEXT[]       NOT NULL DEFAULT '{}',
+  notes               TEXT,
+  usage_count         INT          NOT NULL DEFAULT 0,
+  -- Legacy column from 001 (kept for backward compat, use duration_sec instead):
   duration_seconds    INT,
   size_bytes          BIGINT,
   is_active           BOOLEAN      NOT NULL DEFAULT true,
   created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
   deleted_at          TIMESTAMPTZ
 );
 

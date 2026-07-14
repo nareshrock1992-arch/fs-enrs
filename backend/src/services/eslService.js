@@ -901,7 +901,6 @@ export function connect() {
         'CUSTOM conference::maintenance',
         'CHANNEL_HANGUP',
         'CHANNEL_ANSWER',
-        'CUSTOM enrs::*',
       ]);
 
       conn.on('esl::event', handleEvent);
@@ -1141,15 +1140,6 @@ export async function confSay(confName, text) {
 // ─── Invite a number into the conference ────────────────────
 export async function confInvite(confName, dialString) {
   return eslCommand(`conference ${confName} bgdial ${dialString}`);
-}
-
-// ─── Hold / unhold an entire conference ─────────────────────
-export async function confHold(confName) {
-  return eslCommand(`conference ${confName} hold`);
-}
-
-export async function confUnhold(confName) {
-  return eslCommand(`conference ${confName} unhold`);
 }
 
 // ─── List all members in a conference ───────────────────────
