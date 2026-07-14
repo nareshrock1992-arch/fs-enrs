@@ -226,7 +226,35 @@ export const api = {
     remove: (id)  => request('DELETE', `/media/${id}`),
   },
 
-  // Audio Library + Deployment
+  // Media Library (enterprise replacement for Audio Library)
+  mediaLibrary: {
+    list:        (q)    => request('GET',    `/media-library?${new URLSearchParams(q || {})}`),
+    categories:  ()     => request('GET',    '/media-library/categories'),
+    get:         (id)   => request('GET',    `/media-library/${id}`),
+    upload:      (fd)   => request('POST',   '/media-library/upload', fd),
+    scan:        ()     => request('POST',   '/media-library/scan'),
+    update:      (id,d) => request('PUT',    `/media-library/${id}`, d),
+    deploy:      (id)   => request('POST',   `/media-library/${id}/deploy`),
+    remove:      (id)   => request('DELETE', `/media-library/${id}`),
+    streamUrl:   (id,token) => `/api/v1/media-library/${id}/stream`,
+    downloadUrl: (id)   => `/api/v1/media-library/${id}/download`,
+    waveformUrl: (id)   => `/api/v1/media-library/${id}/waveform`,
+    waveform:    (id)   => request('GET',    `/media-library/${id}/waveform`),
+  },
+
+  // Conference Recording Management
+  recordings: {
+    list:        (q)    => request('GET',    `/recordings?${new URLSearchParams(q || {})}`),
+    get:         (id)   => request('GET',    `/recordings/${id}`),
+    update:      (id,d) => request('PUT',    `/recordings/${id}`, d),
+    archive:     (id)   => request('POST',   `/recordings/${id}/archive`),
+    remove:      (id)   => request('DELETE', `/recordings/${id}`),
+    streamUrl:   (id)   => `/api/v1/recordings/${id}/stream`,
+    downloadUrl: (id)   => `/api/v1/recordings/${id}/download`,
+    waveform:    (id)   => request('GET',    `/recordings/${id}/waveform`),
+  },
+
+  // Legacy deployment audio (kept for IVR Builder backward-compat)
   deployment: {
     listAudio:      (q)       => request('GET',    `/deployment/audio?${new URLSearchParams(q || {})}`),
     scanAudio:      ()        => request('POST',   '/deployment/audio/scan'),

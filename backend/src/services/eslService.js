@@ -685,6 +685,12 @@ async function handleEvent(evt) {
         recordingPath:  conf?.recordingPath || recPath,
         recordingError: null,
       });
+      // Auto-persist recording to DB so it appears in Recording Management
+      if (recPath) {
+        import('../controllers/recordingController.js').then(({ upsertRecordingStart }) => {
+          upsertRecordingStart({ confName, recPath, createdBy: 'system' });
+        }).catch(err => console.error('[esl] upsertRecordingStart import failed:', err.message));
+      }
 
     } else if (action === 'pause-recording') {
       const conf = conferenceRegistry.get(confName);
@@ -708,7 +714,8 @@ async function handleEvent(evt) {
       // No socket event needed — energy is reflected in the next snapshot/joined event.
 
     } else if (action === 'stop-recording') {
-      const conf = conferenceRegistry.get(confName);
+      const conf    = conferenceRegistry.get(confName);
+      const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || conf?.recordingPath || null;
       if (conf) {
         conf.recording      = false;
         conf.recordingState = 'OFF';
@@ -718,8 +725,14 @@ async function handleEvent(evt) {
         confName,
         recording: false,
         recordingState: 'OFF',
-        recordingPath: conf?.recordingPath || null,
+        recordingPath: recPath || conf?.recordingPath || null,
       });
+      // Close the DB recording record and extract metadata
+      if (recPath || conf?.recordingPath) {
+        import('../controllers/recordingController.js').then(({ closeRecording }) => {
+          closeRecording({ confName, recPath: recPath || conf?.recordingPath });
+        }).catch(err => console.error('[esl] closeRecording import failed:', err.message));
+      }
     }
     return;
   }

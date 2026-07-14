@@ -18,7 +18,9 @@ import deploymentRoutes from './deployment.js';
 import serviceRoutes    from './services.js';
 import campaignRoutes   from './campaigns.js';
 import gatewayRoutes    from './gateways.js';
-import monitoringRoutes from './monitoring.js';
+import monitoringRoutes   from './monitoring.js';
+import mediaLibraryRoutes from './mediaLibrary.js';
+import recordingRoutes    from './recordings.js';
 
 const router = Router();
 
@@ -43,5 +45,7 @@ router.use('/media',         mediaRoutes);
 router.use('/settings',      settingRoutes);
 router.use('/gateways',      gatewayRoutes);
 router.use('/monitoring',    monitoringRoutes);
+router.use('/media-library', mediaLibraryRoutes);
+router.use('/recordings',    recordingRoutes);
 
 export default router;

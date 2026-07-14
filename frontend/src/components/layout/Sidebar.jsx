@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Bell, ShieldAlert, Building2,
   MapPin, Layers, Contact, Group, FileBarChart2,
   Settings, ChevronDown, ChevronRight, Radio, Workflow,
-  Music, Rocket, PhoneCall
+  Library, Rocket, PhoneCall, Headphones
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -24,9 +24,9 @@ const NAV = [
 
   {
     label: 'IVR Builder', icon: Workflow, children: [
-      { label: 'IVR Flows',    to: '/ivr' },
-      { label: 'Audio Library', to: '/audio' },
-      { label: 'Deployment',   to: '/deployment' },
+      { label: 'IVR Flows',     to: '/ivr' },
+      { label: 'Media Library', to: '/media' },
+      { label: 'Deployment',    to: '/deployment' },
     ]
   },
 
@@ -42,11 +42,12 @@ const NAV = [
 
   {
     label: 'Reports', icon: FileBarChart2, children: [
-      { label: 'Notification Report', to: '/reports/notifications' },
-      { label: 'Incident Report',     to: '/reports/incidents' },
-      { label: 'Contact Usage',       to: '/reports/contact-usage' },
-      { label: 'ERS Incident Detail', to: '/reports/ers-incidents' },
-      { label: 'ENS Broadcast Detail', to: '/reports/ens-broadcasts' },
+      { label: 'Notification Report',    to: '/reports/notifications' },
+      { label: 'Incident Report',        to: '/reports/incidents' },
+      { label: 'Contact Usage',          to: '/reports/contact-usage' },
+      { label: 'ERS Incident Detail',    to: '/reports/ers-incidents' },
+      { label: 'ENS Broadcast Detail',   to: '/reports/ens-broadcasts' },
+      { label: 'Conference Recordings',  to: '/recordings' },
     ]
   },
 

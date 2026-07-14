@@ -26,6 +26,8 @@ import ReportEnsBroadcasts from './pages/reports/ReportEnsBroadcasts.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
+import MediaLibrary        from './pages/media/MediaLibrary.jsx';
+import Recordings          from './pages/recordings/Recordings.jsx';
 import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
 import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
 import CampaignDashboard   from './pages/ens/CampaignDashboard.jsx';
@@ -72,9 +74,13 @@ export default function App() {
         <Route path="ivr"                   element={<IvrList />} />
         <Route path="ivr/:uuid"             element={<IvrBuilder />} />
 
-        {/* Audio + Deployment */}
+        {/* Media Library + Deployment */}
+        <Route path="media"                 element={<MediaLibrary />} />
         <Route path="audio"                 element={<AudioLibrary />} />
         <Route path="deployment"            element={<DeploymentDashboard />} />
+
+        {/* Conference Recordings */}
+        <Route path="recordings"            element={<Recordings />} />
 
         {/* Organization */}
         <Route path="organizations"         element={<OrgList />} />
