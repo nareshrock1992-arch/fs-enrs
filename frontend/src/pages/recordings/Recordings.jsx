@@ -1,9 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Headphones, Play, Pause, Download, Search, RefreshCw, X,
-  SkipBack, SkipForward, Volume2, VolumeX, AlertCircle,
-  Clock, CheckCircle, Archive, Trash2, Calendar,
-  Phone, Building2, User, Info
+  SkipBack, SkipForward, Volume2, VolumeX,
+  Archive, Trash2, Calendar, Phone, Building2, User
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
