@@ -168,12 +168,17 @@ function parseConferenceListAll(raw) {
     // appends a usage hint at the END of a valid response.
     // Must be checked BEFORE the header regex so a line like
     // "-USAGE: codec|endpoint|..." is never mistaken for anything else.
-    if (t.startsWith('-USAGE:') || t.startsWith('-ERR') || t.startsWith('+OK') ) {
-      if (t.startsWith('-USAGE:') || t.startsWith('-ERR')) {
-        console.warn(`[esl] confListAll: FS error/usage line skipped — "${t.slice(0, 120)}"`);
-      }
+    //
+    // IMPORTANT: Do NOT skip "+OK Conference <name> ..." here.
+    // FreeSWITCH prepends "+OK " to the first conference header in the
+    // bgapi response body (e.g. "+OK Conference 3010 (2 members ...)").
+    // The header regex below handles the optional "+OK " prefix.
+    // Only bare "+OK" acknowledgement lines (no content after) are skipped.
+    if (t.startsWith('-USAGE:') || t.startsWith('-ERR')) {
+      console.warn(`[esl] confListAll: FS error/usage line skipped — "${t.slice(0, 120)}"`);
       continue;
     }
+    if (t === '+OK') continue; // bare command acknowledgement, not a conference header
 
     // Conference header — accept with or without leading "+OK "
     // "Conference 3010 (2 members rate: 8000 flags: dynamic)"
@@ -274,11 +279,14 @@ async function confListAll() {
     );
   }
 
-  // No active conferences (empty room list)
+  // No active conferences (empty room list).
+  // Use anchored match WITHOUT the /m flag so "+OK" only matches when the
+  // ENTIRE response body is that bare acknowledgement — not when "+OK" happens
+  // to appear as an isolated line inside a multi-conference response.
   if (
     /no active conference/i.test(raw) ||
     /no conference/i.test(raw)        ||
-    /^\+OK\s*$/m.test(raw.trim())
+    /^\+OK\s*$/.test(raw.trim())
   ) {
     console.log('[esl] confListAll: no active conferences reported by FreeSWITCH');
     return [];
@@ -1080,7 +1088,7 @@ export async function confList(confName) {
     const members = [];
     for (const line of raw.trim().split('\n')) {
       const t = line.trim();
-      if (!t || t.startsWith('-USAGE:') || t.startsWith('-ERR') || t.startsWith('+OK')) continue;
+      if (!t || t.startsWith('-USAGE:') || t.startsWith('-ERR') || t === '+OK') continue;
       const parts = t.split(';');
       if (parts.length < 4) continue;
       const rawMF = parts[4]?.trim() || '';
@@ -1110,7 +1118,8 @@ export async function confList(confName) {
       });
     }
     return members;
-  } catch {
+  } catch (err) {
+    console.error(`[esl] confList: failed to list members for conf="${confName}" — ${err.message}`);
     return [];
   }
 }
@@ -1131,7 +1140,8 @@ export async function getConferenceMemberCount(room) {
     if (!res || res.startsWith('-USAGE:') || res.startsWith('-ERR')) return 0;
     const match = /^(\d+)/.exec((res || '').trim());
     return match ? Number(match[1]) : 0;
-  } catch {
+  } catch (err) {
+    console.error(`[esl] getConferenceMemberCount: ESL error for room="${room}" — ${err.message}`);
     return 0;
   }
 }
