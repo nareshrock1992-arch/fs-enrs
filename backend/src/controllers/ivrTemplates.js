@@ -8,6 +8,7 @@
 
 import { query } from '../db/pool.js';
 import { v4 as uuidv4 } from 'uuid';
+import { fsPathService } from '../services/freeSwitchPathService.js';
 
 // ── Template definitions ───────────────────────────────────────────────────────
 //
@@ -153,7 +154,7 @@ const TEMPLATES = {
           max_seconds:      60,
           silence_threshold: 500,
           silence_hits:     3,
-          record_dir:       '/var/lib/freeswitch/recordings',
+          record_dir:       fsPathService.getIvrRecordingDir(),
           next:             'review_menu',
         },
         review_menu: {

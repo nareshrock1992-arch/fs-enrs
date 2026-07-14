@@ -21,6 +21,7 @@ import { query } from '../db/pool.js';
 import { eslCommand, getConferenceMemberCount } from './eslService.js';
 import { resolveDialString } from './dialResolver.js';
 import { emitInternal } from './socketService.js';
+import { fsPathService } from './freeSwitchPathService.js';
 
 // Safety cap when ring_timeout_seconds is NULL (= "indefinite" per spec).
 // This is a runaway-loop guard, not a user-facing limit: 2h of continuous
@@ -151,7 +152,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, t
               [configId]
             );
             if (cfg?.record_conferences) {
-              const dir  = cfg.recording_directory || '/var/lib/freeswitch/recordings/ers';
+              const dir  = cfg.recording_directory || fsPathService.getErsRecordingDir();
               const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
               const path = `${dir}/ers_${room}_${dateStr}.wav`;
               await eslCommand(`conference ${room} record ${path}`).catch(() => {});

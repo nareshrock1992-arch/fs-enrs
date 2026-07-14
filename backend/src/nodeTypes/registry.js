@@ -410,7 +410,7 @@ end`,
       { key: 'max_seconds', label: 'Max seconds', fieldType: 'number', min: 1, max: 300 },
       { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Audio level below which is considered silence' },
       { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'How many silence chunks before stopping' },
-      { key: 'record_dir', label: 'Record directory', fieldType: 'mono_text', placeholder: '/var/lib/freeswitch/recordings', hint: 'Default: /var/lib/freeswitch/recordings' },
+      { key: 'record_dir', label: 'Record directory', fieldType: 'mono_text', placeholder: '(uses FS_RECORDING_DIR/ivr by default)', hint: 'Leave blank to use FS_RECORDING_DIR/ivr configured in .env' },
       { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after recording' },
     ],
     luaHandler: `

@@ -2,18 +2,23 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install deps first (better layer caching)
-COPY package.json ./
-RUN npm install --omit=dev
+# Install deps using lockfile for reproducible builds
+COPY package*.json ./
+RUN npm ci --omit=dev
 
 COPY . .
 
-# Create upload directory
-RUN mkdir -p /app/uploads
+# Create upload directory with correct ownership
+RUN mkdir -p /app/uploads && chown -R node:node /app
+
+# Drop root privileges
+USER node
 
 EXPOSE 4100
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s \
   CMD wget -qO- http://localhost:4100/api/health || exit 1
 
-CMD ["node", "server.js"]
+# Run migrations then start the server.
+# migrate.js is idempotent — safe to run on every container start.
+CMD ["sh", "-c", "node src/db/migrate.js && node server.js"]

@@ -4,24 +4,27 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: fs_enrs
+      POSTGRES_DB: ${DB_NAME:-fs_enrs}
       POSTGRES_USER: ${DB_USER:-enrs}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-enrs_pass}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-enrs} -d fs_enrs"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-enrs} -d ${DB_NAME:-fs_enrs}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - enrs
+    restart: unless-stopped
 
   backend:
     build: ./backend
-    env_file: .env
+    env_file: ./backend/.env
     environment:
       DB_HOST: db
+      NODE_ENV: production
     depends_on:
       db:
         condition: service_healthy
@@ -29,16 +32,28 @@ services:
       - "4100:4100"
     volumes:
       - uploads:/app/uploads
+      # Mount FreeSWITCH filesystem directories from the host.
+      # Set FS_SOUND_DIR, FS_SCRIPT_DIR, FS_DIALPLAN_DIR, FS_RECORDING_DIR
+      # in backend/.env to match these mount points.
+      # Example (uncomment and adjust to your host paths):
+      # - /opt/freeswitch/share/freeswitch/sounds:/opt/freeswitch/share/freeswitch/sounds
+      # - /opt/freeswitch/etc/freeswitch/scripts:/opt/freeswitch/etc/freeswitch/scripts
+      # - /opt/freeswitch/etc/freeswitch/dialplan:/opt/freeswitch/etc/freeswitch/dialplan
+      # - /opt/freeswitch/var/lib/freeswitch/recordings:/opt/freeswitch/var/lib/freeswitch/recordings
     networks:
       - enrs
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ""
     ports:
       - "8100:8100"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - enrs
     restart: unless-stopped

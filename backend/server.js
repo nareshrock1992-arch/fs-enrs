@@ -83,6 +83,19 @@ app.use(errorHandler);
 
 // ── Boot sequence ─────────────────────────────────────────────
 async function start() {
+  // Guard against weak default secrets in production
+  if (config.env === 'production') {
+    const WEAK = ['CHANGE_ME_access_secret_32plus', 'CHANGE_ME_refresh_secret_32plus'];
+    if (WEAK.includes(config.jwt.accessSecret) || WEAK.includes(config.jwt.refreshSecret)) {
+      console.error('[boot] FATAL: JWT secrets are set to insecure defaults. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in .env.');
+      process.exit(1);
+    }
+    if (!process.env.INTERNAL_API_KEY || process.env.INTERNAL_API_KEY.length < 32) {
+      console.error('[boot] FATAL: INTERNAL_API_KEY must be at least 32 characters in production.');
+      process.exit(1);
+    }
+  }
+
   // Verify DB before starting
   const dbOk = await testConnection();
   if (!dbOk) {
@@ -130,8 +143,18 @@ async function start() {
   // Start outbound campaign engine
   startEngine();
 
-  process.on('SIGTERM', () => { stopEngine(); });
-  process.on('SIGINT',  () => { stopEngine(); });
+  const gracefulShutdown = (signal) => {
+    console.log(`[boot] ${signal} received — shutting down gracefully`);
+    stopEngine();
+    server.close(() => {
+      console.log('[boot] HTTP server closed');
+      process.exit(0);
+    });
+    // Force exit if close takes too long (e.g. hanging WebSocket connections)
+    setTimeout(() => { console.error('[boot] Forced exit after timeout'); process.exit(1); }, 10_000);
+  };
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 }
 
 // Export server for supertest in test environment

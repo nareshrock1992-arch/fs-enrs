@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
-import { fsConfig } from '../config/fsConfig.js';
+import { fsPathService } from '../services/freeSwitchPathService.js';
 import {
   getConferenceSnapshot, seedConferenceRegistry,
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
@@ -95,9 +95,8 @@ export const startRecording = asyncHandler(async (req, res) => {
   const room = req.params.room;
   const ts   = new Date().toISOString().replace(/[:.]/g, '-');
 
-  // Path is resolved exclusively from FS_RECORDING_DIR (via fsConfig.recordingDir).
-  // A sub-directory per conference keeps recordings organised and avoids root-dir clutter.
-  const recDir  = path.join(fsConfig.recordingDir, 'conf');
+  // Path resolved from FS_RECORDING_DIR via freeSwitchPathService — never hardcoded.
+  const recDir  = fsPathService.getConfRecordingDir();
   const recPath = req.body?.path || path.join(recDir, `conf_${room}_${ts}.wav`);
 
   // Ensure the directory exists on the backend host (FreeSWITCH writes to the same path).

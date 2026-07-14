@@ -1,6 +1,6 @@
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { eslStatus } from '../services/eslService.js';
+import { eslStatus, getConferenceSnapshot } from '../services/eslService.js';
 
 // GET /api/v1/dashboard/metrics
 export const getMetrics = asyncHandler(async (req, res) => {
@@ -42,13 +42,9 @@ export const getMetrics = asyncHandler(async (req, res) => {
        WHERE i.deleted_at IS NULL AND i.started_at >= CURRENT_DATE AND ec.tenant_id = $1`,
       [tid]
     ),
-    query(
-      `SELECT COUNT(i.id)::INT AS n
-       FROM ers_incidents i
-       JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
-       WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND ec.tenant_id = $1`,
-      [tid]
-    ),
+    // Active conferences: use the live ESL registry (real-time) rather than
+    // DB incident count, which can lag after a backend restart or ESL outage.
+    Promise.resolve({ rows: [{ n: getConferenceSnapshot().length }] }),
     // ers_queues has no tenant_id — scope via ers_configurations join
     query(
       `SELECT COUNT(q.id)::INT AS n

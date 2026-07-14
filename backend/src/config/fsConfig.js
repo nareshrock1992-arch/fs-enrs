@@ -33,7 +33,8 @@ function env(key, fallback) {
 // Build the config object from env vars with sensible defaults.
 // All paths can be overridden per-variable or via FS_BASE_DIR.
 function buildConfig() {
-  const base = env('FS_BASE_DIR', '/usr/share/freeswitch');
+  const base       = env('FS_BASE_DIR', '/usr/share/freeswitch');
+  const recordingDir = env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings'));
 
   return {
     baseDir:      base,
@@ -43,15 +44,16 @@ function buildConfig() {
     sipProfileDir:env('FS_SIP_PROFILE_DIR', '/etc/freeswitch/sip_profiles'),
     scriptDir:    env('FS_SCRIPT_DIR',    `${base}/scripts`),
     soundDir:     env('FS_SOUND_DIR',     `${base}/sounds`),
-    recordingDir: env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings')),
+    recordingDir,
     storageDir:   env('FS_STORAGE_DIR',   '/var/lib/freeswitch/storage'),
     dbDir:        env('FS_DB_DIR',        '/var/lib/freeswitch/db'),
     logDir:       env('FS_LOG_DIR',       '/var/log/freeswitch'),
 
-    // Application-specific sub-paths
-    ensRecordingDir: env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings')) + '/ens',
-    ersRecordingDir: env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings')) + '/ers',
-    ivrRecordingDir: env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings')) + '/ivr',
+    // Application-specific sub-paths — all derived from the single resolved recordingDir
+    ensRecordingDir:  `${recordingDir}/ens`,
+    ersRecordingDir:  `${recordingDir}/ers`,
+    ivrRecordingDir:  `${recordingDir}/ivr`,
+    confRecordingDir: `${recordingDir}/conf`,
   };
 }
 

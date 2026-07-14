@@ -50,18 +50,29 @@ const VALID_MEDIA_TYPES = new Set(['RECORDING', 'PROMPT', 'IVR_PROMPT', 'MUSIC',
 
 router.post('/upload', adminOnly, upload.single('file'), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File required' });
-  const mediaType = req.body.type || 'RECORDING';
+  const mediaType = req.body.type || 'PROMPT';
   if (!VALID_MEDIA_TYPES.has(mediaType)) {
     return res.status(400).json({ error: `Invalid type "${mediaType}". Must be one of: ${[...VALID_MEDIA_TYPES].join(', ')}` });
   }
-  const { rows } = await query(
+  // Use the deployment controller's upload endpoint instead — it handles
+  // FS copy, is_deployed, category, and tenant_id consistently.
+  // This route is kept for backwards compatibility (IVR builder file picker).
+  const { rows: [record] } = await query(
     `INSERT INTO media_files
-       (organization_id, uploaded_by_user_id, type, name, path_or_uri, size_bytes)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [req.body.organization_id, req.user.id, mediaType,
-     req.file.originalname, req.file.path, req.file.size]
+       (organization_id, uploaded_by_user_id, type, name, path_or_uri, size_bytes, category, tenant_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [
+      req.body.organization_id || null,
+      req.user.id,
+      mediaType,
+      req.file.originalname,
+      req.file.path,
+      req.file.size,
+      req.body.category || 'general',
+      req.user.tenantId || null,
+    ]
   );
-  res.status(201).json(rows[0]);
+  res.status(201).json(record);
 }));
 
 router.delete('/:id', adminOnly, asyncHandler(async (req, res) => {

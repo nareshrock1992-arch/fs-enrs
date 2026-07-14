@@ -489,7 +489,10 @@ async function updateHeartbeat(connected) {
        WHERE is_active IS NOT NULL LIMIT 1`,
       [connected]
     );
-  } catch {}
+  } catch (err) {
+    // Non-fatal — heartbeat row may not exist in all environments
+    console.warn('[esl] heartbeat update failed:', err.message);
+  }
 }
 
 // ─── Handle incoming ESL events ─────────────────────────────
@@ -617,6 +620,19 @@ function handleEvent(evt) {
         recording:      true,
         recordingState: 'ACTIVE',
         recordingPath:  conf?.recordingPath || recPath,
+        recordingError: null,
+      });
+
+    } else if (action === 'pause-recording') {
+      const conf = conferenceRegistry.get(confName);
+      if (conf) {
+        conf.recordingState = 'PAUSED';
+      }
+      emit('conference.recording', {
+        confName,
+        recording:      true,
+        recordingState: 'PAUSED',
+        recordingPath:  conf?.recordingPath || null,
         recordingError: null,
       });
 
@@ -771,7 +787,9 @@ async function persistEvent(action, details) {
        VALUES ($1, 'esl_event', $2)`,
       [action, JSON.stringify(details)]
     );
-  } catch {}
+  } catch (err) {
+    console.warn('[esl] persistEvent failed:', err.message);
+  }
 }
 
 // ─── Connect to FreeSWITCH ───────────────────────────────────
@@ -835,10 +853,13 @@ export function connect() {
 function scheduleReconnect() {
   if (retryTimer) return;
   reconnectCount++;
+  // Exponential backoff: base * 2^attempts, capped at 30 s
+  const delay = Math.min(config.esl.reconnectMs * Math.pow(2, Math.min(reconnectCount - 1, 5)), 30_000);
+  console.log(`[esl] Reconnecting in ${delay}ms (attempt #${reconnectCount})`);
   retryTimer = setTimeout(() => {
     retryTimer = null;
     connect();
-  }, config.esl.reconnectMs);
+  }, delay);
 }
 
 // ─── Execute an ESL command, return result ───────────────────

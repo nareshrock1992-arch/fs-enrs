@@ -211,7 +211,7 @@ export const uploadAudio = asyncHandler(async (req, res) => {
 
   const displayName = name || req.file.originalname;
 
-  // Insert to DB
+  // Insert to DB first so the record exists even if FS copy fails
   const { rows: [record] } = await query(
     `INSERT INTO media_files
        (organization_id, uploaded_by_user_id, type, name, path_or_uri,
@@ -230,12 +230,34 @@ export const uploadAudio = asyncHandler(async (req, res) => {
     ]
   );
 
-  // Async copy to FreeSWITCH sound dir (non-blocking for upload response)
-  copyToFreeSwitch(record.id, req.file.path, req.file.filename).catch(err => {
-    console.error('[audio-upload] FS copy failed for media_file', record.id, err.message);
-  });
+  // Copy to FreeSWITCH sound dir — awaited so the response reflects real outcome.
+  // Failure is non-fatal to the DB record; the user can re-deploy via the Deploy button.
+  let deployResult = null;
+  let deployError  = null;
+  try {
+    deployResult = await copyToFreeSwitch(record.id, req.file.path, req.file.filename);
+  } catch (err) {
+    deployError = err.message;
+    console.error(`[audio-upload] FS copy failed for media_file ${record.id}: ${err.message}`);
+    // Persist error so the UI can surface it without requiring a re-upload
+    await query(
+      `UPDATE media_files SET description = CASE WHEN description = '' OR description IS NULL
+         THEN $2 ELSE description || ' | Deploy error: ' || $2 END WHERE id = $1`,
+      [record.id, `Deploy error: ${err.message}`]
+    ).catch(() => {});
+  }
 
-  res.status(201).json({ file: record, message: 'Upload successful — copying to FreeSWITCH in background' });
+  // Reload the record to reflect is_deployed / fs_path after copy attempt
+  const { rows: [fresh] } = await query(
+    `SELECT * FROM media_files WHERE id = $1`, [record.id]
+  );
+
+  const status  = deployError ? 207 : 201; // 207 = partial success
+  const message = deployError
+    ? `File saved to database but FreeSWITCH copy failed: ${deployError}. Use "Deploy" button to retry.`
+    : 'Upload and deploy successful';
+
+  res.status(status).json({ file: fresh || record, deploy: deployResult, deployError, message });
 });
 
 /** POST /deployment/audio/:id/deploy  — manually deploy/re-deploy a file */

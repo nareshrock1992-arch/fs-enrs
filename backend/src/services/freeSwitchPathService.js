@@ -51,6 +51,11 @@ class FreeSwitchPathService {
     return path.posix.join(this.#cfg.recordingDir, 'ers');
   }
 
+  /** Conference monitoring (manual record) recordings */
+  getConfRecordingDir() {
+    return path.posix.join(this.#cfg.recordingDir, 'conf');
+  }
+
   // ── Dialplan target auto-detection ─────────────────────────────────────────
 
   /**
@@ -178,18 +183,19 @@ class FreeSwitchPathService {
 
   getSummary() {
     return {
-      configDir:      this.getConfigDir(),
-      dialplanDir:    this.getDialplanDir(),
-      scriptDir:      this.getScriptDir(),
-      soundDir:       this.getSoundDir(),
-      enrsSoundDir:   this.getEnrsSoundDir(),
-      recordingDir:   this.getRecordingDir(),
-      ivrRecordingDir:this.getIvrRecordingDir(),
-      ensRecordingDir:this.getEnsRecordingDir(),
-      ersRecordingDir:this.getErsRecordingDir(),
-      storageDir:     this.getStorageDir(),
-      dbDir:          this.getDbDir(),
-      logDir:         this.getLogDir(),
+      configDir:       this.getConfigDir(),
+      dialplanDir:     this.getDialplanDir(),
+      scriptDir:       this.getScriptDir(),
+      soundDir:        this.getSoundDir(),
+      enrsSoundDir:    this.getEnrsSoundDir(),
+      recordingDir:    this.getRecordingDir(),
+      confRecordingDir:this.getConfRecordingDir(),
+      ivrRecordingDir: this.getIvrRecordingDir(),
+      ensRecordingDir: this.getEnsRecordingDir(),
+      ersRecordingDir: this.getErsRecordingDir(),
+      storageDir:      this.getStorageDir(),
+      dbDir:           this.getDbDir(),
+      logDir:          this.getLogDir(),
     };
   }
 }

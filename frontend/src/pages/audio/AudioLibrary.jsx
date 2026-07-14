@@ -108,7 +108,14 @@ function UploadModal({ onClose, onSuccess }) {
       fd.append('name', name || file.name);
       fd.append('category', category);
       fd.append('description', description);
-      await api.deployment.uploadAudio(fd);
+      const result = await api.deployment.uploadAudio(fd);
+      // 207 = file saved but FS copy failed — surface the deploy error
+      if (result?.deployError) {
+        setError(`Saved to database, but FreeSWITCH deploy failed: ${result.deployError}. Use the Deploy button to retry.`);
+        onSuccess(); // still refresh the list
+        // keep modal open so user sees the warning
+        return;
+      }
       onSuccess();
       onClose();
     } catch (e) {
