@@ -168,6 +168,12 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
               <Radio size={6} /> REC
             </span>
           )}
+          {conf.recordingState === 'STOPPING' && (
+            <span className="text-[8px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400
+                             font-bold flex items-center gap-0.5 animate-pulse">
+              <Square size={6} /> STOP
+            </span>
+          )}
           {conf.recordingState === 'PAUSED' && (
             <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
                              font-bold flex items-center gap-0.5">
@@ -547,13 +553,18 @@ function CenterPanel({ conf, now }) {
                                  bg-amber-500/15 text-amber-500 font-bold w-fit">
                   <Pause size={8} /> PAUSED
                 </span>
+              ) : conf.recordingState === 'STOPPING' ? (
+                <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
+                                 bg-slate-500/15 text-slate-400 font-bold w-fit animate-pulse">
+                  <Square size={8} /> STOPPING…
+                </span>
               ) : conf.recordingState === 'FAILED' ? (
                 <div className="flex flex-col gap-0.5">
                   <span className="flex items-center gap-1 text-[10px] text-red-500 font-bold">
                     ✗ Failed
                   </span>
                   {conf.recordingError && (
-                    <span className="text-[9px] text-red-400">{conf.recordingError}</span>
+                    <span className="text-[9px] text-red-400 whitespace-pre-wrap break-words">{conf.recordingError}</span>
                   )}
                 </div>
               ) : (
@@ -652,6 +663,9 @@ function RightPanel({ conf }) {
   const isStarting     = recState === 'STARTING';
   const isRecording    = recState === 'ACTIVE';
   const isPaused       = recState === 'PAUSED';
+  const isStopping     = recState === 'STOPPING';
+  const isFailed       = recState === 'FAILED';
+  const recBusy        = isStarting || isStopping;
 
   async function act(fn, ...args) {
     if (!name) return;
@@ -664,27 +678,12 @@ function RightPanel({ conf }) {
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <Zap size={12} className="text-amber-500" />
         <span className="text-xs font-bold text-text-primary">Controls</span>
-        {isStarting && (
-          <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
-                           bg-amber-500/15 text-amber-500 font-bold animate-pulse flex items-center gap-0.5">
-            <Radio size={7} /> STARTING
-          </span>
-        )}
-        {isRecording && (
-          <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
-                           bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5">
-            <Radio size={7} /> REC
-          </span>
-        )}
-        {isPaused && (
-          <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
-                           bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5">
-            <Pause size={7} /> PAUSED
-          </span>
-        )}
-        {!conf && (
-          <span className="ml-auto text-[9px] text-text-muted">No selection</span>
-        )}
+        {isStarting  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> STARTING</span>}
+        {isRecording && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> REC</span>}
+        {isPaused    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5"><Pause size={7} /> PAUSED</span>}
+        {isStopping  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400 font-bold animate-pulse flex items-center gap-0.5"><Square size={7} /> STOPPING</span>}
+        {isFailed    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-900/20 text-red-400 font-bold flex items-center gap-0.5">✗ FAILED</span>}
+        {!conf && <span className="ml-auto text-[9px] text-text-muted">No selection</span>}
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-4">
@@ -719,29 +718,19 @@ function RightPanel({ conf }) {
           </p>
           <div className="space-y-1.5">
             {/* State indicator */}
-            {isStarting && (
-              <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium">
-                <Radio size={9} className="animate-pulse" /> Starting recording…
-              </div>
-            )}
-            {isRecording && (
-              <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-medium">
-                <Radio size={9} className="animate-pulse" /> Recording active
-              </div>
-            )}
-            {isPaused && (
-              <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium">
-                <Pause size={9} /> Recording paused
-              </div>
-            )}
+            {isStarting  && <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium"><Radio size={9} className="animate-pulse" /> Starting recording…</div>}
+            {isRecording && <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-medium"><Radio size={9} className="animate-pulse" /> Recording active</div>}
+            {isPaused    && <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium"><Pause size={9} /> Recording paused</div>}
+            {isStopping  && <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-medium"><Square size={9} className="animate-pulse" /> Stopping…</div>}
+            {isFailed    && <div className="text-[10px] text-red-400 font-medium">✗ Failed — see backend logs for directory/permission details</div>}
 
-            {/* Action buttons — state-aware */}
-            {!isStarting && !isRecording && !isPaused && (
+            {/* Action buttons — state machine */}
+            {(recState === 'OFF' || isFailed) && (
               <CtrlBtn icon={Radio} label="Start Recording" disabled={disabled} wide
                 onClick={() => act(api.monitoring.recordStart)} />
             )}
-            {isStarting && (
-              <CtrlBtn icon={Radio} label="Starting…" disabled wide />
+            {recBusy && (
+              <CtrlBtn icon={Radio} label={isStarting ? 'Starting…' : 'Stopping…'} disabled wide />
             )}
             {(isRecording || isPaused) && (
               <>

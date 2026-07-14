@@ -39,7 +39,7 @@ function registryGetOrCreate(confName) {
       locked:         false,
       recording:      false,   // true = recording active
       recordingPath:  null,    // absolute path of current/last recording
-      recordingState: 'OFF',   // 'OFF' | 'ACTIVE' | 'PAUSED' | 'FAILED'
+      recordingState: 'OFF',   // 'OFF' | 'STARTING' | 'ACTIVE' | 'PAUSED' | 'STOPPING' | 'FAILED'
       recordingError: null,    // error message when state='FAILED'
       floorHolder:    null,
       rate:           null,    // Hz — populated by seedConferenceRegistry from FS header
@@ -90,6 +90,50 @@ export function setConferenceRecordingPath(confName, path) {
   entry.recordingState = path ? 'ACTIVE' : 'OFF';
   entry.recordingError = null;
   entry.recording      = !!path;
+}
+
+// Called when file-based verification confirms FreeSWITCH opened the recording file
+// even when the start-recording ESL event was delayed or missed.
+export function setConferenceRecordingActive(confName, recPath) {
+  if (recordingStartTimers.has(confName)) {
+    clearTimeout(recordingStartTimers.get(confName));
+    recordingStartTimers.delete(confName);
+  }
+  const entry = conferenceRegistry.get(confName);
+  if (!entry) return;
+  if (entry.recordingState !== 'STARTING') return; // already transitioned via event
+  entry.recording      = true;
+  entry.recordingState = 'ACTIVE';
+  entry.recordingError = null;
+  if (recPath) entry.recordingPath = recPath;
+  emit('conference.recording', {
+    confName, recording: true, recordingState: 'ACTIVE',
+    recordingPath: recPath, recordingError: null,
+  });
+}
+
+// Optimistic PAUSED update — called when pauserec command succeeds but the
+// pause-recording ESL event is not reliably emitted in all FreeSWITCH versions.
+export function setConferenceRecordingPaused(confName) {
+  const entry = conferenceRegistry.get(confName);
+  if (!entry) return;
+  entry.recordingState = 'PAUSED';
+  emit('conference.recording', {
+    confName, recording: true, recordingState: 'PAUSED',
+    recordingPath: entry.recordingPath, recordingError: null,
+  });
+}
+
+// Called immediately before issuing norecord so the UI shows "Stopping..." instead
+// of jumping directly from ACTIVE to OFF.
+export function setConferenceRecordingStopping(confName) {
+  const entry = conferenceRegistry.get(confName);
+  if (!entry) return;
+  entry.recordingState = 'STOPPING';
+  emit('conference.recording', {
+    confName, recording: true, recordingState: 'STOPPING',
+    recordingPath: entry.recordingPath, recordingError: null,
+  });
 }
 
 // Set state to STARTING immediately after issuing the record command.
@@ -490,7 +534,7 @@ export function getConferenceSnapshot() {
       locked:         c.locked,
       recording:      c.recording,
       recordingPath:  c.recordingPath,
-      recordingState: c.recordingState,   // 'OFF'|'ACTIVE'|'PAUSED'|'FAILED'
+      recordingState: c.recordingState,   // 'OFF'|'STARTING'|'ACTIVE'|'PAUSED'|'STOPPING'|'FAILED'
       recordingError: c.recordingError,
       floorHolder:    c.floorHolder,
       rate:           c.rate,
@@ -670,8 +714,10 @@ async function handleEvent(evt) {
         recordingStartTimers.delete(confName);
       }
       const conf = conferenceRegistry.get(confName);
-      // FreeSWITCH sends the recording file path in 'Path' header
-      const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || null;
+      // FreeSWITCH sends the recording file path in the 'Path' header.
+      // Accept any of the known header names across FS versions.
+      const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || evt.getHeader('Recording-Path') || null;
+      console.log(`[esl] start-recording event — conf="${confName}" path="${recPath}"`);
       if (conf) {
         conf.recording      = true;
         conf.recordingState = 'ACTIVE';
@@ -686,13 +732,17 @@ async function handleEvent(evt) {
         recordingError: null,
       });
       // Auto-persist recording to DB so it appears in Recording Management
-      if (recPath) {
+      const finalPath = conf?.recordingPath || recPath;
+      if (finalPath) {
         import('../controllers/recordingController.js').then(({ upsertRecordingStart }) => {
-          upsertRecordingStart({ confName, recPath, createdBy: 'system' });
+          upsertRecordingStart({ confName, recPath: finalPath, createdBy: 'system' });
         }).catch(err => console.error('[esl] upsertRecordingStart import failed:', err.message));
       }
 
     } else if (action === 'pause-recording') {
+      // FreeSWITCH does not reliably emit pause-recording in all versions.
+      // The monitoringController updates state optimistically on pauserec success.
+      // This handler fires if the event DOES arrive (belt-and-suspenders).
       const conf = conferenceRegistry.get(confName);
       if (conf) {
         conf.recordingState = 'PAUSED';
@@ -715,7 +765,9 @@ async function handleEvent(evt) {
 
     } else if (action === 'stop-recording') {
       const conf    = conferenceRegistry.get(confName);
-      const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || conf?.recordingPath || null;
+      const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || evt.getHeader('Recording-Path') || conf?.recordingPath || null;
+      console.log(`[esl] stop-recording event — conf="${confName}" path="${recPath}"`);
+      const lastPath = recPath || conf?.recordingPath || null;
       if (conf) {
         conf.recording      = false;
         conf.recordingState = 'OFF';
@@ -725,12 +777,12 @@ async function handleEvent(evt) {
         confName,
         recording: false,
         recordingState: 'OFF',
-        recordingPath: recPath || conf?.recordingPath || null,
+        recordingPath: lastPath,
       });
       // Close the DB recording record and extract metadata
-      if (recPath || conf?.recordingPath) {
+      if (lastPath) {
         import('../controllers/recordingController.js').then(({ closeRecording }) => {
-          closeRecording({ confName, recPath: recPath || conf?.recordingPath });
+          closeRecording({ confName, recPath: lastPath });
         }).catch(err => console.error('[esl] closeRecording import failed:', err.message));
       }
     }
