@@ -413,12 +413,18 @@ export async function seedConferenceRegistry() {
     }
   }
 
-  // Remove conferences that are no longer live
+  // Remove conferences that are no longer live.
+  // Reconcile the DB (mark incident COMPLETED) BEFORE emitting conference.ended so
+  // that any REST reseed triggered by the socket event observes the updated DB state.
+  // Without this ordering, the Dashboard reseeds immediately after conference.ended,
+  // fetches ers_incidents WHERE status = 'ACTIVE', and sees the incident as still
+  // ACTIVE — because the DB update hadn't happened yet.
   for (const [name] of conferenceRegistry) {
     if (!conferences.find(c => c.name === name)) {
       conferenceRegistry.delete(name);
       console.log(`[esl] seedConferenceRegistry: conference removed (no longer live) — name="${name}"`);
-      emit('conference.ended', { confName: name });
+      await reconcileOrphanedIncident(name);   // update DB first
+      emit('conference.ended', { confName: name }); // socket event second
     }
   }
 
@@ -494,7 +500,7 @@ async function updateHeartbeat(connected) {
   try {
     await query(
       `UPDATE esl_connections SET last_heartbeat_at = now(), is_active = $1
-       WHERE is_active IS NOT NULL LIMIT 1`,
+       WHERE is_active IS NOT NULL`,
       [connected]
     );
   } catch (err) {
@@ -643,6 +649,14 @@ function handleEvent(evt) {
         recordingPath:  conf?.recordingPath || null,
         recordingError: null,
       });
+
+    } else if (action === 'energy-level') {
+      // Real-time per-member energy update. FreeSWITCH fires this when
+      // the conference energy-level threshold is changed for a member.
+      const energyVal = parseInt(evt.getHeader('Conference-Energy-Level') || '0', 10) || 0;
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) conf.members.get(memberId).energy = energyVal;
+      // No socket event needed — energy is reflected in the next snapshot/joined event.
 
     } else if (action === 'stop-recording') {
       const conf = conferenceRegistry.get(confName);
@@ -1219,6 +1233,14 @@ export function eslStatus() {
 // without calling startBackgroundJobs(), but they DON'T — so no intervals
 // fire when the module is loaded by a script that never calls the starter.
 export async function reconcileAllActiveIncidents() {
+  // CRITICAL: skip when ESL is not connected. getConferenceMemberCount returns 0
+  // for every room when ESL is down (it catches the connection error and returns 0).
+  // Without this guard, every active incident would be falsely completed as an orphan
+  // the moment ESL disconnects — destroying live incident state.
+  if (!isConn) {
+    console.log('[esl] reconcileAllActiveIncidents: skipped — ESL not connected');
+    return;
+  }
   try {
     const { rows } = await query(
       `SELECT incident_uuid, conference_room FROM ers_incidents

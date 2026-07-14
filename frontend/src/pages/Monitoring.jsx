@@ -19,7 +19,7 @@ import {
   PhoneIncoming, Trash2, ChevronDown,
   Headphones, EarOff, Shield, RefreshCw, Zap,
   PhoneCall, Bell, Signal, ArrowRight,
-  Monitor, BarChart2, Hash,
+  Monitor, BarChart2, Hash, PhoneForwarded,
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { socket } from '../api/socket.js';
@@ -298,6 +298,11 @@ function ParticipantTable({ members, room, now }) {
             const ext      = m.extension   || m.callerNum  || '';
             const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
 
+            function transfer() {
+              const ext = window.prompt(`Transfer ${display} to extension:`);
+              if (ext?.trim()) act(api.monitoring.transfer, m.id, ext.trim());
+            }
+
             return (
               <tr key={m.id}
                   className={[
@@ -362,7 +367,7 @@ function ParticipantTable({ members, room, now }) {
                   </div>
                 </td>
 
-                {/* Audio (mute + deaf) */}
+                {/* Audio (mute + deaf indicators) */}
                 <td className="px-2.5 py-2 whitespace-nowrap">
                   <div className="flex items-center gap-1">
                     {m.muted ? (
@@ -407,6 +412,7 @@ function ParticipantTable({ members, room, now }) {
                 {/* Actions */}
                 <td className="px-2.5 py-2">
                   <div className="flex items-center gap-0.5">
+                    {/* Mute / Unmute */}
                     <button
                       title={m.muted ? 'Unmute' : 'Mute'}
                       onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
@@ -414,6 +420,17 @@ function ParticipantTable({ members, room, now }) {
                                  hover:text-text-primary transition-colors">
                       {m.muted ? <Mic size={11} /> : <MicOff size={11} />}
                     </button>
+                    {/* Deaf / Undeaf */}
+                    <button
+                      title={m.deaf ? 'Undeaf' : 'Deaf'}
+                      onClick={() => act(m.deaf ? api.monitoring.undeaf : api.monitoring.deaf, m.id)}
+                      className={`p-1 rounded transition-colors
+                        ${m.deaf
+                          ? 'text-orange-500 hover:bg-orange-500/10 hover:text-orange-400'
+                          : 'hover:bg-surface-hover text-text-muted hover:text-text-primary'}`}>
+                      <EarOff size={11} />
+                    </button>
+                    {/* Give Floor */}
                     <button
                       title="Give Floor"
                       onClick={() => act(api.monitoring.floor, m.id)}
@@ -421,6 +438,15 @@ function ParticipantTable({ members, room, now }) {
                                  hover:text-purple-400 transition-colors">
                       <ArrowRight size={11} />
                     </button>
+                    {/* Transfer */}
+                    <button
+                      title="Transfer to extension"
+                      onClick={transfer}
+                      className="p-1 rounded hover:bg-surface-hover text-text-muted
+                                 hover:text-blue-400 transition-colors">
+                      <PhoneForwarded size={11} />
+                    </button>
+                    {/* Kick */}
                     <button
                       title="Kick participant"
                       onClick={() => {
@@ -699,7 +725,7 @@ function RightPanel({ conf }) {
                 )}
                 {isPaused && (
                   <CtrlBtn icon={Radio} label="Resume" wide
-                    onClick={() => act(api.monitoring.recordStart)} />
+                    onClick={() => act(api.monitoring.recordStart, conf?.recordingPath || undefined)} />
                 )}
                 <CtrlBtn icon={Square} label="Stop Recording" variant="danger" wide
                   onClick={() => act(api.monitoring.recordStop)} />
