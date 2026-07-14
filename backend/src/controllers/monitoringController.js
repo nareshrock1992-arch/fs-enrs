@@ -15,9 +15,9 @@ import {
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
   confVolumeIn, confVolumeOut, confEnergy, confFloor,
   confTransfer, confLock, confUnlock,
-  confRecord, confRecordPause, confRecordStop,
+  confRecord, confRecordPause, confRecordStop, confRecordStopAll,
   confPlay, confSay, confInvite, confTerminate,
-  setConferenceRecordingPath, setConferenceRecordingError,
+  setConferenceRecordingStarting, setConferenceRecordingPath, setConferenceRecordingError,
   eslStatus,
 } from '../services/eslService.js';
 
@@ -93,13 +93,27 @@ export const unlockConference = asyncHandler(async (req, res) => {
 
 export const startRecording = asyncHandler(async (req, res) => {
   const room = req.params.room;
+
+  // Guard: reject duplicate recording starts. FreeSWITCH allows multiple concurrent
+  // recordings per conference, which makes norecord-by-path unreliable because the
+  // backend only tracks one path. Prevent the second command entirely.
+  const existingSnap = getConferenceSnapshot().find(c => c.name === room);
+  if (existingSnap && existingSnap.recordingState !== 'OFF' && existingSnap.recordingState !== 'FAILED') {
+    return res.status(409).json({
+      error: `Recording already ${existingSnap.recordingState.toLowerCase()} for conference "${room}"`,
+      recordingState: existingSnap.recordingState,
+    });
+  }
+
   const ts   = new Date().toISOString().replace(/[:.]/g, '-');
-
-  // Path resolved from FS_RECORDING_DIR via freeSwitchPathService — never hardcoded.
   const recDir  = fsPathService.getConfRecordingDir();
-  const recPath = req.body?.path || path.join(recDir, `conf_${room}_${ts}.wav`);
+  // path.posix.join ensures forward-slash separators on all platforms —
+  // the path is sent to FreeSWITCH (Linux), not the local OS.
+  const recPath = req.body?.path || path.posix.join(recDir, `conf_${room}_${ts}.wav`);
 
-  // Ensure the directory exists on the backend host (FreeSWITCH writes to the same path).
+  // Create the directory on the backend host. In a shared-volume Docker setup
+  // this also creates it on the FreeSWITCH side; in other configs FreeSWITCH
+  // must already have write access to its own recording directory.
   try {
     fs.mkdirSync(recDir, { recursive: true });
   } catch (mkdirErr) {
@@ -117,7 +131,6 @@ export const startRecording = asyncHandler(async (req, res) => {
     return res.status(502).json({ error: `FreeSWITCH recording failed: ${reason}` });
   }
 
-  // FreeSWITCH returns "-ERR ..." on failure (e.g. file open error, bad path).
   if (typeof result === 'string' && result.trimStart().startsWith('-ERR')) {
     const reason = result.trim();
     console.error(`[monitoring] startRecording FreeSWITCH rejected conf="${room}" path="${recPath}": ${reason}`);
@@ -126,8 +139,9 @@ export const startRecording = asyncHandler(async (req, res) => {
   }
 
   console.log(`[monitoring] startRecording OK conf="${room}" path="${recPath}" fs_response="${String(result).trim()}"`);
-  // Optimistically update registry — confirmed (or corrected) by the start-recording ESL event.
-  setConferenceRecordingPath(room, recPath);
+  // Set STARTING state — transitions to ACTIVE only when the start-recording ESL event
+  // confirms FreeSWITCH opened the file. A 5 s timeout sets FAILED if no event arrives.
+  setConferenceRecordingStarting(room, recPath);
   res.json({ ok: true, recordingPath: recPath });
 });
 
@@ -171,9 +185,21 @@ export const stopRecording = asyncHandler(async (req, res) => {
   }
 
   if (typeof result === 'string' && result.trimStart().startsWith('-ERR')) {
-    const reason = result.trim();
-    console.error(`[monitoring] stopRecording FreeSWITCH rejected conf="${room}": ${reason}`);
-    return res.status(502).json({ error: `FreeSWITCH rejected stop: ${reason}` });
+    const errBody = result.trim().toLowerCase();
+    if (errBody.includes('non-existent') || errBody.includes('no recording')) {
+      // Path mismatch (e.g. backend restarted, or FreeSWITCH normalized the path).
+      // Fall back to norecord all to stop every active recording in this room.
+      console.warn(`[monitoring] stopRecording: path not found in FS, attempting norecord all — conf="${room}"`);
+      try {
+        await confRecordStopAll(room);
+      } catch (allErr) {
+        console.error(`[monitoring] stopRecording norecord all failed: ${allErr.message}`);
+      }
+    } else {
+      const reason = result.trim();
+      console.error(`[monitoring] stopRecording FreeSWITCH rejected conf="${room}": ${reason}`);
+      return res.status(502).json({ error: `FreeSWITCH rejected stop: ${reason}` });
+    }
   }
 
   setConferenceRecordingPath(room, null);

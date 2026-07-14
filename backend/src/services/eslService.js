@@ -28,7 +28,8 @@ let reconnectCount  = 0;
 //   rate, flags,
 //   members: Map<memberId, MemberRecord>
 // }
-const conferenceRegistry = new Map();
+const conferenceRegistry    = new Map();
+const recordingStartTimers  = new Map(); // confName → timeout ID, cleared by start-recording ESL event
 
 function registryGetOrCreate(confName) {
   if (!conferenceRegistry.has(confName)) {
@@ -77,16 +78,57 @@ function parseMemberFlags(rawFlags) {
   };
 }
 
-// Update recording path in the registry (called from monitoringController when
-// a record command is issued, before the ESL confirmation event arrives).
+// Called from stopRecording once the recording has been stopped (or force-cleared).
 export function setConferenceRecordingPath(confName, path) {
   const entry = conferenceRegistry.get(confName);
-  if (entry) {
-    entry.recordingPath  = path || null;
-    entry.recordingState = path ? 'ACTIVE' : 'OFF';
-    entry.recordingError = null;
-    entry.recording      = !!path;
+  if (!entry) return;
+  if (recordingStartTimers.has(confName)) {
+    clearTimeout(recordingStartTimers.get(confName));
+    recordingStartTimers.delete(confName);
   }
+  entry.recordingPath  = path || null;
+  entry.recordingState = path ? 'ACTIVE' : 'OFF';
+  entry.recordingError = null;
+  entry.recording      = !!path;
+}
+
+// Set state to STARTING immediately after issuing the record command.
+// The actual ACTIVE transition happens only when the start-recording ESL event
+// confirms FreeSWITCH opened the file. If no event arrives within 5 seconds
+// the state flips to FAILED so the UI doesn't hang in a "Starting…" limbo.
+export function setConferenceRecordingStarting(confName, recPath) {
+  const entry = conferenceRegistry.get(confName);
+  if (!entry) return;
+  if (recordingStartTimers.has(confName)) {
+    clearTimeout(recordingStartTimers.get(confName));
+    recordingStartTimers.delete(confName);
+  }
+  entry.recordingPath  = recPath || null;
+  entry.recordingState = 'STARTING';
+  entry.recordingError = null;
+  entry.recording      = false;
+
+  const timer = setTimeout(() => {
+    recordingStartTimers.delete(confName);
+    const e = conferenceRegistry.get(confName);
+    if (e && e.recordingState === 'STARTING') {
+      const reason = 'FreeSWITCH did not confirm recording start (5 s timeout — check FS file permissions and recording directory)';
+      e.recordingState = 'FAILED';
+      e.recordingError = reason;
+      e.recording      = false;
+      console.error(`[esl] recording start timeout — conf="${confName}" path="${recPath}"`);
+      emit('conference.recording', {
+        confName, recording: false, recordingState: 'FAILED',
+        recordingPath: recPath, recordingError: reason,
+      });
+    }
+  }, 5000);
+  recordingStartTimers.set(confName, timer);
+
+  emit('conference.recording', {
+    confName, recording: false, recordingState: 'STARTING',
+    recordingPath: recPath, recordingError: null,
+  });
 }
 
 export function setConferenceRecordingError(confName, reason) {
@@ -510,7 +552,7 @@ async function updateHeartbeat(connected) {
 }
 
 // ─── Handle incoming ESL events ─────────────────────────────
-function handleEvent(evt) {
+async function handleEvent(evt) {
   if (!evt) return;
   const name   = evt.getHeader('Event-Name');
   const subclass = evt.getHeader('Event-Subclass') || '';
@@ -530,8 +572,10 @@ function handleEvent(evt) {
 
     } else if (action === 'conference-destroy') {
       conferenceRegistry.delete(confName);
+      // Reconcile DB BEFORE emitting to socket — so any REST reseed triggered
+      // by the socket event sees the incident already marked COMPLETED, not ACTIVE.
+      await reconcileOrphanedIncident(confName);
       emit('conference.ended', { confName });
-      reconcileOrphanedIncident(confName);
 
     } else if (action === 'add-member') {
       const conf  = registryGetOrCreate(confName);
@@ -620,6 +664,11 @@ function handleEvent(evt) {
       emit('conference.locked', { confName, locked: false });
 
     } else if (action === 'start-recording') {
+      // FreeSWITCH confirmed the file opened — clear the STARTING timeout
+      if (recordingStartTimers.has(confName)) {
+        clearTimeout(recordingStartTimers.get(confName));
+        recordingStartTimers.delete(confName);
+      }
       const conf = conferenceRegistry.get(confName);
       // FreeSWITCH sends the recording file path in 'Path' header
       const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || null;
@@ -1058,6 +1107,12 @@ export async function confRecordPause(confName, path) {
 
 export async function confRecordStop(confName, path) {
   return eslCommand(`conference ${confName} norecord ${path}`);
+}
+
+// Stop ALL active recordings in a conference regardless of path.
+// Used as a fallback when the specific path is lost or mismatched.
+export async function confRecordStopAll(confName) {
+  return eslCommand(`conference ${confName} norecord all`);
 }
 
 // ─── Terminate (empty the room) ──────────────────────────────

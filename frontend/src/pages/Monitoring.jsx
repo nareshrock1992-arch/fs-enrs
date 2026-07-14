@@ -156,6 +156,12 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
         </div>
         {/* Status badges */}
         <div className="flex flex-col items-end gap-1 shrink-0">
+          {conf.recordingState === 'STARTING' && (
+            <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
+                             font-bold flex items-center gap-0.5 animate-pulse">
+              <Radio size={6} /> START
+            </span>
+          )}
           {conf.recordingState === 'ACTIVE' && (
             <span className="text-[8px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500
                              font-bold flex items-center gap-0.5 animate-pulse">
@@ -519,7 +525,12 @@ function CenterPanel({ conf, now }) {
           </div>
           <div>
             <MetaItem label="Recording">
-              {conf.recordingState === 'ACTIVE' ? (
+              {conf.recordingState === 'STARTING' ? (
+                <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
+                                 bg-amber-500/15 text-amber-500 font-bold w-fit animate-pulse">
+                  <Radio size={8} /> STARTING…
+                </span>
+              ) : conf.recordingState === 'ACTIVE' ? (
                 <div className="flex flex-col gap-0.5">
                   <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
                                    bg-red-500/15 text-red-500 font-bold animate-pulse w-fit">
@@ -638,6 +649,7 @@ function RightPanel({ conf }) {
   const disabled       = !conf;
   const name           = conf?.name;
   const recState       = conf?.recordingState || 'OFF';
+  const isStarting     = recState === 'STARTING';
   const isRecording    = recState === 'ACTIVE';
   const isPaused       = recState === 'PAUSED';
 
@@ -652,13 +664,19 @@ function RightPanel({ conf }) {
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <Zap size={12} className="text-amber-500" />
         <span className="text-xs font-bold text-text-primary">Controls</span>
-        {conf?.recordingState === 'ACTIVE' && (
+        {isStarting && (
+          <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
+                           bg-amber-500/15 text-amber-500 font-bold animate-pulse flex items-center gap-0.5">
+            <Radio size={7} /> STARTING
+          </span>
+        )}
+        {isRecording && (
           <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
                            bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5">
             <Radio size={7} /> REC
           </span>
         )}
-        {conf?.recordingState === 'PAUSED' && (
+        {isPaused && (
           <span className="ml-auto text-[9px] px-1.5 py-px rounded-full
                            bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5">
             <Pause size={7} /> PAUSED
@@ -701,6 +719,11 @@ function RightPanel({ conf }) {
           </p>
           <div className="space-y-1.5">
             {/* State indicator */}
+            {isStarting && (
+              <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium">
+                <Radio size={9} className="animate-pulse" /> Starting recording…
+              </div>
+            )}
             {isRecording && (
               <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-medium">
                 <Radio size={9} className="animate-pulse" /> Recording active
@@ -713,9 +736,12 @@ function RightPanel({ conf }) {
             )}
 
             {/* Action buttons — state-aware */}
-            {!isRecording && !isPaused && (
+            {!isStarting && !isRecording && !isPaused && (
               <CtrlBtn icon={Radio} label="Start Recording" disabled={disabled} wide
                 onClick={() => act(api.monitoring.recordStart)} />
+            )}
+            {isStarting && (
+              <CtrlBtn icon={Radio} label="Starting…" disabled wide />
             )}
             {(isRecording || isPaused) && (
               <>
@@ -1103,10 +1129,15 @@ export default function Monitoring() {
           recordingError: recordingError ?? (recordingState === 'FAILED' ? c.recordingError : null),
         }));
         const state = recordingState || (recording ? 'ACTIVE' : 'OFF');
+        const stateLabel = state === 'STARTING' ? 'starting'
+          : state === 'ACTIVE'  ? 'started'
+          : state === 'PAUSED'  ? 'paused'
+          : state === 'FAILED'  ? 'FAILED'
+          : 'stopped';
         pushEvent('conference.recording',
           state === 'FAILED'
             ? `${confName}: recording FAILED — ${recordingError || 'unknown error'}`
-            : `${confName}: recording ${state === 'ACTIVE' ? 'started' : state === 'PAUSED' ? 'paused' : 'stopped'}`);
+            : `${confName}: recording ${stateLabel}`);
       },
     };
 
