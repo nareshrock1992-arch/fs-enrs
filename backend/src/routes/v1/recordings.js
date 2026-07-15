@@ -4,7 +4,7 @@
  */
 
 import { Router } from 'express';
-import { requireAuth } from '../../middleware/auth.js';
+import { requireAuth, requireAuthOrToken } from '../../middleware/auth.js';
 import { adminOrOp } from '../../middleware/rbac.js';
 import {
   listRecordings, getRecording,
@@ -13,15 +13,17 @@ import {
 } from '../../controllers/recordingController.js';
 
 const router = Router();
-router.use(requireAuth);
 
-router.get('/',                   adminOrOp, listRecordings);
-router.get('/:id',                adminOrOp, getRecording);
-router.get('/:id/stream',         adminOrOp, streamRecording);
-router.get('/:id/download',       adminOrOp, downloadRecording);
-router.get('/:id/waveform',       adminOrOp, getRecordingWaveform);
-router.put('/:id',                adminOrOp, updateRecording);
-router.post('/:id/archive',       adminOrOp, archiveRecording);
-router.delete('/:id',             adminOrOp, deleteRecording);
+// List/detail/mutation routes require full auth
+router.get('/',                   requireAuth, adminOrOp, listRecordings);
+router.get('/:id',                requireAuth, adminOrOp, getRecording);
+router.put('/:id',                requireAuth, adminOrOp, updateRecording);
+router.post('/:id/archive',       requireAuth, adminOrOp, archiveRecording);
+router.delete('/:id',             requireAuth, adminOrOp, deleteRecording);
+
+// Streaming routes accept ?token= for <audio src> compatibility
+router.get('/:id/stream',         requireAuthOrToken, streamRecording);
+router.get('/:id/download',       requireAuthOrToken, downloadRecording);
+router.get('/:id/waveform',       requireAuthOrToken, getRecordingWaveform);
 
 export default router;

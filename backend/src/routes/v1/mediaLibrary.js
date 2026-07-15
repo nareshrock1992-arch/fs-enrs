@@ -4,7 +4,7 @@
  */
 
 import { Router } from 'express';
-import { requireAuth } from '../../middleware/auth.js';
+import { requireAuth, requireAuthOrToken } from '../../middleware/auth.js';
 import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
 import {
   listMedia, listCategories, uploadMedia, uploadMiddleware,
@@ -18,9 +18,9 @@ router.use(requireAuth);
 router.get('/categories',         adminOrOp, listCategories);
 router.get('/',                   adminOrOp, listMedia);
 router.get('/:id',                adminOrOp, getMedia);
-router.get('/:id/stream',         adminOrOp, streamMedia);
-router.get('/:id/download',       adminOrOp, downloadMedia);
-router.get('/:id/waveform',       adminOrOp, getWaveform);
+router.get('/:id/stream',         requireAuthOrToken, streamMedia);
+router.get('/:id/download',       requireAuthOrToken, downloadMedia);
+router.get('/:id/waveform',       requireAuthOrToken, getWaveform);
 router.post('/scan',              adminOnly, scanMedia);
 router.post('/upload',            adminOnly, uploadMiddleware, uploadMedia);
 router.put('/:id',                adminOnly, updateMedia);

@@ -242,9 +242,10 @@ export const api = {
     update:      (id,d) => request('PUT',    `/media-library/${id}`, d),
     deploy:      (id)   => request('POST',   `/media-library/${id}/deploy`),
     remove:      (id)   => request('DELETE', `/media-library/${id}`),
-    streamUrl:   (id,token) => `/api/v1/media-library/${id}/stream`,
-    downloadUrl: (id)   => `/api/v1/media-library/${id}/download`,
-    waveformUrl: (id)   => `/api/v1/media-library/${id}/waveform`,
+    // Token-bearing URLs for <audio src> and <a download> — browser can't set Authorization header
+    streamUrl:   (id)   => `/api/v1/media-library/${id}/stream?token=${getToken() || ''}`,
+    downloadUrl: (id)   => `/api/v1/media-library/${id}/download?token=${getToken() || ''}`,
+    waveformUrl: (id)   => `/api/v1/media-library/${id}/waveform?token=${getToken() || ''}`,
     waveform:    (id)   => request('GET',    `/media-library/${id}/waveform`),
   },
 
@@ -261,8 +262,9 @@ export const api = {
     update:      (id,d) => request('PUT',    `/recordings/${id}`, d),
     archive:     (id)   => request('POST',   `/recordings/${id}/archive`),
     remove:      (id)   => request('DELETE', `/recordings/${id}`),
-    streamUrl:   (id)   => `/api/v1/recordings/${id}/stream`,
-    downloadUrl: (id)   => `/api/v1/recordings/${id}/download`,
+    // Token-bearing URLs for <audio src> and <a download>
+    streamUrl:   (id)   => `/api/v1/recordings/${id}/stream?token=${getToken() || ''}`,
+    downloadUrl: (id)   => `/api/v1/recordings/${id}/download?token=${getToken() || ''}`,
     waveform:    (id)   => request('GET',    `/recordings/${id}/waveform`),
   },
 

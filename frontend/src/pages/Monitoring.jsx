@@ -1,14 +1,5 @@
 /**
  * Conference Operations Center — Enterprise NOC Dashboard
- *
- * Layout:
- *   Header + KPI strip (full width)
- *   ┌── Left 25% ──┬──── Center 50% ────┬── Right 25% ──┐
- *   │ Conference   │ Conference Details  │ Controls       │
- *   │ Cards        │ Participant Table   │                │
- *   └──────────────┴────────────────────┴────────────────┘
- *   Live Event Timeline (full width)
- *   Sparkline charts (full width)
  */
 import {
   useEffect, useState, useCallback, useRef, useMemo, memo,
@@ -20,12 +11,11 @@ import {
   Headphones, EarOff, Shield, RefreshCw, Zap,
   PhoneCall, Bell, Signal, ArrowRight,
   Monitor, BarChart2, Hash, PhoneForwarded,
+  CheckCircle, AlertCircle, Circle,
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { socket } from '../api/socket.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 const MAX_EVENTS        = 120;
 const CHART_INTERVAL_MS = 10_000;
@@ -45,8 +35,6 @@ const EV = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Utilities
-// ─────────────────────────────────────────────────────────────────────────────
 function elapsedSec(isoStart, now = Date.now()) {
   if (!isoStart) return 0;
   return Math.max(0, Math.floor((now - new Date(isoStart)) / 1000));
@@ -62,7 +50,48 @@ function fmtTime(iso) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sparkline — pure SVG, no library dependency
+// Toggle Switch — replaces dual-button lock/mute patterns
+// ─────────────────────────────────────────────────────────────────────────────
+function ToggleSwitch({ checked, onChange, disabled, labelOn, labelOff, colorOn = 'bg-brand', Icon }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={onChange}
+      className={[
+        'group flex items-center gap-2.5 w-full px-3 py-2.5 rounded-xl border text-xs font-medium',
+        'transition-all duration-150 select-none',
+        disabled
+          ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
+          : checked
+            ? 'border-brand/40 bg-brand/8 text-brand'
+            : 'border-surface-border text-text-secondary hover:border-primary/20 hover:bg-surface-hover',
+      ].join(' ')}
+    >
+      {Icon && <Icon size={13} className="shrink-0" />}
+      <span className="flex-1 text-left">{checked ? labelOn : labelOff}</span>
+      {/* Pill toggle */}
+      <span
+        className={[
+          'relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent',
+          'transition-colors duration-200',
+          disabled ? 'bg-surface-border' : checked ? colorOn : 'bg-surface-border',
+        ].join(' ')}
+      >
+        <span
+          className={[
+            'pointer-events-none h-3 w-3 rounded-full bg-white shadow-sm',
+            'transition-transform duration-200',
+            checked ? 'translate-x-3' : 'translate-x-0',
+          ].join(' ')}
+        />
+      </span>
+    </button>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 const Sparkline = memo(function Sparkline({ data = [], color = '#22c55e', height = 40 }) {
   if (data.length < 2) return <svg width="100%" height={height} />;
@@ -81,8 +110,6 @@ const Sparkline = memo(function Sparkline({ data = [], color = '#22c55e', height
   );
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// KPI Card
 // ─────────────────────────────────────────────────────────────────────────────
 const KpiCard = memo(function KpiCard({
   icon: Icon, label, value, sub,
@@ -119,7 +146,7 @@ const KpiCard = memo(function KpiCard({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LEFT PANEL — Conference Card List
+// LEFT PANEL — Conference Cards
 // ─────────────────────────────────────────────────────────────────────────────
 const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
   const secs  = elapsedSec(conf.createdAt, now);
@@ -137,7 +164,6 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
           : 'border-surface-border bg-surface-card hover:border-primary/20 hover:bg-surface-hover',
       ].join(' ')}
     >
-      {/* Header row */}
       <div className="flex items-start gap-2 mb-2">
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold font-mono text-text-primary leading-none truncate">
@@ -154,7 +180,6 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
             </p>
           )}
         </div>
-        {/* Status badges */}
         <div className="flex flex-col items-end gap-1 shrink-0">
           {conf.recordingState === 'STARTING' && (
             <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
@@ -189,7 +214,6 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
         </div>
       </div>
 
-      {/* Stats row */}
       <div className="flex items-center gap-2 text-[10px]">
         <span className={`flex items-center gap-1 font-semibold
           ${live > 0 ? 'text-green-500' : 'text-text-secondary'}`}>
@@ -200,6 +224,11 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
         {mods > 0 && (
           <span className="flex items-center gap-0.5 text-amber-500">
             <Shield size={8} /> {mods}
+          </span>
+        )}
+        {live > 0 && (
+          <span className="flex items-center gap-0.5 text-green-500">
+            <Mic size={8} /> {live}
           </span>
         )}
         <span className="ml-auto font-mono text-text-muted tabular-nums">
@@ -222,7 +251,7 @@ function LeftPanel({ conferences, selectedConf, onSelect, now, loading }) {
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-2">
+      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
         {loading ? (
           <div className="space-y-2">
             {[1, 2, 3].map(i => (
@@ -234,9 +263,7 @@ function LeftPanel({ conferences, selectedConf, onSelect, now, loading }) {
             <Headphones size={22} className="text-text-muted/25" />
             <div>
               <p className="text-xs font-medium text-text-secondary">No Active Conferences</p>
-              <p className="text-[10px] text-text-muted mt-0.5">
-                Waiting for FreeSWITCH activity…
-              </p>
+              <p className="text-[10px] text-text-muted mt-0.5">Waiting for FreeSWITCH…</p>
             </div>
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           </div>
@@ -259,12 +286,188 @@ function LeftPanel({ conferences, selectedConf, onSelect, now, loading }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CENTER PANEL — Conference Details + Participant Table
 // ─────────────────────────────────────────────────────────────────────────────
-function MetaItem({ label, children }) {
+function MetaItem({ label, children, span }) {
   return (
-    <div className="flex items-start gap-2 py-1.5 border-b border-surface-border/30 last:border-0">
+    <div className={`flex items-start gap-2 py-1.5 border-b border-surface-border/30 last:border-0 ${span ? 'col-span-2' : ''}`}>
       <span className="text-[10px] text-text-muted w-24 shrink-0 pt-px">{label}</span>
       <div className="text-[11px] font-medium text-text-primary flex-1">{children}</div>
     </div>
+  );
+}
+
+// Talking bars animation
+function TalkingBars() {
+  return (
+    <div className="flex items-end gap-px h-3 shrink-0">
+      {[1, 2, 3].map((_, i) => (
+        <div key={i}
+             className="w-px rounded-full bg-green-500"
+             style={{
+               height: `${(i + 1) * 4}px`,
+               animation: `pulse 0.5s ease-in-out ${i * 0.12}s infinite alternate`,
+             }} />
+      ))}
+    </div>
+  );
+}
+
+function ParticipantRow({ m, room, now }) {
+  const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
+  const ext      = m.extension   || m.callerNum  || '';
+  const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
+
+  async function act(fn, ...args) {
+    try { await fn(room, ...args); }
+    catch (e) { console.error('[monitoring] action failed:', e.message); }
+  }
+
+  function transfer() {
+    const dest = window.prompt(`Transfer ${display} to extension:`);
+    if (dest?.trim()) act(api.monitoring.transfer, m.id, dest.trim());
+  }
+
+  return (
+    <tr className={[
+      'border-b border-surface-border/25 transition-colors',
+      m.talking ? 'bg-green-500/4' : 'hover:bg-surface-hover/50',
+    ].join(' ')}>
+
+      {/* ID */}
+      <td className="px-2 py-2.5">
+        <span className="text-[10px] font-mono font-bold text-text-muted">#{m.id}</span>
+      </td>
+
+      {/* Name + talking indicator */}
+      <td className="px-2 py-2.5">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {m.talking && <TalkingBars />}
+          <span className="text-xs font-semibold text-text-primary truncate">{display}</span>
+        </div>
+      </td>
+
+      {/* Extension */}
+      <td className="px-2 py-2.5 hidden sm:table-cell">
+        <span className="text-[10px] font-mono text-text-secondary">{ext || '—'}</span>
+      </td>
+
+      {/* Role */}
+      <td className="px-2 py-2.5">
+        <div className="flex items-center gap-1">
+          {m.moderator ? (
+            <span className="text-[9px] px-1.5 py-px rounded-full
+                             bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5">
+              <Shield size={7} /> MOD
+            </span>
+          ) : (
+            <span className="text-[9px] px-1.5 py-px rounded-full bg-surface-hover text-text-muted">
+              PART
+            </span>
+          )}
+          {m.floor && (
+            <span className="text-[9px] px-1 py-px rounded bg-purple-500/15 text-purple-400 font-bold">FL</span>
+          )}
+        </div>
+      </td>
+
+      {/* Audio state — mute badge */}
+      <td className="px-2 py-2.5">
+        {m.muted ? (
+          <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold">MUTED</span>
+        ) : (
+          <span className="text-[9px] text-emerald-500 font-medium flex items-center gap-0.5">
+            <Mic size={8} /> ON
+          </span>
+        )}
+        {m.deaf && (
+          <span className="ml-1 text-[9px] px-1 py-px rounded bg-orange-500/15 text-orange-500 font-bold">DEAF</span>
+        )}
+      </td>
+
+      {/* Energy */}
+      <td className="px-2 py-2.5 text-center hidden md:table-cell">
+        <span className="text-[10px] font-mono tabular-nums text-text-muted">{m.energy ?? 0}</span>
+      </td>
+
+      {/* Joined */}
+      <td className="px-2 py-2.5 hidden lg:table-cell">
+        <span className="text-[9px] font-mono text-text-muted tabular-nums">
+          {joinSecs != null ? fmtDur(joinSecs) : '—'}
+        </span>
+      </td>
+
+      {/* Actions — min-width so they never clip */}
+      <td className="px-2 py-2.5" style={{ minWidth: '160px' }}>
+        <div className="flex items-center gap-1">
+          {/* Mute toggle */}
+          <button
+            title={m.muted ? 'Unmute' : 'Mute'}
+            onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
+            className={[
+              'p-1.5 rounded-lg transition-colors',
+              m.muted
+                ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                : 'text-text-muted hover:bg-surface-hover hover:text-emerald-500',
+            ].join(' ')}>
+            {m.muted ? <MicOff size={11} /> : <Mic size={11} />}
+          </button>
+
+          {/* Deaf toggle */}
+          <button
+            title={m.deaf ? 'Undeaf' : 'Deaf'}
+            onClick={() => act(m.deaf ? api.monitoring.undeaf : api.monitoring.deaf, m.id)}
+            className={[
+              'p-1.5 rounded-lg transition-colors',
+              m.deaf
+                ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20'
+                : 'text-text-muted hover:bg-surface-hover hover:text-orange-400',
+            ].join(' ')}>
+            <EarOff size={11} />
+          </button>
+
+          {/* Give floor */}
+          <button
+            title="Give floor"
+            onClick={() => act(api.monitoring.floor, m.id)}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-purple-500/10 hover:text-purple-400 transition-colors">
+            <Shield size={11} />
+          </button>
+
+          {/* Transfer */}
+          <button
+            title="Transfer"
+            onClick={transfer}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-blue-500/10 hover:text-blue-400 transition-colors">
+            <PhoneForwarded size={11} />
+          </button>
+
+          {/* Volume adjust */}
+          <button
+            title="Volume +"
+            onClick={() => act(api.monitoring.volume, m.id, 'in', 1)}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[9px] font-bold leading-none">
+            V+
+          </button>
+          <button
+            title="Volume −"
+            onClick={() => act(api.monitoring.volume, m.id, 'in', -1)}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[9px] font-bold leading-none">
+            V−
+          </button>
+
+          {/* Kick */}
+          <button
+            title="Kick participant"
+            onClick={() => {
+              if (window.confirm(`Kick ${display} from ${room}?`)) {
+                act(api.monitoring.kick, m.id);
+              }
+            }}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-red-500/10 hover:text-red-500 transition-colors">
+            <PhoneOff size={11} />
+          </button>
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -284,19 +487,14 @@ function ParticipantTable({ members, room, now }) {
     );
   }
 
-  async function act(fn, ...args) {
-    try { await fn(room, ...args); }
-    catch (e) { console.error('[monitoring] action failed:', e.message); }
-  }
-
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left border-collapse">
+      <table className="w-full text-left border-collapse" style={{ minWidth: '640px' }}>
         <thead>
           <tr>
-            {['ID', 'Display Name', 'Extension', 'Role', 'Audio', 'Speaking', 'Energy', 'Joined', 'Actions'].map(h => (
+            {['ID', 'Name', 'Ext', 'Role', 'Audio', 'Energy', 'Joined', 'Actions'].map(h => (
               <th key={h}
-                  className="px-2.5 py-2 text-[9px] font-bold uppercase tracking-wider
+                  className="px-2 py-2 text-[9px] font-bold uppercase tracking-wider
                              text-text-muted bg-surface-hover/40 whitespace-nowrap
                              border-b border-surface-border first:rounded-tl last:rounded-tr">
                 {h}
@@ -305,176 +503,9 @@ function ParticipantTable({ members, room, now }) {
           </tr>
         </thead>
         <tbody>
-          {sorted.map(m => {
-            const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
-            const ext      = m.extension   || m.callerNum  || '';
-            const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
-
-            function transfer() {
-              const ext = window.prompt(`Transfer ${display} to extension:`);
-              if (ext?.trim()) act(api.monitoring.transfer, m.id, ext.trim());
-            }
-
-            return (
-              <tr key={m.id}
-                  className={[
-                    'border-b border-surface-border/25 transition-colors',
-                    m.talking ? 'bg-green-500/5' : 'hover:bg-surface-hover/60',
-                  ].join(' ')}>
-
-                {/* ID */}
-                <td className="px-2.5 py-2">
-                  <span className="text-[10px] font-mono font-semibold text-text-muted">
-                    #{m.id}
-                  </span>
-                </td>
-
-                {/* Name */}
-                <td className="px-2.5 py-2 max-w-[120px]">
-                  <div className="flex items-center gap-1.5">
-                    {m.talking && (
-                      <div className="flex items-end gap-px h-3 shrink-0">
-                        {[1, 2, 3].map((_, i) => (
-                          <div key={i}
-                               className="w-px rounded-full bg-green-500"
-                               style={{
-                                 height: `${(i + 1) * 3}px`,
-                                 animation: `pulse 0.6s ease-in-out ${i * 0.15}s infinite alternate`,
-                               }} />
-                        ))}
-                      </div>
-                    )}
-                    <span className="text-xs font-medium text-text-primary truncate">
-                      {display}
-                    </span>
-                  </div>
-                </td>
-
-                {/* Extension */}
-                <td className="px-2.5 py-2">
-                  <span className="text-[10px] font-mono text-text-secondary">{ext || '—'}</span>
-                </td>
-
-                {/* Role */}
-                <td className="px-2.5 py-2 whitespace-nowrap">
-                  <div className="flex items-center gap-1">
-                    {m.moderator ? (
-                      <span className="text-[9px] px-1.5 py-px rounded-full
-                                       bg-amber-500/15 text-amber-500 font-bold
-                                       flex items-center gap-0.5">
-                        <Shield size={7} /> MOD
-                      </span>
-                    ) : (
-                      <span className="text-[9px] px-1.5 py-px rounded-full
-                                       bg-surface-hover text-text-muted">
-                        PART
-                      </span>
-                    )}
-                    {m.floor && (
-                      <span className="text-[9px] px-1 py-px rounded
-                                       bg-purple-500/15 text-purple-400 font-bold">
-                        FL
-                      </span>
-                    )}
-                  </div>
-                </td>
-
-                {/* Audio (mute + deaf indicators) */}
-                <td className="px-2.5 py-2 whitespace-nowrap">
-                  <div className="flex items-center gap-1">
-                    {m.muted ? (
-                      <span className="text-[9px] px-1.5 py-px rounded-full
-                                       bg-red-500/15 text-red-500 font-bold">
-                        MUTED
-                      </span>
-                    ) : (
-                      <span className="text-[9px] text-emerald-500 font-medium">MIC</span>
-                    )}
-                    {m.deaf && (
-                      <span className="text-[9px] px-1 py-px rounded
-                                       bg-orange-500/15 text-orange-500 font-bold">
-                        DEAF
-                      </span>
-                    )}
-                  </div>
-                </td>
-
-                {/* Speaking */}
-                <td className="px-2.5 py-2 text-center">
-                  {m.talking
-                    ? <span className="text-[9px] text-green-500 font-bold">● LIVE</span>
-                    : <span className="text-[9px] text-text-muted/40">–</span>
-                  }
-                </td>
-
-                {/* Energy */}
-                <td className="px-2.5 py-2 text-right">
-                  <span className="text-[10px] font-mono tabular-nums text-text-muted">
-                    {m.energy ?? 0}
-                  </span>
-                </td>
-
-                {/* Joined */}
-                <td className="px-2.5 py-2 whitespace-nowrap">
-                  <span className="text-[9px] font-mono text-text-muted tabular-nums">
-                    {joinSecs != null ? fmtDur(joinSecs) : '—'}
-                  </span>
-                </td>
-
-                {/* Actions */}
-                <td className="px-2.5 py-2">
-                  <div className="flex items-center gap-0.5">
-                    {/* Mute / Unmute */}
-                    <button
-                      title={m.muted ? 'Unmute' : 'Mute'}
-                      onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
-                      className="p-1 rounded hover:bg-surface-hover text-text-muted
-                                 hover:text-text-primary transition-colors">
-                      {m.muted ? <Mic size={11} /> : <MicOff size={11} />}
-                    </button>
-                    {/* Deaf / Undeaf */}
-                    <button
-                      title={m.deaf ? 'Undeaf' : 'Deaf'}
-                      onClick={() => act(m.deaf ? api.monitoring.undeaf : api.monitoring.deaf, m.id)}
-                      className={`p-1 rounded transition-colors
-                        ${m.deaf
-                          ? 'text-orange-500 hover:bg-orange-500/10 hover:text-orange-400'
-                          : 'hover:bg-surface-hover text-text-muted hover:text-text-primary'}`}>
-                      <EarOff size={11} />
-                    </button>
-                    {/* Give Floor */}
-                    <button
-                      title="Give Floor"
-                      onClick={() => act(api.monitoring.floor, m.id)}
-                      className="p-1 rounded hover:bg-surface-hover text-text-muted
-                                 hover:text-purple-400 transition-colors">
-                      <ArrowRight size={11} />
-                    </button>
-                    {/* Transfer */}
-                    <button
-                      title="Transfer to extension"
-                      onClick={transfer}
-                      className="p-1 rounded hover:bg-surface-hover text-text-muted
-                                 hover:text-blue-400 transition-colors">
-                      <PhoneForwarded size={11} />
-                    </button>
-                    {/* Kick */}
-                    <button
-                      title="Kick participant"
-                      onClick={() => {
-                        if (window.confirm(`Kick ${display} from ${room}?`)) {
-                          act(api.monitoring.kick, m.id);
-                        }
-                      }}
-                      className="p-1 rounded hover:bg-red-500/10 text-text-muted
-                                 hover:text-red-500 transition-colors">
-                      <PhoneOff size={11} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
+          {sorted.map(m => (
+            <ParticipantRow key={m.id} m={m} room={room} now={now} />
+          ))}
         </tbody>
       </table>
     </div>
@@ -489,11 +520,9 @@ function CenterPanel({ conf, now }) {
           <Monitor size={26} className="text-text-muted/30" />
         </div>
         <div>
-          <p className="text-sm font-semibold text-text-secondary">
-            Select a Conference
-          </p>
-          <p className="text-xs text-text-muted mt-1.5 leading-relaxed">
-            Click a conference card in the left panel to view participants and details
+          <p className="text-sm font-semibold text-text-secondary">Select a Conference</p>
+          <p className="text-xs text-text-muted mt-1 leading-relaxed">
+            Click a conference card to view participants and details
           </p>
         </div>
       </div>
@@ -503,18 +532,18 @@ function CenterPanel({ conf, now }) {
   const secs  = elapsedSec(conf.createdAt, now);
   const count = conf.members?.length ?? 0;
   const mods  = conf.members?.filter(m => m.moderator).length ?? 0;
+  const live  = conf.members?.filter(m => m.talking).length  ?? 0;
 
   return (
     <div className="h-full flex flex-col gap-4 overflow-y-auto">
-
-      {/* Conference metadata grid */}
+      {/* Conference metadata */}
       <div>
         <div className="flex items-center gap-2 mb-2 shrink-0">
           <Hash size={11} className="text-primary" />
           <span className="text-xs font-bold text-text-primary">Conference Details</span>
-          <span className="text-xs font-mono text-text-muted">— {conf.name}</span>
+          <span className="text-xs font-mono text-text-muted ml-1">— {conf.name}</span>
         </div>
-        <div className="card !p-3 grid grid-cols-2 gap-x-8">
+        <div className="card !p-3 grid grid-cols-2 gap-x-6">
           <div>
             <MetaItem label="Conference ID">
               <span className="font-mono">{conf.name}</span>
@@ -522,11 +551,19 @@ function CenterPanel({ conf, now }) {
             <MetaItem label="Duration">
               <span className="font-mono tabular-nums">{fmtDur(secs)}</span>
             </MetaItem>
+            <MetaItem label="Participants">
+              <div className="flex items-center gap-2">
+                <span>{count}</span>
+                {mods > 0 && <span className="text-[9px] text-amber-500">{mods} mod{mods > 1 ? 's' : ''}</span>}
+                {live > 0 && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-green-500">
+                    <span className="w-1 h-1 rounded-full bg-green-500 animate-pulse" /> {live} speaking
+                  </span>
+                )}
+              </div>
+            </MetaItem>
             <MetaItem label="Sample Rate">
               {conf.rate ? `${conf.rate} Hz` : '8000 Hz'}
-            </MetaItem>
-            <MetaItem label="Participants">
-              {count} ({mods} moderator{mods !== 1 ? 's' : ''})
             </MetaItem>
           </div>
           <div>
@@ -543,7 +580,7 @@ function CenterPanel({ conf, now }) {
                     <Radio size={8} /> RECORDING
                   </span>
                   {conf.recordingPath && (
-                    <span className="text-[9px] text-text-muted truncate max-w-[160px]" title={conf.recordingPath}>
+                    <span className="text-[9px] text-text-muted truncate max-w-[160px] font-mono" title={conf.recordingPath}>
                       {conf.recordingPath.split('/').pop()}
                     </span>
                   )}
@@ -561,7 +598,7 @@ function CenterPanel({ conf, now }) {
               ) : conf.recordingState === 'FAILED' ? (
                 <div className="flex flex-col gap-0.5">
                   <span className="flex items-center gap-1 text-[10px] text-red-500 font-bold">
-                    ✗ Failed
+                    <AlertCircle size={8} /> Failed
                   </span>
                   {conf.recordingError && (
                     <span className="text-[9px] text-red-400 whitespace-pre-wrap break-words">{conf.recordingError}</span>
@@ -578,29 +615,30 @@ function CenterPanel({ conf, now }) {
                   <Lock size={8} /> LOCKED
                 </span>
               ) : (
-                <span className="text-emerald-500 text-[10px] font-medium">Open</span>
+                <span className="text-emerald-500 text-[10px] font-medium flex items-center gap-1">
+                  <Unlock size={8} /> Open
+                </span>
               )}
             </MetaItem>
-            <MetaItem label="Type">
+            <MetaItem label="Flags">
               <div className="flex flex-wrap gap-1">
                 {conf.isDynamic  && <span className="text-[9px] px-1.5 py-px rounded bg-blue-500/15 text-blue-400 font-bold">Dynamic</span>}
                 {conf.isRunning  && <span className="text-[9px] px-1.5 py-px rounded bg-emerald-500/15 text-emerald-500 font-bold">Running</span>}
-                {conf.isAnswered && <span className="text-[9px] px-1.5 py-px rounded bg-slate-500/15 text-slate-400 font-bold">Answered</span>}
                 {conf.isModerated && <span className="text-[9px] px-1.5 py-px rounded bg-purple-500/15 text-purple-400 font-bold">Moderated</span>}
                 {!conf.isDynamic && !conf.isRunning && !conf.isModerated && (
                   <span className="text-[9px] text-text-muted">Standard</span>
                 )}
               </div>
             </MetaItem>
-            {conf.incident?.organization_name && (
-              <MetaItem label="Organization">
-                {conf.incident.organization_name}
-              </MetaItem>
-            )}
-            {conf.incident?.ers_name && (
-              <MetaItem label="ERS Config">
-                {conf.incident.ers_name}
-              </MetaItem>
+            {(conf.incident?.organization_name || conf.incident?.ers_name) && (
+              <>
+                {conf.incident?.organization_name && (
+                  <MetaItem label="Organization">{conf.incident.organization_name}</MetaItem>
+                )}
+                {conf.incident?.ers_name && (
+                  <MetaItem label="ERS Config">{conf.incident.ers_name}</MetaItem>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -611,10 +649,14 @@ function CenterPanel({ conf, now }) {
         <div className="flex items-center gap-2 mb-2 shrink-0">
           <Users size={11} className="text-blue-500" />
           <span className="text-xs font-bold text-text-primary">Participants</span>
-          <span className="text-[10px] px-1.5 py-px rounded-full bg-blue-500/15
-                           text-blue-400 font-bold ml-1">
+          <span className="text-[10px] px-1.5 py-px rounded-full bg-blue-500/15 text-blue-400 font-bold ml-1">
             {count}
           </span>
+          {live > 0 && (
+            <span className="text-[10px] px-1.5 py-px rounded-full bg-green-500/15 text-green-500 font-bold flex items-center gap-0.5">
+              <span className="w-1 h-1 rounded-full bg-green-500 animate-pulse" /> {live} live
+            </span>
+          )}
         </div>
         <div className="card !p-0 overflow-hidden">
           <ParticipantTable members={conf.members || []} room={conf.name} now={now} />
@@ -625,64 +667,55 @@ function CenterPanel({ conf, now }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RIGHT PANEL — Conference Controls
+// RIGHT PANEL — Controls
 // ─────────────────────────────────────────────────────────────────────────────
-function CtrlBtn({ icon: Icon, label, onClick, variant = 'default', active = false, disabled = false, wide = false }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={label}
-      className={[
-        'flex items-center gap-1.5 rounded-lg border text-xs font-medium transition-all select-none',
-        wide ? 'w-full px-3 py-2' : 'px-2.5 py-1.5',
-        disabled
-          ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
-          : variant === 'danger'
-            ? 'border-red-500/30 text-red-500 hover:bg-red-500/15 hover:border-red-500/60'
-            : active
-              ? 'border-primary/40 bg-primary/10 text-primary'
-              : 'border-surface-border text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-      ].join(' ')}
-    >
-      <Icon size={13} className="shrink-0" />
-      {label}
-    </button>
-  );
-}
-
 function RightPanel({ conf }) {
   const [sayText,    setSayText]    = useState('');
   const [dialStr,    setDialStr]    = useState('');
   const [showSay,    setShowSay]    = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [actionBusy, setActionBusy] = useState({});
 
-  const disabled       = !conf;
-  const name           = conf?.name;
-  const recState       = conf?.recordingState || 'OFF';
-  const isStarting     = recState === 'STARTING';
-  const isRecording    = recState === 'ACTIVE';
-  const isPaused       = recState === 'PAUSED';
-  const isStopping     = recState === 'STOPPING';
-  const isFailed       = recState === 'FAILED';
-  const recBusy        = isStarting || isStopping;
+  const disabled    = !conf;
+  const name        = conf?.name;
+  const recState    = conf?.recordingState || 'OFF';
+  const isStarting  = recState === 'STARTING';
+  const isRecording = recState === 'ACTIVE';
+  const isPaused    = recState === 'PAUSED';
+  const isStopping  = recState === 'STOPPING';
+  const isFailed    = recState === 'FAILED';
+  const recBusy     = isStarting || isStopping;
 
-  async function act(fn, ...args) {
+  async function act(key, fn, ...args) {
     if (!name) return;
+    setActionBusy(b => ({ ...b, [key]: true }));
     try { await fn(name, ...args); }
     catch (e) { alert('Command failed: ' + (e.message || 'Unknown error')); }
+    finally { setActionBusy(b => ({ ...b, [key]: false })); }
   }
+
+  // Recording button label + icon
+  const recBtn = recBusy
+    ? { label: isStarting ? 'Starting…' : 'Stopping…', icon: RefreshCw, variant: 'busy' }
+    : (recState === 'OFF' || isFailed)
+      ? { label: 'Start Recording',  icon: Radio,  variant: 'start' }
+      : isRecording
+        ? { label: 'Stop Recording',  icon: Square, variant: 'stop' }
+        : isPaused
+          ? { label: 'Resume',          icon: Radio,  variant: 'start' }
+          : { label: 'Stop Recording',  icon: Square, variant: 'stop' };
 
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <Zap size={12} className="text-amber-500" />
         <span className="text-xs font-bold text-text-primary">Controls</span>
+        {/* Recording state chip */}
         {isStarting  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> STARTING</span>}
         {isRecording && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> REC</span>}
         {isPaused    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5"><Pause size={7} /> PAUSED</span>}
         {isStopping  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400 font-bold animate-pulse flex items-center gap-0.5"><Square size={7} /> STOPPING</span>}
-        {isFailed    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-900/20 text-red-400 font-bold flex items-center gap-0.5">✗ FAILED</span>}
+        {isFailed    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-900/20 text-red-400 font-bold flex items-center gap-0.5"><AlertCircle size={7} /> FAILED</span>}
         {!conf && <span className="ml-auto text-[9px] text-text-muted">No selection</span>}
       </div>
 
@@ -690,79 +723,120 @@ function RightPanel({ conf }) {
 
         {/* Conference controls */}
         <div>
-          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">
-            Conference
-          </p>
-          <div className="space-y-1.5">
-            <CtrlBtn
-              icon={conf?.locked ? Unlock : Lock}
-              label={conf?.locked ? 'Unlock Conference' : 'Lock Conference'}
-              active={conf?.locked}
-              disabled={disabled}
-              wide
-              onClick={() => act(conf?.locked ? api.monitoring.unlock : api.monitoring.lock)}
+          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">Conference</p>
+          <div className="space-y-2">
+            {/* Lock — toggle switch */}
+            <ToggleSwitch
+              checked={conf?.locked ?? false}
+              disabled={disabled || !!actionBusy.lock}
+              labelOn="Conference Locked"
+              labelOff="Lock Conference"
+              Icon={conf?.locked ? Lock : Unlock}
+              colorOn="bg-amber-500"
+              onChange={() => act('lock', conf?.locked ? api.monitoring.unlock : api.monitoring.lock)}
             />
+
+            {/* Mute All / Unmute All — two small buttons */}
             <div className="flex gap-1.5">
-              <CtrlBtn icon={MicOff} label="Mute All" disabled={disabled}
-                onClick={() => conf?.members?.forEach(m => api.monitoring.mute(name, m.id))} />
-              <CtrlBtn icon={Mic} label="Unmute All" disabled={disabled}
-                onClick={() => conf?.members?.forEach(m => api.monitoring.unmute(name, m.id))} />
+              <button
+                disabled={disabled}
+                onClick={() => conf?.members?.forEach(m => api.monitoring.mute(name, m.id))}
+                className="flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-lg
+                           border border-surface-border text-text-secondary
+                           hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20
+                           disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
+                <MicOff size={11} /> Mute All
+              </button>
+              <button
+                disabled={disabled}
+                onClick={() => conf?.members?.forEach(m => api.monitoring.unmute(name, m.id))}
+                className="flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-lg
+                           border border-surface-border text-text-secondary
+                           hover:bg-emerald-500/10 hover:text-emerald-500 hover:border-emerald-500/20
+                           disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
+                <Mic size={11} /> Unmute All
+              </button>
             </div>
           </div>
         </div>
 
         {/* Recording */}
         <div>
-          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">
-            Recording
-          </p>
-          <div className="space-y-1.5">
-            {/* State indicator */}
-            {isStarting  && <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium"><Radio size={9} className="animate-pulse" /> Starting recording…</div>}
-            {isRecording && <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-medium"><Radio size={9} className="animate-pulse" /> Recording active</div>}
-            {isPaused    && <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-medium"><Pause size={9} /> Recording paused</div>}
-            {isStopping  && <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-medium"><Square size={9} className="animate-pulse" /> Stopping…</div>}
-            {isFailed    && <div className="text-[10px] text-red-400 font-medium">✗ Failed — see backend logs for directory/permission details</div>}
+          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">Recording</p>
+          <div className="space-y-2">
+            {/* Status text */}
+            {isStarting  && <div className="flex items-center gap-1.5 text-[10px] text-amber-400"><Radio size={9} className="animate-pulse" /> Starting…</div>}
+            {isRecording && <div className="flex items-center gap-1.5 text-[10px] text-red-400"><Radio size={9} className="animate-pulse" /> Recording active</div>}
+            {isPaused    && <div className="flex items-center gap-1.5 text-[10px] text-amber-400"><Pause size={9} /> Paused</div>}
+            {isStopping  && <div className="flex items-center gap-1.5 text-[10px] text-slate-400"><Square size={9} className="animate-pulse" /> Stopping…</div>}
+            {isFailed    && <div className="text-[10px] text-red-400">Recording failed — check backend logs</div>}
 
-            {/* Action buttons — state machine */}
-            {(recState === 'OFF' || isFailed) && (
-              <CtrlBtn icon={Radio} label="Start Recording" disabled={disabled} wide
-                onClick={() => act(api.monitoring.recordStart)} />
+            {/* Primary recording button (single button, state-aware label) */}
+            {!recBusy && (
+              <button
+                disabled={disabled}
+                onClick={() => {
+                  if (recState === 'OFF' || isFailed) {
+                    act('record', api.monitoring.recordStart);
+                  } else if (isRecording) {
+                    act('record', api.monitoring.recordStop);
+                  } else if (isPaused) {
+                    act('record', api.monitoring.recordStart, conf?.recordingPath || undefined);
+                  } else {
+                    act('record', api.monitoring.recordStop);
+                  }
+                }}
+                className={[
+                  'w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border',
+                  'text-xs font-medium transition-all',
+                  disabled ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
+                    : (recState === 'OFF' || isFailed)
+                      ? 'border-red-500/30 bg-red-500/8 text-red-400 hover:bg-red-500/15 hover:border-red-500/50'
+                      : 'border-red-500/40 bg-red-500/15 text-red-400 hover:bg-red-500/25',
+                ].join(' ')}
+              >
+                {(recState === 'OFF' || isFailed)
+                  ? <><Radio size={13} /> Start Recording</>
+                  : isPaused
+                    ? <><Radio size={13} /> Resume Recording</>
+                    : <><Square size={13} /> Stop Recording</>}
+              </button>
             )}
+
+            {/* Pause button — only visible when actively recording */}
+            {isRecording && !recBusy && (
+              <button
+                disabled={disabled}
+                onClick={() => act('pause', api.monitoring.recordPause)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl border
+                           border-amber-500/30 text-amber-400 text-xs font-medium
+                           hover:bg-amber-500/10 transition-colors disabled:opacity-35">
+                <Pause size={12} /> Pause Recording
+              </button>
+            )}
+
             {recBusy && (
-              <CtrlBtn icon={Radio} label={isStarting ? 'Starting…' : 'Stopping…'} disabled wide />
-            )}
-            {(isRecording || isPaused) && (
-              <>
-                {isRecording && (
-                  <CtrlBtn icon={Pause} label="Pause" active wide
-                    onClick={() => act(api.monitoring.recordPause)} />
-                )}
-                {isPaused && (
-                  <CtrlBtn icon={Radio} label="Resume" wide
-                    onClick={() => act(api.monitoring.recordStart, conf?.recordingPath || undefined)} />
-                )}
-                <CtrlBtn icon={Square} label="Stop Recording" variant="danger" wide
-                  onClick={() => act(api.monitoring.recordStop)} />
-              </>
+              <button disabled
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border
+                           border-surface-border text-text-muted text-xs opacity-35 cursor-not-allowed">
+                <RefreshCw size={12} className="animate-spin" />
+                {isStarting ? 'Starting…' : 'Stopping…'}
+              </button>
             )}
           </div>
         </div>
 
         {/* Broadcast */}
         <div>
-          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">
-            Broadcast
-          </p>
+          <p className="text-[9px] uppercase tracking-widest text-text-muted font-bold mb-2">Broadcast</p>
           <div className="space-y-1.5">
             {/* TTS */}
             <button
               disabled={disabled}
               onClick={() => { if (!disabled) { setShowSay(s => !s); setShowInvite(false); } }}
               className={[
-                'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors',
-                disabled
-                  ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
+                'w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition-colors',
+                disabled ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
                   : showSay
                     ? 'border-primary/40 bg-primary/8 text-primary'
                     : 'border-surface-border text-text-secondary hover:bg-surface-hover',
@@ -776,18 +850,14 @@ function RightPanel({ conf }) {
                 onSubmit={async e => {
                   e.preventDefault();
                   if (!sayText.trim()) return;
-                  await act(api.monitoring.say, sayText.trim());
+                  await act('say', api.monitoring.say, sayText.trim());
                   setSayText(''); setShowSay(false);
                 }}
                 className="flex gap-1.5"
               >
-                <input
-                  autoFocus
-                  value={sayText}
-                  onChange={e => setSayText(e.target.value)}
+                <input autoFocus value={sayText} onChange={e => setSayText(e.target.value)}
                   placeholder="Announcement text…"
-                  className="flex-1 input text-xs py-1.5 px-2.5"
-                />
+                  className="flex-1 input text-xs py-1.5 px-2.5" />
                 <button type="submit" className="btn-primary text-xs px-3">Say</button>
               </form>
             )}
@@ -797,9 +867,8 @@ function RightPanel({ conf }) {
               disabled={disabled}
               onClick={() => { if (!disabled) { setShowInvite(s => !s); setShowSay(false); } }}
               className={[
-                'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors',
-                disabled
-                  ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
+                'w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition-colors',
+                disabled ? 'opacity-35 cursor-not-allowed border-surface-border text-text-muted'
                   : showInvite
                     ? 'border-primary/40 bg-primary/8 text-primary'
                     : 'border-surface-border text-text-secondary hover:bg-surface-hover',
@@ -813,18 +882,14 @@ function RightPanel({ conf }) {
                 onSubmit={async e => {
                   e.preventDefault();
                   if (!dialStr.trim()) return;
-                  await act(api.monitoring.invite, dialStr.trim());
+                  await act('invite', api.monitoring.invite, dialStr.trim());
                   setDialStr(''); setShowInvite(false);
                 }}
                 className="flex gap-1.5"
               >
-                <input
-                  autoFocus
-                  value={dialStr}
-                  onChange={e => setDialStr(e.target.value)}
+                <input autoFocus value={dialStr} onChange={e => setDialStr(e.target.value)}
                   placeholder="Extension or sip:user@domain"
-                  className="flex-1 input text-xs py-1.5 px-2.5"
-                />
+                  className="flex-1 input text-xs py-1.5 px-2.5" />
                 <button type="submit" className="btn-primary text-xs px-3">Dial</button>
               </form>
             )}
@@ -833,25 +898,28 @@ function RightPanel({ conf }) {
 
         {/* Danger zone */}
         <div className="pt-2 border-t border-surface-border">
-          <p className="text-[9px] uppercase tracking-widest text-red-500/50 font-bold mb-2">
+          <p className="text-[9px] uppercase tracking-widest text-red-500/40 font-bold mb-2">
             Danger Zone
           </p>
-          <CtrlBtn
-            icon={Trash2}
-            label="Terminate Conference"
-            variant="danger"
-            wide
+          <button
             disabled={disabled}
             onClick={() => {
               if (window.confirm(
                 `Terminate conference "${name}"?\n\n` +
-                `All ${conf?.members?.length ?? 0} participant(s) will be immediately disconnected.`
+                `All ${conf?.members?.length ?? 0} participant(s) will be disconnected immediately.`
               )) {
-                act(api.monitoring.terminate);
+                act('terminate', api.monitoring.terminate);
               }
             }}
-          />
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl border
+                       border-red-500/30 text-red-500 text-xs font-medium
+                       hover:bg-red-500/10 hover:border-red-500/50
+                       disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+          >
+            <Trash2 size={12} /> Terminate Conference
+          </button>
         </div>
+
       </div>
     </div>
   );
@@ -869,9 +937,7 @@ const TimelineRow = memo(function TimelineRow({ ev }) {
         {fmtTime(ev.ts)}
       </span>
       <Icon size={10} className={`${cfg.color} shrink-0`} />
-      <span className={`text-[10px] font-semibold shrink-0 w-32 ${cfg.color}`}>
-        {cfg.label}
-      </span>
+      <span className={`text-[10px] font-semibold shrink-0 w-32 ${cfg.color}`}>{cfg.label}</span>
       <span className="text-[10px] text-text-muted truncate">{ev.detail}</span>
     </div>
   );
@@ -893,8 +959,7 @@ function BottomTimeline({ events }) {
         <Activity size={12} className="text-emerald-500" />
         <span className="text-xs font-bold text-text-primary">Live Event Timeline</span>
         {events.length > 0 && (
-          <span className="ml-2 text-[10px] px-1.5 py-px rounded-full
-                           bg-surface-hover text-text-muted font-mono">
+          <span className="ml-2 text-[10px] px-1.5 py-px rounded-full bg-surface-hover text-text-muted font-mono">
             {events.length}
           </span>
         )}
@@ -904,7 +969,7 @@ function BottomTimeline({ events }) {
         {events.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-5">
             <Bell size={12} className="text-text-muted/25" />
-            <p className="text-xs text-text-muted">Subscribed to conference events — waiting…</p>
+            <p className="text-xs text-text-muted">Subscribed — waiting for events…</p>
           </div>
         ) : (
           events.map(e => <TimelineRow key={e.id} ev={e} />)
@@ -915,7 +980,7 @@ function BottomTimeline({ events }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main — Conference Operations Center
+// Main
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Monitoring() {
   const [conferences,   setConferences]   = useState([]);
@@ -927,7 +992,6 @@ export default function Monitoring() {
   const [now,           setNow]           = useState(() => Date.now());
   const [lastSync,      setLastSync]      = useState(null);
 
-  // Chart history — refs so interval closure doesn't stale
   const confsRef      = useRef([]);
   const eventCountRef = useRef(0);
   const eventIdRef    = useRef(0);
@@ -937,13 +1001,11 @@ export default function Monitoring() {
 
   useEffect(() => { confsRef.current = conferences; }, [conferences]);
 
-  // 1-second clock for duration counters
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Chart sampling every 10 s
   useEffect(() => {
     const t = setInterval(() => {
       const cs    = confsRef.current;
@@ -960,7 +1022,6 @@ export default function Monitoring() {
     return () => clearInterval(t);
   }, []);
 
-  // ESL latency probe every 30 s
   useEffect(() => {
     async function ping() {
       const t0 = Date.now();
@@ -972,7 +1033,6 @@ export default function Monitoring() {
     return () => clearInterval(t);
   }, []);
 
-  // ── Data load ──────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     try {
       const data = await api.monitoring.conferences();
@@ -988,7 +1048,6 @@ export default function Monitoring() {
 
   useEffect(() => { load(); }, [load]);
 
-  // ── Event push helper ──────────────────────────────────────────────────────
   const pushEvent = useCallback((type, detail) => {
     eventCountRef.current++;
     setEvents(prev => {
@@ -1000,7 +1059,6 @@ export default function Monitoring() {
     });
   }, []);
 
-  // ── Socket subscriptions ───────────────────────────────────────────────────
   useEffect(() => {
     function upConf(name, fn) {
       setConferences(prev => {
@@ -1021,28 +1079,18 @@ export default function Monitoring() {
     const handlers = {
       'esl.status': (status) => {
         setEsl(status);
-        if (status.connected) {
-          // Re-load on reconnect so the registry is fresh
-          setTimeout(load, 1000);
-        }
+        if (status.connected) setTimeout(load, 1000);
       },
       'conference.created': ({ confName }) => {
         setConferences(prev => {
           if (prev.find(c => c.name === confName)) return prev;
           return [...prev, {
-            name:           confName,
-            members:        [],
-            locked:         false,
-            recording:      false,
-            recordingState: 'OFF',
-            recordingPath:  null,
-            recordingError: null,
-            rate:           null,
-            isDynamic:      true,
-            isRunning:      false,
-            isAnswered:     false,
-            isModerated:    false,
-            createdAt:      new Date().toISOString(),
+            name: confName, members: [], locked: false,
+            recording: false, recordingState: 'OFF',
+            recordingPath: null, recordingError: null,
+            rate: null, isDynamic: true, isRunning: false,
+            isAnswered: false, isModerated: false,
+            createdAt: new Date().toISOString(),
           }];
         });
         pushEvent('conference.created', `Conference ${confName} created`);
@@ -1076,15 +1124,12 @@ export default function Monitoring() {
         pushEvent('conference.member.joined', `${display} joined ${confName}`);
       },
       'conference.member.left': ({ confName, member: id, callerNum }) => {
-        upConf(confName, c => ({
-          ...c, members: c.members.filter(m => m.id !== id),
-        }));
+        upConf(confName, c => ({ ...c, members: c.members.filter(m => m.id !== id) }));
         pushEvent('conference.member.left', `${callerNum || id} left ${confName}`);
       },
       'conference.member.muted': ({ confName, member: id, muted, callerNum }) => {
         upMember(confName, id, m => ({ ...m, muted }));
-        pushEvent('conference.member.muted',
-          `${callerNum || id} ${muted ? 'muted' : 'unmuted'} in ${confName}`);
+        pushEvent('conference.member.muted', `${callerNum || id} ${muted ? 'muted' : 'unmuted'} in ${confName}`);
       },
       'conference.member.deaf': ({ confName, member: id, deaf }) => {
         upMember(confName, id, m => ({ ...m, deaf }));
@@ -1092,10 +1137,7 @@ export default function Monitoring() {
       },
       'conference.member.talking': ({ confName, member: id, talking, callerNum }) => {
         upMember(confName, id, m => ({ ...m, talking }));
-        if (talking) {
-          pushEvent('conference.member.talking',
-            `${callerNum || id} speaking in ${confName}`);
-        }
+        if (talking) pushEvent('conference.member.talking', `${callerNum || id} speaking in ${confName}`);
       },
       'conference.floor.changed': ({ confName, member: id }) => {
         upConf(confName, c => ({
@@ -1118,15 +1160,12 @@ export default function Monitoring() {
           recordingError: recordingError ?? (recordingState === 'FAILED' ? c.recordingError : null),
         }));
         const state = recordingState || (recording ? 'ACTIVE' : 'OFF');
-        const stateLabel = state === 'STARTING' ? 'starting'
-          : state === 'ACTIVE'  ? 'started'
-          : state === 'PAUSED'  ? 'paused'
-          : state === 'FAILED'  ? 'FAILED'
-          : 'stopped';
+        const label = state === 'STARTING' ? 'starting' : state === 'ACTIVE' ? 'started'
+          : state === 'PAUSED' ? 'paused' : state === 'FAILED' ? 'FAILED' : 'stopped';
         pushEvent('conference.recording',
           state === 'FAILED'
             ? `${confName}: recording FAILED — ${recordingError || 'unknown error'}`
-            : `${confName}: recording ${stateLabel}`);
+            : `${confName}: recording ${label}`);
       },
     };
 
@@ -1136,36 +1175,20 @@ export default function Monitoring() {
     };
   }, [pushEvent, load]);
 
-  // ── Derived ────────────────────────────────────────────────────────────────
-  const totalMembers    = useMemo(
-    () => conferences.reduce((s, c) => s + (c.members?.length ?? 0), 0),
-    [conferences]
-  );
-  const totalModerators = useMemo(
-    () => conferences.reduce((s, c) => s + (c.members?.filter(m => m.moderator).length ?? 0), 0),
-    [conferences]
-  );
-  const recordingCount  = useMemo(
-    () => conferences.filter(c => c.recordingState === 'ACTIVE').length,
-    [conferences]
-  );
-  const selectedConference = useMemo(
-    () => conferences.find(c => c.name === selectedConf) ?? null,
-    [conferences, selectedConf]
-  );
+  const totalMembers    = useMemo(() => conferences.reduce((s, c) => s + (c.members?.length ?? 0), 0), [conferences]);
+  const totalModerators = useMemo(() => conferences.reduce((s, c) => s + (c.members?.filter(m => m.moderator).length ?? 0), 0), [conferences]);
+  const recordingCount  = useMemo(() => conferences.filter(c => c.recordingState === 'ACTIVE').length, [conferences]);
+  const selectedConference = useMemo(() => conferences.find(c => c.name === selectedConf) ?? null, [conferences, selectedConf]);
   const clockStr = useMemo(() => new Date(now).toLocaleTimeString(), [now]);
 
   function toggleSelect(name) {
     setSelectedConf(s => s === name ? null : name);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-3 pb-10">
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
@@ -1177,70 +1200,57 @@ export default function Monitoring() {
             </h1>
             <p className="text-[10px] text-text-muted">
               Real-time FreeSWITCH monitoring &amp; control
-              {lastSync && ` · Last sync ${fmtTime(lastSync)}`}
+              {lastSync && ` · synced ${fmtTime(lastSync)}`}
             </p>
           </div>
         </div>
 
         <div className="ml-auto flex items-center gap-2.5 flex-wrap">
-          {/* ESL status */}
-          <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full
-              border font-semibold
+          <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-semibold
               ${esl?.connected
                 ? 'border-emerald-500/30 bg-emerald-500/8 text-emerald-500'
                 : 'border-red-500/30 bg-red-500/8 text-red-500'}`}>
             {esl?.connected ? <Wifi size={10} /> : <WifiOff size={10} />}
-            {esl?.connected
-              ? `ESL · ${esl.host}:${esl.port}`
-              : 'ESL Offline'}
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0
-              ${esl?.connected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+            {esl?.connected ? `ESL · ${esl.host}:${esl.port}` : 'ESL Offline'}
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${esl?.connected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
           </div>
-
-          {/* Latency */}
           {eslLatency != null && (
             <span className="text-[11px] text-text-muted flex items-center gap-1">
               <Signal size={10} className={eslLatency < 80 ? 'text-emerald-500' : 'text-amber-500'} />
               <span className="tabular-nums">{eslLatency}ms</span>
             </span>
           )}
-
-          {/* Clock */}
           <span className="text-[11px] font-mono tabular-nums text-text-muted">{clockStr}</span>
-
-          {/* Refresh */}
           <button onClick={load}
-                  className="flex items-center gap-1 text-[11px] btn-ghost py-1 px-2
-                             text-text-muted hover:text-text-primary">
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg text-text-muted
+                       hover:text-text-primary hover:bg-surface-hover transition-colors">
             <RefreshCw size={10} /> Refresh
           </button>
         </div>
       </div>
 
-      {/* ── KPI strip ── */}
+      {/* KPI strip */}
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
         <KpiCard icon={PhoneCall}  label="Conferences"  value={conferences.length}
-          sub="Live right now"    valueClass="text-emerald-500"
+          sub="Live"              valueClass="text-emerald-500"
           sparkData={confHist}   sparkColor="#10b981"  pulse={conferences.length > 0} />
         <KpiCard icon={Users}      label="Participants"  value={totalMembers}
           sub="Across all rooms"  valueClass="text-blue-400"
           sparkData={partHist}   sparkColor="#60a5fa" />
         <KpiCard icon={Shield}     label="Moderators"   value={totalModerators}
-          sub="Active moderators" valueClass="text-amber-400" />
+          sub="Active"            valueClass="text-amber-400" />
         <KpiCard icon={Radio}      label="Recording"    value={recordingCount}
           sub="Active sessions"   danger               pulse={recordingCount > 0} />
         <KpiCard icon={Activity}   label="Event Rate"   value={evHist.at(-1) ?? 0}
-          sub={`Per ${CHART_INTERVAL_MS / 1000}s`}    valueClass="text-purple-400"
+          sub={`Per ${CHART_INTERVAL_MS / 1000}s`}     valueClass="text-purple-400"
           sparkData={evHist}     sparkColor="#c084fc" />
         <KpiCard icon={Signal}     label="ESL Latency"  value={eslLatency != null ? `${eslLatency}ms` : '—'}
-          sub="Backend round-trip"
+          sub="Round-trip"
           valueClass={eslLatency != null && eslLatency < 80 ? 'text-emerald-500' : 'text-amber-400'} />
       </div>
 
-      {/* ── 3-panel grid ── */}
+      {/* 3-panel grid */}
       <div className="grid grid-cols-12 gap-3" style={{ minHeight: '520px', maxHeight: '640px' }}>
-
-        {/* Left: conference list */}
         <div className="col-span-3 card !p-4 overflow-hidden flex flex-col">
           <LeftPanel
             conferences={conferences}
@@ -1250,22 +1260,18 @@ export default function Monitoring() {
             loading={loading}
           />
         </div>
-
-        {/* Center: details + participant table */}
         <div className="col-span-6 card !p-4 overflow-hidden">
           <CenterPanel conf={selectedConference} now={now} />
         </div>
-
-        {/* Right: controls */}
         <div className="col-span-3 card !p-4 overflow-hidden">
           <RightPanel conf={selectedConference} />
         </div>
       </div>
 
-      {/* ── Live Event Timeline ── */}
+      {/* Live Event Timeline */}
       <BottomTimeline events={events} />
 
-      {/* ── Sparkline charts ── */}
+      {/* Sparklines */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: 'Participants Over Time', data: partHist, color: '#60a5fa', current: totalMembers },
@@ -1274,8 +1280,7 @@ export default function Monitoring() {
         ].map(({ label, data, color, current }) => (
           <div key={label} className="card !pb-2">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-text-muted
-                               flex items-center gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-text-muted flex items-center gap-1">
                 <BarChart2 size={9} /> {label}
               </span>
               <span className="text-sm font-bold tabular-nums" style={{ color }}>{current}</span>
