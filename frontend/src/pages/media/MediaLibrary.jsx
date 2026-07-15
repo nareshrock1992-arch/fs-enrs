@@ -148,9 +148,22 @@ function AudioPlayer({ file, onClose }) {
       setLoadErr(null);
       a.play()
         .then(() => setPlaying(true))
-        .catch(err => {
+        .catch(async () => {
           setPlaying(false);
-          setLoadErr('Playback failed — ' + (err.message || 'check browser permissions'));
+          // Diagnose: HEAD the stream URL to get the real server error
+          try {
+            const url = api.mediaLibrary.streamUrl(file.id);
+            const probe = await fetch(url, { method: 'HEAD' });
+            if (!probe.ok) {
+              const body = await fetch(url).then(r => r.json()).catch(() => null);
+              setLoadErr(`Playback failed — HTTP ${probe.status}: ${body?.error || probe.statusText}`);
+            } else {
+              const ct = probe.headers.get('content-type') || 'unknown';
+              setLoadErr(`Playback failed — server returned ${ct} (browser may not support this audio format)`);
+            }
+          } catch {
+            setLoadErr('Playback failed — could not reach the audio stream endpoint');
+          }
         });
     }
   };
@@ -321,7 +334,11 @@ function AudioPlayer({ file, onClose }) {
             if (d && isFinite(d)) setDuration(d);
             else if (file.duration_sec) setDuration(Number(file.duration_sec) || 0);
           }}
-          onError={() => setLoadErr('Could not load audio file')}
+          onError={e => {
+            const code = e.target?.error?.code;
+            const msgs = { 1: 'Loading aborted', 2: 'Network error', 3: 'Decoding error — unsupported format', 4: 'Audio source not found or not playable' };
+            setLoadErr('Audio load failed — ' + (msgs[code] || 'unknown error') + `. Check PM2 logs for path details.`);
+          }}
           muted={muted}
         />
       </div>

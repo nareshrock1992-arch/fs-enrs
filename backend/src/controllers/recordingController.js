@@ -157,8 +157,10 @@ export const getRecording = asyncHandler(async (req, res) => {
 async function resolveFile(rec) {
   const candidates = [rec.recording_path].filter(Boolean);
   for (const p of candidates) {
-    try { await fs.access(p); return p; } catch {}
+    const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+    try { await fs.access(resolved); return resolved; } catch {}
   }
+  console.warn(`[recording-stream] id=${rec.id} — file not found. recording_path=${rec.recording_path || '(null)'} CWD=${process.cwd()}`);
   return null;
 }
 
@@ -172,11 +174,13 @@ export const streamRecording = asyncHandler(async (req, res) => {
   if (!rec) return res.status(404).json({ error: 'Not found' });
 
   const filePath = await resolveFile(rec);
-  if (!filePath) return res.status(404).json({ error: 'Recording file not found on disk' });
+  if (!filePath) return res.status(404).json({ error: 'Recording file not found on disk', recording_path: rec.recording_path });
 
   const stat = await fs.stat(filePath);
   const size = stat.size;
   const mime = MIME_MAP[path.extname(filePath).toLowerCase()] || 'audio/wav';
+
+  console.log(`[recording-stream] id=${rec.id} room=${rec.conference_room} path="${filePath}" mime=${mime} bytes=${size}`);
 
   const range = req.headers.range;
   if (range) {

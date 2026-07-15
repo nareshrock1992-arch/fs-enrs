@@ -365,7 +365,8 @@ export const uploadMedia = asyncHandler(async (req, res) => {
 
   const { category = 'general', description = '', name: customName } = req.body;
   const displayName = customName?.trim() || req.file.originalname;
-  const srcPath     = req.file.path;
+  // Use absolute path so streaming works regardless of Node.js process CWD
+  const srcPath = path.resolve(req.file.path);
 
   // Step 1 — extract metadata before any DB work
   const meta = await extractAudioMetadata(srcPath);
@@ -492,7 +493,7 @@ export const scanMedia = asyncHandler(async (req, res) => {
   let skipped = 0, errors = 0;
 
   for (const entry of audioFiles) {
-    const filePath = path.posix.join(soundDir, entry.name);
+    const filePath = path.resolve(soundDir, entry.name);
     if (knownPaths.has(filePath) || knownNames.has(entry.name)) { skipped++; continue; }
 
     try {
@@ -624,18 +625,32 @@ export const streamMedia = asyncHandler(async (req, res) => {
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
 
-  // Prefer deployed FS path; fall back to local uploads path (always streamable)
+  // Prefer deployed FS path; fall back to uploads path (always streamable)
   const candidates = [record.fs_path, record.path_or_uri].filter(Boolean);
   let filePath = null;
   for (const p of candidates) {
-    try { await fs.access(p); filePath = p; break; } catch {}
+    // Resolve relative paths against process CWD so stored relative paths work
+    const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+    try { await fs.access(resolved); filePath = resolved; break; } catch {}
   }
-  if (!filePath) return res.status(404).json({ error: 'File not found on disk' });
+
+  if (!filePath) {
+    console.warn(`[media-stream] id=${record.id} name="${record.name}" — file not found on disk`);
+    console.warn(`[media-stream]   fs_path     = ${record.fs_path || '(null)'}`);
+    console.warn(`[media-stream]   path_or_uri = ${record.path_or_uri || '(null)'}`);
+    console.warn(`[media-stream]   CWD = ${process.cwd()}`);
+    return res.status(404).json({
+      error: 'File not found on disk',
+      tried: candidates,
+    });
+  }
 
   const stat = await fs.stat(filePath);
   const ext  = path.extname(filePath).toLowerCase();
   const mime = MIME_MAP[ext] || 'application/octet-stream';
   const size = stat.size;
+
+  console.log(`[media-stream] id=${record.id} name="${record.name}" path="${filePath}" mime=${mime} bytes=${size}`);
 
   const range = req.headers.range;
   if (range) {
@@ -673,9 +688,13 @@ export const downloadMedia = asyncHandler(async (req, res) => {
   const candidates = [record.fs_path, record.path_or_uri].filter(Boolean);
   let filePath = null;
   for (const p of candidates) {
-    try { await fs.access(p); filePath = p; break; } catch {}
+    const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+    try { await fs.access(resolved); filePath = resolved; break; } catch {}
   }
-  if (!filePath) return res.status(404).json({ error: 'File not found on disk' });
+  if (!filePath) {
+    console.warn(`[media-download] id=${record.id} — file not found. tried: ${candidates.join(', ')}`);
+    return res.status(404).json({ error: 'File not found on disk', tried: candidates });
+  }
 
   res.setHeader('Content-Disposition', `attachment; filename="${record.name}"`);
   res.setHeader('Content-Type', MIME_MAP[path.extname(filePath).toLowerCase()] || 'application/octet-stream');
@@ -701,7 +720,8 @@ export const getWaveform = asyncHandler(async (req, res) => {
   const candidates = [record.fs_path, record.path_or_uri].filter(Boolean);
   let filePath = null;
   for (const p of candidates) {
-    try { await fs.access(p); filePath = p; break; } catch {}
+    const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+    try { await fs.access(resolved); filePath = resolved; break; } catch {}
   }
 
   // If file not accessible, generate synthetic waveform from path/name as seed
