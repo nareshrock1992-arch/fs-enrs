@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, Component } from 'react';
 import {
   Library, Upload, Trash2, Play, Pause, CheckCircle,
   AlertCircle, Clock, Search, Tag, RefreshCw, HardDrive, X,
@@ -32,15 +32,17 @@ const CAT_COLORS = {
 };
 
 function fmtSize(bytes) {
-  if (!bytes && bytes !== 0) return '—';
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1048576).toFixed(1) + ' MB';
+  const n = Number(bytes);
+  if (!isFinite(n) || n < 0) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
 }
 function fmtDuration(sec) {
-  if (!sec && sec !== 0) return null;
-  if (sec < 60) return sec.toFixed(1) + 's';
-  const m = Math.floor(sec / 60), s = (sec % 60).toFixed(0);
+  const n = Number(sec);
+  if (!isFinite(n) || n < 0) return '—';
+  if (n < 60) return n.toFixed(1) + 's';
+  const m = Math.floor(n / 60), s = (n % 60).toFixed(0);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 function fmtTime(iso) {
@@ -119,7 +121,7 @@ function AudioPlayer({ file, onClose }) {
   const [playing,  setPlaying]  = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentT, setCurrentT] = useState(0);
-  const [duration, setDuration] = useState(file.duration_sec || 0);
+  const [duration, setDuration] = useState(Number(file.duration_sec) || 0);
   const [volume,   setVolume]   = useState(1);
   const [muted,    setMuted]    = useState(false);
   const [speed,    setSpeed]    = useState(1);
@@ -188,8 +190,8 @@ function AudioPlayer({ file, onClose }) {
                 {CAT_LABELS[file.category] || file.category}
               </span>
               {file.codec && <span className="text-[10px] text-text-muted font-mono">{file.codec}</span>}
-              {file.sample_rate && <span className="text-[10px] text-text-muted">{(file.sample_rate/1000).toFixed(1)} kHz</span>}
-              {file.channels && <span className="text-[10px] text-text-muted">{file.channels === 1 ? 'Mono' : 'Stereo'}</span>}
+              {file.sample_rate && <span className="text-[10px] text-text-muted">{(Number(file.sample_rate)/1000).toFixed(1)} kHz</span>}
+              {file.channels && <span className="text-[10px] text-text-muted">{Number(file.channels) === 1 ? 'Mono' : 'Stereo'}</span>}
               {file.bitrate_kbps && <span className="text-[10px] text-text-muted">{file.bitrate_kbps} kbps</span>}
               <span className="text-[10px] text-text-muted">{fmtSize(file.size_bytes)}</span>
             </div>
@@ -317,7 +319,7 @@ function AudioPlayer({ file, onClose }) {
           onLoadedMetadata={e => {
             const d = e.target.duration;
             if (d && isFinite(d)) setDuration(d);
-            else if (file.duration_sec) setDuration(file.duration_sec);
+            else if (file.duration_sec) setDuration(Number(file.duration_sec) || 0);
           }}
           onError={() => setLoadErr('Could not load audio file')}
           muted={muted}
@@ -587,8 +589,8 @@ function FileDetail({ file, onClose, onDeploy, onDelete, onPlay, deploying, dele
           <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Audio Metadata</p>
           {[
             ['Codec',       file.codec || '—'],
-            ['Sample Rate', file.sample_rate ? `${(file.sample_rate/1000).toFixed(1)} kHz` : '—'],
-            ['Channels',    file.channels ? (file.channels === 1 ? 'Mono' : 'Stereo') : '—'],
+            ['Sample Rate', file.sample_rate ? `${(Number(file.sample_rate)/1000).toFixed(1)} kHz` : '—'],
+            ['Channels',    file.channels ? (Number(file.channels) === 1 ? 'Mono' : 'Stereo') : '—'],
             ['Bitrate',     file.bitrate_kbps ? `${file.bitrate_kbps} kbps` : '—'],
             ['Duration',    fmtDuration(file.duration_sec) || '—'],
             ['File Size',   fmtSize(file.size_bytes)],
@@ -637,15 +639,59 @@ function FileDetail({ file, onClose, onDeploy, onDelete, onPlay, deploying, dele
   );
 }
 
+// ── Error Boundary ────────────────────────────────────────────────────────────
+
+class MediaLibraryBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-4">
+        <AlertCircle size={36} className="text-red-400" />
+        <div className="text-center">
+          <p className="text-sm font-bold text-text-primary mb-1">Unable to render Media Library</p>
+          <p className="text-xs text-text-muted mb-4">A rendering error occurred.</p>
+          <details className="text-left max-w-lg">
+            <summary className="text-[10px] text-text-muted cursor-pointer hover:text-text-primary">
+              Technical details
+            </summary>
+            <pre className="mt-2 text-[9px] font-mono text-red-400 bg-red-500/5 border border-red-500/20
+                            rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
+              {this.state.error?.message}
+              {'\n\n'}
+              {this.state.error?.stack}
+            </pre>
+          </details>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="text-xs px-4 py-2 rounded-lg bg-brand text-white hover:bg-brand/90 transition-colors">
+            Reload
+          </button>
+          <button
+            onClick={() => window.history.back()}
+            className="text-xs px-4 py-2 rounded-lg border border-surface-border text-text-muted
+                       hover:text-text-primary hover:bg-surface-hover transition-colors">
+            Go Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function MediaLibrary() {
+function MediaLibraryInner() {
   const [files,      setFiles]      = useState([]);
   const [total,      setTotal]      = useState(0);
   const [categories, setCategories] = useState([]);
   const [search,     setSearch]     = useState('');
   const [catFilter,  setCatFilter]  = useState('');
   const [loading,    setLoading]    = useState(true);
+  const [loadError,  setLoadError]  = useState(null);
   const [scanning,   setScanning]   = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -659,6 +705,7 @@ export default function MediaLibrary() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [filesRes, catRes] = await Promise.all([
         api.mediaLibrary.list({
@@ -673,6 +720,7 @@ export default function MediaLibrary() {
       setCategories(catRes.categories || []);
     } catch (e) {
       console.error(e);
+      setLoadError(e.message || 'Failed to load media library');
     } finally {
       setLoading(false);
     }
@@ -786,6 +834,18 @@ export default function MediaLibrary() {
           <span className="flex-1">{scanResult.message}</span>
           <button onClick={() => setScanResult(null)} className="opacity-50 hover:opacity-100 transition-opacity">
             <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* API error banner */}
+      {loadError && (
+        <div className="flex items-start gap-2 px-4 py-3 rounded-xl border text-[11px]
+                        bg-red-500/5 border-red-500/20 text-red-400">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span className="flex-1">Failed to load: {loadError}</span>
+          <button onClick={load} className="underline opacity-70 hover:opacity-100 transition-opacity">
+            Retry
           </button>
         </div>
       )}
@@ -916,8 +976,8 @@ export default function MediaLibrary() {
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-[10px] text-text-muted tabular-nums flex-wrap">
                     {f.codec && <span className="uppercase font-mono">{f.codec}</span>}
-                    {f.sample_rate && <span>{(f.sample_rate/1000).toFixed(1)}kHz</span>}
-                    {f.channels ? <span>{f.channels === 1 ? 'Mono' : 'Stereo'}</span> : null}
+                    {f.sample_rate && <span>{(Number(f.sample_rate)/1000).toFixed(1)}kHz</span>}
+                    {f.channels ? <span>{Number(f.channels) === 1 ? 'Mono' : 'Stereo'}</span> : null}
                     {f.duration_sec ? <span>{fmtDuration(f.duration_sec)}</span> : null}
                     <span>{fmtSize(f.size_bytes)}</span>
                     <span className="hidden sm:inline">{fmtTime(f.created_at)}</span>
@@ -977,5 +1037,13 @@ export default function MediaLibrary() {
       {/* Sidebar spacer when detail panel is open */}
       {detail && <div className="h-1" />}
     </div>
+  );
+}
+
+export default function MediaLibrary() {
+  return (
+    <MediaLibraryBoundary>
+      <MediaLibraryInner />
+    </MediaLibraryBoundary>
   );
 }
