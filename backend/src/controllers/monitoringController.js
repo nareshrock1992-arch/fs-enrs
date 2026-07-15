@@ -156,10 +156,10 @@ export const startRecording = asyncHandler(async (req, res) => {
   const room = req.params.room;
 
   // Guard: prevent duplicate recording starts.
-  // STARTING, ACTIVE, PAUSED, and STOPPING are all "in-progress" — reject.
+  // STARTING, ACTIVE, and STOPPING are all "in-progress" — reject.
   // Only OFF and FAILED allow a new recording.
   const existingSnap = getConferenceSnapshot().find(c => c.name === room);
-  const activeStates = ['STARTING', 'ACTIVE', 'PAUSED', 'STOPPING'];
+  const activeStates = ['STARTING', 'ACTIVE', 'STOPPING'];
   if (existingSnap && activeStates.includes(existingSnap.recordingState)) {
     console.warn(`[monitoring] startRecording: duplicate rejected — conf="${room}" state=${existingSnap.recordingState}`);
     return res.status(409).json({

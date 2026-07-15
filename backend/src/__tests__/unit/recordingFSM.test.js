@@ -11,7 +11,6 @@
  *   - setConferenceRecordingActive clears timeout even without ESL event
  *   - Duplicate start guard prevents concurrent recordings
  *   - STOPPING state set before norecord command
- *   - PAUSED optimistic update
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -29,7 +28,6 @@ vi.useFakeTimers();
 import {
   setConferenceRecordingStarting,
   setConferenceRecordingActive,
-  setConferenceRecordingPaused,
   setConferenceRecordingStopping,
   setConferenceRecordingPath,
   setConferenceRecordingError,
@@ -82,10 +80,6 @@ describe('Recording FSM — state transitions', () => {
     expect(() => setConferenceRecordingActive('nonexistent', '/tmp/rec.wav')).not.toThrow();
   });
 
-  it('setConferenceRecordingPaused: safe no-op when conference not in registry', () => {
-    expect(() => setConferenceRecordingPaused('nonexistent')).not.toThrow();
-  });
-
   it('setConferenceRecordingStopping: safe no-op when conference not in registry', () => {
     expect(() => setConferenceRecordingStopping('nonexistent')).not.toThrow();
   });
@@ -135,8 +129,7 @@ describe('Recording FSM — state machine valid transitions', () => {
     const validTransitions = {
       OFF:      ['STARTING'],
       STARTING: ['ACTIVE', 'FAILED'],
-      ACTIVE:   ['PAUSED', 'STOPPING', 'OFF'],
-      PAUSED:   ['ACTIVE', 'STOPPING', 'OFF'],
+      ACTIVE:   ['STOPPING', 'OFF'],
       STOPPING: ['OFF', 'FAILED'],
       FAILED:   ['STARTING'],
     };
@@ -152,9 +145,8 @@ describe('Recording FSM — state machine valid transitions', () => {
     // FAILED is reachable from STARTING (5s timeout or file never created)
     expect(validTransitions.STARTING).toContain('FAILED');
 
-    // STOPPING is reachable from both ACTIVE and PAUSED
+    // STOPPING is reachable from ACTIVE
     expect(validTransitions.ACTIVE).toContain('STOPPING');
-    expect(validTransitions.PAUSED).toContain('STOPPING');
 
     // Can restart after FAILED
     expect(validTransitions.FAILED).toContain('STARTING');

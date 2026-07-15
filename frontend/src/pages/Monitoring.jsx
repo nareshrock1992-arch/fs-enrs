@@ -6,7 +6,7 @@ import {
 } from 'react';
 import {
   Activity, Wifi, WifiOff, Users, Lock, Unlock,
-  Mic, MicOff, PhoneOff, Radio, Pause, Square,
+  Mic, MicOff, PhoneOff, Radio, Square,
   PhoneIncoming, Trash2, ChevronDown,
   Headphones, EarOff, Shield, RefreshCw, Zap,
   PhoneCall, Bell, Signal, ArrowRight,
@@ -197,12 +197,6 @@ const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
             <span className="text-[8px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400
                              font-bold flex items-center gap-0.5 animate-pulse">
               <Square size={6} /> STOP
-            </span>
-          )}
-          {conf.recordingState === 'PAUSED' && (
-            <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
-                             font-bold flex items-center gap-0.5">
-              <Pause size={6} /> PAUSE
             </span>
           )}
           {conf.locked && (
@@ -585,11 +579,6 @@ function CenterPanel({ conf, now }) {
                     </span>
                   )}
                 </div>
-              ) : conf.recordingState === 'PAUSED' ? (
-                <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
-                                 bg-amber-500/15 text-amber-500 font-bold w-fit">
-                  <Pause size={8} /> PAUSED
-                </span>
               ) : conf.recordingState === 'STOPPING' ? (
                 <span className="flex items-center gap-1 text-[10px] px-1.5 py-px rounded-full
                                  bg-slate-500/15 text-slate-400 font-bold w-fit animate-pulse">
@@ -681,7 +670,6 @@ function RightPanel({ conf }) {
   const recState    = conf?.recordingState || 'OFF';
   const isStarting  = recState === 'STARTING';
   const isRecording = recState === 'ACTIVE';
-  const isPaused    = recState === 'PAUSED';
   const isStopping  = recState === 'STOPPING';
   const isFailed    = recState === 'FAILED';
   const recBusy     = isStarting || isStopping;
@@ -699,11 +687,7 @@ function RightPanel({ conf }) {
     ? { label: isStarting ? 'Starting…' : 'Stopping…', icon: RefreshCw, variant: 'busy' }
     : (recState === 'OFF' || isFailed)
       ? { label: 'Start Recording',  icon: Radio,  variant: 'start' }
-      : isRecording
-        ? { label: 'Stop Recording',  icon: Square, variant: 'stop' }
-        : isPaused
-          ? { label: 'Resume',          icon: Radio,  variant: 'start' }
-          : { label: 'Stop Recording',  icon: Square, variant: 'stop' };
+      : { label: 'Stop Recording',   icon: Square, variant: 'stop' };
 
   return (
     <div className="h-full flex flex-col">
@@ -713,7 +697,6 @@ function RightPanel({ conf }) {
         {/* Recording state chip */}
         {isStarting  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> STARTING</span>}
         {isRecording && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold animate-pulse flex items-center gap-0.5"><Radio size={7} /> REC</span>}
-        {isPaused    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5"><Pause size={7} /> PAUSED</span>}
         {isStopping  && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400 font-bold animate-pulse flex items-center gap-0.5"><Square size={7} /> STOPPING</span>}
         {isFailed    && <span className="ml-auto text-[9px] px-1.5 py-px rounded-full bg-red-900/20 text-red-400 font-bold flex items-center gap-0.5"><AlertCircle size={7} /> FAILED</span>}
         {!conf && <span className="ml-auto text-[9px] text-text-muted">No selection</span>}
@@ -767,7 +750,6 @@ function RightPanel({ conf }) {
             {/* Status text */}
             {isStarting  && <div className="flex items-center gap-1.5 text-[10px] text-amber-400"><Radio size={9} className="animate-pulse" /> Starting…</div>}
             {isRecording && <div className="flex items-center gap-1.5 text-[10px] text-red-400"><Radio size={9} className="animate-pulse" /> Recording active</div>}
-            {isPaused    && <div className="flex items-center gap-1.5 text-[10px] text-amber-400"><Pause size={9} /> Paused</div>}
             {isStopping  && <div className="flex items-center gap-1.5 text-[10px] text-slate-400"><Square size={9} className="animate-pulse" /> Stopping…</div>}
             {isFailed    && <div className="text-[10px] text-red-400">Recording failed — check backend logs</div>}
 
@@ -1146,7 +1128,7 @@ export default function Monitoring() {
         }));
         const state = recordingState || (recording ? 'ACTIVE' : 'OFF');
         const label = state === 'STARTING' ? 'starting' : state === 'ACTIVE' ? 'started'
-          : state === 'PAUSED' ? 'paused' : state === 'FAILED' ? 'FAILED' : 'stopped';
+          : state === 'FAILED' ? 'FAILED' : 'stopped';
         pushEvent('conference.recording',
           state === 'FAILED'
             ? `${confName}: recording FAILED — ${recordingError || 'unknown error'}`

@@ -39,7 +39,7 @@ function registryGetOrCreate(confName) {
       locked:         false,
       recording:      false,   // true = recording active
       recordingPath:  null,    // absolute path of current/last recording
-      recordingState: 'OFF',   // 'OFF' | 'STARTING' | 'ACTIVE' | 'PAUSED' | 'STOPPING' | 'FAILED'
+      recordingState: 'OFF',   // 'OFF' | 'STARTING' | 'ACTIVE' | 'STOPPING' | 'FAILED'
       recordingError: null,    // error message when state='FAILED'
       floorHolder:    null,
       rate:           null,    // Hz — populated by seedConferenceRegistry from FS header
@@ -109,18 +109,6 @@ export function setConferenceRecordingActive(confName, recPath) {
   emit('conference.recording', {
     confName, recording: true, recordingState: 'ACTIVE',
     recordingPath: recPath, recordingError: null,
-  });
-}
-
-// Optimistic PAUSED update — called when pauserec command succeeds but the
-// pause-recording ESL event is not reliably emitted in all FreeSWITCH versions.
-export function setConferenceRecordingPaused(confName) {
-  const entry = conferenceRegistry.get(confName);
-  if (!entry) return;
-  entry.recordingState = 'PAUSED';
-  emit('conference.recording', {
-    confName, recording: true, recordingState: 'PAUSED',
-    recordingPath: entry.recordingPath, recordingError: null,
   });
 }
 
@@ -534,7 +522,7 @@ export function getConferenceSnapshot() {
       locked:         c.locked,
       recording:      c.recording,
       recordingPath:  c.recordingPath,
-      recordingState: c.recordingState,   // 'OFF'|'STARTING'|'ACTIVE'|'PAUSED'|'STOPPING'|'FAILED'
+      recordingState: c.recordingState,   // 'OFF'|'STARTING'|'ACTIVE'|'STOPPING'|'FAILED'
       recordingError: c.recordingError,
       floorHolder:    c.floorHolder,
       rate:           c.rate,
@@ -738,22 +726,6 @@ async function handleEvent(evt) {
           upsertRecordingStart({ confName, recPath: finalPath, createdBy: 'system' });
         }).catch(err => console.error('[esl] upsertRecordingStart import failed:', err.message));
       }
-
-    } else if (action === 'pause-recording') {
-      // FreeSWITCH does not reliably emit pause-recording in all versions.
-      // The monitoringController updates state optimistically on pauserec success.
-      // This handler fires if the event DOES arrive (belt-and-suspenders).
-      const conf = conferenceRegistry.get(confName);
-      if (conf) {
-        conf.recordingState = 'PAUSED';
-      }
-      emit('conference.recording', {
-        confName,
-        recording:      true,
-        recordingState: 'PAUSED',
-        recordingPath:  conf?.recordingPath || null,
-        recordingError: null,
-      });
 
     } else if (action === 'energy-level') {
       // Real-time per-member energy update. FreeSWITCH fires this when
@@ -1163,10 +1135,6 @@ export async function confTransfer(confName, memberId, extension, dialplan = 'XM
 // ─── Recording ───────────────────────────────────────────────
 export async function confRecord(confName, path) {
   return eslCommand(`conference ${confName} record ${path}`);
-}
-
-export async function confRecordPause(confName, path) {
-  return eslCommand(`conference ${confName} pauserec ${path}`);
 }
 
 export async function confRecordStop(confName, path) {
