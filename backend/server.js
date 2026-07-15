@@ -23,6 +23,7 @@ import { config }      from './src/config/index.js';
 import { testConnection } from './src/db/pool.js';
 import { validateSchema }  from './src/db/validateSchema.js';
 import { connect as eslConnect, eslEvents, reconcileAllActiveIncidents, startBackgroundJobs } from './src/services/eslService.js';
+import { scanRecordingDirectory } from './src/controllers/recordingController.js';
 import { initSocket }  from './src/services/socketService.js';
 import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/services/campaignEngine.js';
 import v1Routes        from './src/routes/v1/index.js';
@@ -136,6 +137,15 @@ async function start() {
       console.warn('[boot] startup reconciliation skipped:', err.message)
     );
   }, 5000); // wait 5 s for ESL to connect before checking member counts
+
+  // Startup recording directory scan — imports any conference recordings that
+  // exist on disk but are not yet tracked in the DB (e.g. from a previous run
+  // that crashed before the stop-recording ESL event fired, or manual recordings).
+  setTimeout(() => {
+    scanRecordingDirectory().catch(err =>
+      console.warn('[boot] recording directory scan failed:', err.message)
+    );
+  }, 8000);
 
   // Wire ESL events → campaign engine
   eslEvents.on('CHANNEL_ANSWER', ({ uuid }) => {

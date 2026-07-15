@@ -22,6 +22,7 @@ import path from 'path';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
 import { extractAudioMetadata, extractWaveformPeaks } from './mediaLibraryController.js';
+import { fsPathService } from '../services/freeSwitchPathService.js';
 
 const MIME_MAP = {
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
@@ -284,21 +285,33 @@ export const deleteRecording = asyncHandler(async (req, res) => {
 export async function upsertRecordingStart({ confName, recPath, tenantId, createdBy = 'system' }) {
   if (!confName || !recPath) return null;
 
-  // Look up the most recent ACTIVE incident for this room
+  // Look up the most recent ACTIVE incident for this room — also grab tenant_id
+  // so that recordings created by ESL events (no HTTP context) are properly scoped.
   const { rows: [incident] } = await query(
-    `SELECT incident_uuid, ers_configuration_id
+    `SELECT incident_uuid, ers_configuration_id, tenant_id
      FROM ers_incidents
      WHERE conference_room = $1 AND status = 'ACTIVE' AND deleted_at IS NULL
      ORDER BY started_at DESC LIMIT 1`,
     [confName]
   ).catch(() => ({ rows: [] }));
 
+  // Resolve tenant_id: explicit arg → from incident → fallback to first tenant
+  let resolvedTenantId = tenantId ?? incident?.tenant_id ?? null;
+  if (!resolvedTenantId) {
+    const { rows: [firstTenant] } = await query(
+      `SELECT id FROM tenants WHERE deleted_at IS NULL ORDER BY id LIMIT 1`
+    ).catch(() => ({ rows: [] }));
+    resolvedTenantId = firstTenant?.id ?? null;
+  }
+
+  const filename = path.basename(recPath);
+
   const { rows: [record] } = await query(
     `INSERT INTO conference_recordings
        (conference_room, incident_uuid, ers_configuration_id,
         recording_path, status, started_at, created_by, tenant_id)
      VALUES ($1,$2,$3,$4,'RECORDING',now(),$5,$6)
-     ON CONFLICT DO NOTHING
+     ON CONFLICT ON CONSTRAINT uq_conf_recordings_room_path DO NOTHING
      RETURNING *`,
     [
       confName,
@@ -306,12 +319,16 @@ export async function upsertRecordingStart({ confName, recPath, tenantId, create
       incident?.ers_configuration_id  ?? null,
       recPath,
       createdBy,
-      tenantId ?? null,
+      resolvedTenantId,
     ]
   ).catch(err => {
     console.error('[recordings] upsertRecordingStart failed:', err.message);
     return { rows: [] };
   });
+
+  if (record) {
+    console.log(`[recordings] upsertRecordingStart: row created — room="${confName}" file="${filename}" tenant=${resolvedTenantId}`);
+  }
 
   return record || null;
 }
@@ -359,4 +376,106 @@ export async function closeRecording({ confName, recPath }) {
   };
 
   doClose();  // fire-and-forget
+}
+
+// ── Startup: scan recording directory → sync files not yet in DB ─────────────
+//
+// Called once at boot (after ESL connects) to catch recordings that were
+// created before this backend instance started — e.g. after a crash, a restart,
+// or a manual `freeswitch_cli conference X record /path/file.wav`.
+//
+// Inserts each discovered file as status='COMPLETED' with full metadata.
+// Existing rows (matched by recording_path) are not touched — never overwrites
+// manually edited notes or tags.
+//
+// Returns { found, inserted, skipped } counts for the boot log.
+export async function scanRecordingDirectory() {
+  const confDir = fsPathService.getConfRecordingDir();
+  const AUDIO_EXTS = new Set(['.wav', '.mp3', '.ogg', '.gsm']);
+
+  // Resolve tenant fallback once for all inserts
+  const { rows: [firstTenant] } = await query(
+    `SELECT id FROM tenants WHERE deleted_at IS NULL ORDER BY id LIMIT 1`
+  ).catch(() => ({ rows: [] }));
+  const fallbackTenantId = firstTenant?.id ?? null;
+
+  let files;
+  try {
+    files = await fs.readdir(confDir);
+  } catch {
+    console.log(`[recordings] scanRecordingDirectory: directory not accessible — "${confDir}" (will be created when first recording starts)`);
+    return { found: 0, inserted: 0, skipped: 0 };
+  }
+
+  const audioFiles = files.filter(f => AUDIO_EXTS.has(path.extname(f).toLowerCase()));
+  console.log(`[recordings] scanRecordingDirectory: found ${audioFiles.length} audio file(s) in "${confDir}"`);
+
+  let inserted = 0;
+  let skipped  = 0;
+
+  for (const file of audioFiles) {
+    const fullPath = path.posix.join(confDir, file);
+
+    // Skip if already tracked
+    const { rows: [existing] } = await query(
+      `SELECT id FROM conference_recordings WHERE recording_path = $1 AND deleted_at IS NULL`,
+      [fullPath]
+    ).catch(() => ({ rows: [{}] })); // on error, skip to be safe
+    if (existing) { skipped++; continue; }
+
+    // Extract metadata
+    let meta = {};
+    try {
+      const stat = await fs.stat(fullPath);
+      meta = await extractAudioMetadata(fullPath);
+      meta.size_bytes = meta.size_bytes ?? stat.size;
+    } catch (err) {
+      console.warn(`[recordings] scanRecordingDirectory: metadata failed for "${file}" — ${err.message}`);
+    }
+
+    // Infer conference room from filename pattern: conf_<room>_<ts>.wav
+    const match = /^conf_(.+?)_\d+\.\w+$/.exec(file);
+    const room  = match ? match[1] : 'unknown';
+
+    // Try to link to a recent incident for this room
+    const { rows: [incident] } = await query(
+      `SELECT incident_uuid, ers_configuration_id, tenant_id
+       FROM ers_incidents
+       WHERE conference_room = $1 AND deleted_at IS NULL
+       ORDER BY started_at DESC LIMIT 1`,
+      [room]
+    ).catch(() => ({ rows: [] }));
+
+    const tenantId = incident?.tenant_id ?? fallbackTenantId;
+
+    await query(
+      `INSERT INTO conference_recordings
+         (conference_room, incident_uuid, ers_configuration_id,
+          recording_path, status,
+          file_size_bytes, duration_sec, sample_rate, channels, codec, checksum,
+          started_at, ended_at, created_by, tenant_id)
+       VALUES ($1,$2,$3,$4,'COMPLETED',$5,$6,$7,$8,$9,$10,
+               now() - interval '1 second', now(), 'scan', $11)
+       ON CONFLICT ON CONSTRAINT uq_conf_recordings_room_path DO NOTHING`,
+      [
+        room,
+        incident?.incident_uuid        ?? null,
+        incident?.ers_configuration_id ?? null,
+        fullPath,
+        meta.size_bytes   ?? null,
+        meta.duration_sec ?? null,
+        meta.sample_rate  ?? null,
+        meta.channels     ?? null,
+        meta.codec        ?? null,
+        meta.checksum     ?? null,
+        tenantId,
+      ]
+    ).catch(err => console.warn(`[recordings] scanRecordingDirectory: insert failed for "${file}" — ${err.message}`));
+
+    inserted++;
+    console.log(`[recordings] scanRecordingDirectory: imported "${file}" (room="${room}" tenant=${tenantId})`);
+  }
+
+  console.log(`[recordings] scanRecordingDirectory: done — found=${audioFiles.length} inserted=${inserted} skipped=${skipped}`);
+  return { found: audioFiles.length, inserted, skipped };
 }

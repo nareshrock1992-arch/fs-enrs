@@ -297,7 +297,6 @@ export const api = {
     lock:        (room)   => request('POST',   `/monitoring/conferences/${room}/lock`),
     unlock:      (room)   => request('POST',   `/monitoring/conferences/${room}/unlock`),
     recordStart: (room, path) => request('POST', `/monitoring/conferences/${room}/record/start`, { path }),
-    recordPause: (room, path) => request('POST', `/monitoring/conferences/${room}/record/pause`, { path }),
     recordStop:  (room, path) => request('POST', `/monitoring/conferences/${room}/record/stop`,  { path }),
     playAudio:   (room, audio_path) => request('POST', `/monitoring/conferences/${room}/play`, { audio_path }),
     say:         (room, text) => request('POST', `/monitoring/conferences/${room}/say`, { text }),

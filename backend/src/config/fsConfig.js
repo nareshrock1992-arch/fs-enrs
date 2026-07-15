@@ -34,7 +34,9 @@ function env(key, fallback) {
 // All paths can be overridden per-variable or via FS_BASE_DIR.
 function buildConfig() {
   const base       = env('FS_BASE_DIR', '/usr/share/freeswitch');
-  const recordingDir = env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings'));
+  // Accept both spellings: FS_RECORDINGS_DIR (with S, common in older ENRS docs)
+  // and FS_RECORDING_DIR (without S). FS_RECORDINGS_DIR takes priority.
+  const recordingDir = env('FS_RECORDINGS_DIR', env('FS_RECORDING_DIR', env('ENRS_REC_DIR', '/var/lib/freeswitch/recordings')));
 
   return {
     baseDir:      base,

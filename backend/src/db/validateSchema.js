@@ -24,6 +24,8 @@ const REQUIRED = {
     'version', 'tags', 'notes', 'usage_count',
     // Added by migration 024:
     'updated_at',
+    // Added by migration 025:
+    'waveform_peaks',
   ],
   conference_recordings: [
     'id', 'conference_room', 'recording_path', 'recording_file',

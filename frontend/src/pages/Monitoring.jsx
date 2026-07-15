@@ -780,8 +780,6 @@ function RightPanel({ conf }) {
                     act('record', api.monitoring.recordStart);
                   } else if (isRecording) {
                     act('record', api.monitoring.recordStop);
-                  } else if (isPaused) {
-                    act('record', api.monitoring.recordStart, conf?.recordingPath || undefined);
                   } else {
                     act('record', api.monitoring.recordStop);
                   }
@@ -797,23 +795,10 @@ function RightPanel({ conf }) {
               >
                 {(recState === 'OFF' || isFailed)
                   ? <><Radio size={13} /> Start Recording</>
-                  : isPaused
-                    ? <><Radio size={13} /> Resume Recording</>
-                    : <><Square size={13} /> Stop Recording</>}
+                  : <><Square size={13} /> Stop Recording</>}
               </button>
             )}
 
-            {/* Pause button — only visible when actively recording */}
-            {isRecording && !recBusy && (
-              <button
-                disabled={disabled}
-                onClick={() => act('pause', api.monitoring.recordPause)}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl border
-                           border-amber-500/30 text-amber-400 text-xs font-medium
-                           hover:bg-amber-500/10 transition-colors disabled:opacity-35">
-                <Pause size={12} /> Pause Recording
-              </button>
-            )}
 
             {recBusy && (
               <button disabled

@@ -7,7 +7,6 @@ import {
   lockConference,
   unlockConference,
   startRecording,
-  pauseRecording,
   stopRecording,
   playAudio,
   sayText,
@@ -38,7 +37,6 @@ router.get('/debug/conf-sync', adminOrSuper, debugConfSync);
 router.post('/conferences/:room/lock', adminOrSuper, lockConference);
 router.post('/conferences/:room/unlock', adminOrSuper, unlockConference);
 router.post('/conferences/:room/record/start', adminOrSuper, startRecording);
-router.post('/conferences/:room/record/pause', adminOrSuper, pauseRecording);
 router.post('/conferences/:room/record/stop', adminOrSuper, stopRecording);
 router.post('/conferences/:room/play', adminOrSuper, playAudio);
 router.post('/conferences/:room/say', adminOrSuper, sayText);

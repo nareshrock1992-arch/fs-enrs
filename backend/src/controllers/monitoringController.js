@@ -16,10 +16,10 @@ import {
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
   confVolumeIn, confVolumeOut, confEnergy, confFloor,
   confTransfer, confLock, confUnlock,
-  confRecord, confRecordPause, confRecordStop, confRecordStopAll,
+  confRecord, confRecordStop, confRecordStopAll,
   confPlay, confSay, confInvite, confTerminate,
   setConferenceRecordingStarting, setConferenceRecordingActive,
-  setConferenceRecordingPaused, setConferenceRecordingStopping,
+  setConferenceRecordingStopping,
   setConferenceRecordingPath, setConferenceRecordingError,
   eslStatus,
 } from '../services/eslService.js';
@@ -220,43 +220,6 @@ export const startRecording = asyncHandler(async (req, res) => {
   );
 
   res.json({ ok: true, recordingPath: recPath });
-});
-
-export const pauseRecording = asyncHandler(async (req, res) => {
-  const room = req.params.room;
-  const snap = getConferenceSnapshot().find(c => c.name === room);
-
-  if (!snap || snap.recordingState !== 'ACTIVE') {
-    return res.status(409).json({
-      error: `Cannot pause: recording state is "${snap?.recordingState ?? 'unknown'}" (must be ACTIVE)`,
-    });
-  }
-
-  const recPath = req.body?.path || snap.recordingPath;
-  if (!recPath) return res.status(400).json({ error: 'No active recording path known for this conference' });
-
-  const eslCmd = `conference ${room} pauserec ${recPath}`;
-  let result;
-  try {
-    result = await confRecordPause(room, recPath);
-  } catch (eslErr) {
-    const reason = eslErr.message || String(eslErr);
-    console.error(`[monitoring] pauseRecording ESL error — cmd="${eslCmd}" error="${reason}"`);
-    return res.status(502).json({ error: `FreeSWITCH pause failed: ${reason}` });
-  }
-
-  const responseText = String(result ?? '').trim();
-  console.log(`[monitoring] pauseRecording — cmd="${eslCmd}" response="${responseText}"`);
-
-  if (responseText.startsWith('-ERR')) {
-    return res.status(502).json({ error: `FreeSWITCH rejected pause: ${responseText}` });
-  }
-
-  // FreeSWITCH does not reliably emit a pause-recording ESL event across versions.
-  // Update state optimistically now that the command succeeded.
-  // If FS does emit the event later, the event handler in eslService is a no-op.
-  setConferenceRecordingPaused(room);
-  res.json({ ok: true, recordingState: 'PAUSED' });
 });
 
 export const stopRecording = asyncHandler(async (req, res) => {
