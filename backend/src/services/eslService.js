@@ -404,7 +404,9 @@ export async function seedConferenceRegistry() {
 
   if (conferences.length === 0) {
     console.log('[esl] seedConferenceRegistry: FreeSWITCH reports no active conferences');
-    return [];
+    // Do NOT return here — fall through to the stale-entry cleanup loop so any
+    // conferences that exist in the registry (but not in FreeSWITCH) are removed
+    // and conference.ended is emitted to the frontend.
   }
 
   let addedConfs   = 0;
