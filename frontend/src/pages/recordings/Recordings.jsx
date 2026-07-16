@@ -10,13 +10,15 @@ import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 
 function fmtSize(bytes) {
-  if (!bytes && bytes !== 0) return '—';
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1048576).toFixed(1) + ' MB';
+  const n = Number(bytes);
+  if (!isFinite(n) || n < 0) return '—';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
 }
 function fmtDuration(sec) {
-  if (!sec && sec !== 0) return '—';
-  const m = Math.floor(sec / 60), s = String(Math.round(sec % 60)).padStart(2, '0');
+  const n = Number(sec);
+  if (!isFinite(n) || n < 0) return '—';
+  const m = Math.floor(n / 60), s = String(Math.round(n % 60)).padStart(2, '0');
   return `${m}:${s}`;
 }
 function fmtTime(iso) {
@@ -102,7 +104,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
   const [playing,    setPlaying]    = useState(false);
   const [progress,   setProgress]   = useState(0);
   const [currentT,   setCurrentT]   = useState(0);
-  const [duration,   setDuration]   = useState(rec.duration_sec || 0);
+  const [duration,   setDuration]   = useState(Number(rec.duration_sec) || 0);
   const [volume,     setVolume]     = useState(1);
   const [muted,      setMuted]      = useState(false);
   const [speed,      setSpeed]      = useState(1);
