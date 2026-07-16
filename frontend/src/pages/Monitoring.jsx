@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { socket } from '../api/socket.js';
+import { IncidentSidebar } from '../features/monitoring/sidebar/IncidentSidebar.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 const MAX_EVENTS        = 120;
@@ -1219,7 +1220,7 @@ export default function Monitoring() {
       {/* 3-panel grid */}
       <div className="grid grid-cols-12 gap-3" style={{ minHeight: '520px', maxHeight: '640px' }}>
         <div className="col-span-3 card !p-4 overflow-hidden flex flex-col">
-          <LeftPanel
+          <IncidentSidebar
             conferences={conferences}
             selectedConf={selectedConf}
             onSelect={toggleSelect}
