@@ -172,6 +172,28 @@ export const startCampaign = asyncHandler(async (req, res) => {
     messageText:    message_text   || null,
   });
 
+  // Register the Lua blast recording in the unified recordings table.
+  // blast_call.lua records to recordings/ens/ before calling this endpoint.
+  if (recording_file) {
+    import('../recordingController.js').then(({ upsertRecordingStart }) => {
+      upsertRecordingStart({
+        type:       'ENS',
+        recPath:    recording_file,
+        campaignId: campaign.notification_uuid ?? null,
+        createdBy:  'lua',
+      }).then(row => {
+        if (!row) return;
+        import('../../db/pool.js').then(({ query }) => {
+          query(
+            `UPDATE recordings SET status='COMPLETED', ended_at=now()
+             WHERE id=$1 AND status='RECORDING'`,
+            [row.id]
+          ).catch(() => {});
+        });
+      }).catch(err => console.error('[ens] recording registration failed:', err.message));
+    }).catch(() => {});
+  }
+
   res.status(201).json({
     success:     true,
     campaign_id: campaign.id,

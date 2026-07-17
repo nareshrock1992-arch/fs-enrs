@@ -182,17 +182,27 @@ export const startRecording = asyncHandler(async (req, res) => {
     });
   }
 
+  // Determine recording type: ERS when an active incident owns this conference;
+  // MANUAL otherwise. Type drives directory and database ownership.
+  const { rows: [activeIncident] } = await query(
+    `SELECT incident_uuid FROM ers_incidents
+     WHERE conference_room = $1 AND status = 'ACTIVE' AND deleted_at IS NULL
+     ORDER BY started_at DESC LIMIT 1`,
+    [room]
+  ).catch(() => ({ rows: [] }));
+  const recType = activeIncident ? 'ERS' : 'MANUAL';
+
   // Generate a clean recording path.
   // Use epoch ms (no colons/dots) for a filesystem-safe filename.
-  const ts      = Date.now();
-  const recDir  = fsPathService.getConfRecordingDir();
-  const recPath = req.body?.path || path.posix.join(recDir, `conf_${room}_${ts}.wav`);
+  const ts     = Date.now();
+  const recDir = fsPathService.getRecordingDirForType(recType);
+  const prefix = recType === 'ERS' ? `ers_${room}` : `conf_${room}`;
+  const recPath = req.body?.path || path.posix.join(recDir, `${prefix}_${ts}.wav`);
 
-  // Create the directory on the backend host. In a shared-volume Docker setup
-  // this creates it on the shared filesystem; FreeSWITCH will see the same dir.
+  // Create the directory on the backend host.
   try {
     fs.mkdirSync(recDir, { recursive: true });
-    console.log(`[monitoring] startRecording: recording dir ensured — "${recDir}"`);
+    console.log(`[monitoring] startRecording: recording dir ensured — "${recDir}" (type=${recType})`);
   } catch (mkdirErr) {
     console.error(`[monitoring] startRecording: cannot create recording dir "${recDir}": ${mkdirErr.message}`);
     return res.status(500).json({

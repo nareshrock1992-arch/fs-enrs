@@ -179,6 +179,11 @@ export const ersLookup = asyncHandler(async (req, res) => {
        ec.secondary_retry_count,
        ec.secondary_retry_interval_sec,
        ec.pin,
+       ec.conference_type,
+       ec.recording_enabled,
+       ec.recording_mode,
+       ec.recording_trigger,
+       ec.recording_format,
        en.service_name,
        en.organization_id
      FROM emergency_numbers en
@@ -214,15 +219,27 @@ export const ersLookup = asyncHandler(async (req, res) => {
   const groupType         = activeConferences === 0 ? 'primary' : 'secondary';
   const canAccept         = activeConferences < cfg.max_concurrent_conferences;
 
+  // For DYNAMIC conferences, generate unique room names so Lua uses them instead
+  // of the configured bridge numbers. Lua reads cfg.primary_bridge_number /
+  // cfg.secondary_bridge_number from this JSON and uses the value directly as
+  // the conference room — so we override those fields here. No Lua changes needed.
+  let primaryBridge   = cfg.primary_bridge_number;
+  let secondaryBridge = cfg.secondary_bridge_number;
+  if ((cfg.conference_type ?? 'STATIC') === 'DYNAMIC') {
+    const { resolveConferenceRoom } = await import('../../services/conferenceManager.js');
+    primaryBridge   = resolveConferenceRoom(cfg, 1);
+    secondaryBridge = resolveConferenceRoom(cfg, 2);
+  }
+
   res.json({
     success: true,
     data: {
       configuration_id:            cfg.configuration_id,
       name:                        cfg.name,
       service_name:                cfg.service_name,
-      // Bridge config
-      primary_bridge_number:       cfg.primary_bridge_number,
-      secondary_bridge_number:     cfg.secondary_bridge_number,
+      // Bridge config — for DYNAMIC conferences these are generated room names
+      primary_bridge_number:       primaryBridge,
+      secondary_bridge_number:     secondaryBridge,
       conference_profile:          cfg.conference_profile || 'default',
       conference_room_prefix:      cfg.conference_room_prefix || 'ers',
       max_concurrent_conferences:  cfg.max_concurrent_conferences,
@@ -242,9 +259,15 @@ export const ersLookup = asyncHandler(async (req, res) => {
       queue_music_path:            cfg.queue_music_path,
       queue_hold_audio:            cfg.queue_hold_audio,
       queue_timeout_sec:           cfg.queue_timeout_sec ?? 0,
-      // Recording
+      // Recording — Lua channel recording (record_session)
       record_conferences:          cfg.record_conferences,
       recording_directory:         cfg.recording_directory,
+      // Backend-driven conference recording (ESL conference record command)
+      conference_type:             cfg.conference_type ?? 'STATIC',
+      recording_enabled:           cfg.recording_enabled ?? false,
+      recording_mode:              cfg.recording_mode ?? 'MANUAL',
+      recording_trigger:           cfg.recording_trigger ?? 'CONFERENCE_CREATED',
+      recording_format:            cfg.recording_format ?? 'wav',
       // Auth
       pin_required:                Boolean(cfg.pin),
       allow_rejoin:                cfg.allow_rejoin ?? true,
@@ -357,6 +380,32 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
   });
 
   if (!result) return null;
+
+  // Register the Lua record_session recording in the unified recordings table.
+  // This is the authoritative source for ERS recordings written by Lua — the
+  // start-recording ESL event does NOT fire for record_session (only for
+  // conference record commands). Deferred import avoids circular dependency.
+  if (recordingFile) {
+    import('../recordingController.js').then(({ upsertRecordingStart }) => {
+      upsertRecordingStart({
+        type:         'ERS',
+        recPath:      recordingFile,
+        incidentUuid,
+        createdBy:    'lua',
+      }).then(row => {
+        if (row) {
+          // Mark it completed immediately — Lua only calls here after recording is done
+          import('../../db/pool.js').then(({ query }) => {
+            query(
+              `UPDATE recordings SET status='COMPLETED', ended_at=now()
+               WHERE id=$1 AND status='RECORDING'`,
+              [row.id]
+            ).catch(() => {});
+          });
+        }
+      }).catch(err => console.error('[ers] recording registration failed:', err.message));
+    }).catch(() => {});
+  }
 
   emitInternal('enrs::ers_incident_ended', {
     incident_uuid: incidentUuid,

@@ -2,9 +2,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Headphones, Play, Pause, Download, Search, RefreshCw, X,
   SkipBack, SkipForward, Volume2, VolumeX,
-  Archive, Trash2, Calendar, Building2, Radio,
-  Clock, CheckCircle, AlertCircle, Info,
-  FileAudio, Users, Hash, Mic
+  Archive, Trash2, Clock, CheckCircle, AlertCircle,
+  FileAudio, Radio, Shield, PhoneCall, Phone, Mic
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
@@ -38,11 +37,26 @@ function fmtRelative(iso) {
 }
 
 const STATUS = {
-  RECORDING: { label: 'Recording',  cls: 'bg-red-500/15 text-red-400 border-red-500/20',     Icon: Radio     },
-  COMPLETED: { label: 'Completed',  cls: 'bg-green-500/15 text-green-500 border-green-500/20', Icon: CheckCircle },
-  ARCHIVED:  { label: 'Archived',   cls: 'bg-surface-hover text-text-muted border-surface-border', Icon: Archive },
-  FAILED:    { label: 'Failed',     cls: 'bg-amber-500/15 text-amber-500 border-amber-500/20', Icon: AlertCircle },
+  RECORDING: { label: 'Recording', cls: 'bg-red-500/15 text-red-400 border-red-500/20',      Icon: Radio       },
+  COMPLETED: { label: 'Completed', cls: 'bg-green-500/15 text-green-500 border-green-500/20', Icon: CheckCircle  },
+  ARCHIVED:  { label: 'Archived',  cls: 'bg-surface-hover text-text-muted border-surface-border', Icon: Archive },
+  FAILED:    { label: 'Failed',    cls: 'bg-amber-500/15 text-amber-500 border-amber-500/20',  Icon: AlertCircle },
 };
+
+const TYPE_META = {
+  ERS:    { label: 'Emergency Response', short: 'ERS',    cls: 'bg-red-500/10 text-red-400 border-red-500/20',     Icon: Shield    },
+  ENS:    { label: 'Notification',       short: 'ENS',    cls: 'bg-blue-500/10 text-blue-400 border-blue-500/20',  Icon: PhoneCall },
+  IVR:    { label: 'IVR Session',        short: 'IVR',    cls: 'bg-purple-500/10 text-purple-400 border-purple-500/20', Icon: Phone },
+  MANUAL: { label: 'Manual',             short: 'Manual', cls: 'bg-surface-hover text-text-muted border-surface-border', Icon: Mic  },
+};
+
+const MODULE_TABS = [
+  { key: '',       label: 'All',             Icon: Headphones },
+  { key: 'ERS',   label: 'Emergency Response', Icon: Shield    },
+  { key: 'ENS',   label: 'Notifications',    Icon: PhoneCall  },
+  { key: 'IVR',   label: 'IVR',             Icon: Phone      },
+  { key: 'MANUAL',label: 'Manual',           Icon: Mic        },
+];
 
 // ── Waveform Canvas ───────────────────────────────────────────────────────────
 
@@ -98,20 +112,22 @@ function WaveformCanvas({ peaks, progress = 0, duration = 0, onSeek, height = 64
   );
 }
 
-// ── Recording Player + Detail Panel ──────────────────────────────────────────
+// ── Recording Detail Sidebar ──────────────────────────────────────────────────
 
 function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
-  const [playing,    setPlaying]    = useState(false);
-  const [progress,   setProgress]   = useState(0);
-  const [currentT,   setCurrentT]   = useState(0);
-  const [duration,   setDuration]   = useState(Number(rec.duration_sec) || 0);
-  const [volume,     setVolume]     = useState(1);
-  const [muted,      setMuted]      = useState(false);
-  const [speed,      setSpeed]      = useState(1);
-  const [peaks,      setPeaks]      = useState(null);
-  const [loadErr,    setLoadErr]    = useState(null);
-  const [archiving,  setArchiving]  = useState(false);
+  const [playing,   setPlaying]   = useState(false);
+  const [progress,  setProgress]  = useState(0);
+  const [currentT,  setCurrentT]  = useState(0);
+  const [duration,  setDuration]  = useState(Number(rec.duration_sec) || 0);
+  const [volume,    setVolume]    = useState(1);
+  const [muted,     setMuted]     = useState(false);
+  const [speed,     setSpeed]     = useState(1);
+  const [peaks,     setPeaks]     = useState(null);
+  const [loadErr,   setLoadErr]   = useState(null);
+  const [archiving, setArchiving] = useState(false);
   const audioRef = useRef(null);
+
+  const typeMeta = TYPE_META[rec.recording_type] || TYPE_META.MANUAL;
 
   useEffect(() => {
     if (rec.status === 'COMPLETED' || rec.status === 'ARCHIVED') {
@@ -151,12 +167,19 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
                     shadow-2xl flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-border shrink-0">
-        <Headphones size={14} className="text-brand" />
+        <typeMeta.Icon size={14} className="text-brand shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-text-primary truncate">
-            {rec.recording_file || rec.conference_room}
+            {rec.recording_file || rec.conference_room || rec.relative_path || 'Recording'}
           </p>
-          <p className="text-[10px] text-text-muted">{rec.conference_room}</p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className={`text-[9px] px-1.5 py-px rounded border font-bold ${typeMeta.cls}`}>
+              {typeMeta.short}
+            </span>
+            {rec.conference_room && (
+              <span className="text-[10px] text-text-muted font-mono">{rec.conference_room}</span>
+            )}
+          </div>
         </div>
         <button onClick={onClose}
           className="p-1 rounded text-text-muted hover:text-text-primary transition-colors">
@@ -165,10 +188,9 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Player section */}
+        {/* Player */}
         {canPlay && (
           <div className="p-4 border-b border-surface-border space-y-3">
-            {/* Waveform */}
             <div className="bg-surface-panel rounded-xl px-3 py-3 border border-surface-border/40">
               <WaveformCanvas
                 peaks={peaks}
@@ -183,21 +205,15 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
                 height={64}
               />
             </div>
-
-            {/* Time */}
             <div className="flex justify-between text-[10px] text-text-muted tabular-nums px-1">
               <span>{fmtT(currentT)}</span>
               <span>{fmtT(duration)}</span>
             </div>
-
-            {/* Error */}
             {loadErr && (
               <div className="text-[10px] text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
                 {loadErr}
               </div>
             )}
-
-            {/* Controls */}
             <div className="flex items-center justify-center gap-5">
               <button onClick={() => skip(-10)}
                 className="p-2 text-text-muted hover:text-text-primary transition-colors rounded-lg hover:bg-surface-hover">
@@ -213,8 +229,6 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
                 <SkipForward size={14} />
               </button>
             </div>
-
-            {/* Speed + Volume */}
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-0.5">
                 {[0.5, 0.75, 1, 1.5, 2].map(s => (
@@ -240,7 +254,6 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
                   className="w-20 accent-brand" />
               </div>
             </div>
-
             <audio
               ref={audioRef}
               src={api.recordings.streamUrl(rec.id)}
@@ -269,7 +282,6 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
           </div>
         )}
 
-        {/* Metadata */}
         <div className="p-4 space-y-3">
           {/* Timeline */}
           <div className="card !p-3 space-y-2">
@@ -286,22 +298,67 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
             ))}
           </div>
 
-          {/* Conference */}
-          <div className="card !p-3 space-y-2">
-            <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Conference</p>
-            {[
-              ['Room',     rec.conference_room],
-              ['ERS Config', rec.ers_name || '—'],
-              ['Org',      rec.organization_name || '—'],
-              ['Caller',   rec.caller_number || '—'],
-              ['Started by', rec.created_by || '—'],
-            ].map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-text-muted shrink-0">{k}</span>
-                <span className="text-[10px] font-medium text-text-primary text-right truncate">{v}</span>
-              </div>
-            ))}
-          </div>
+          {/* Module context — varies by type */}
+          {rec.recording_type === 'ERS' && (
+            <div className="card !p-3 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Emergency Response</p>
+              {[
+                ['Conference',   rec.conference_room   || '—'],
+                ['ERS Config',   rec.ers_name          || '—'],
+                ['Organization', rec.organization_name || '—'],
+                ['Caller',       rec.caller_number     || '—'],
+                ['Created by',   rec.created_by        || '—'],
+              ].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-text-muted shrink-0">{k}</span>
+                  <span className="text-[10px] font-medium text-text-primary text-right truncate">{v}</span>
+                </div>
+              ))}
+              {rec.incident_uuid && (
+                <div className="pt-1 border-t border-surface-border/30">
+                  <p className="text-[9px] text-text-muted mb-0.5">Incident UUID</p>
+                  <p className="text-[9px] font-mono text-brand break-all">{rec.incident_uuid}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {rec.recording_type === 'ENS' && (
+            <div className="card !p-3 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Notification Campaign</p>
+              {[
+                ['Created by', rec.created_by || '—'],
+              ].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-text-muted shrink-0">{k}</span>
+                  <span className="text-[10px] font-medium text-text-primary text-right truncate">{v}</span>
+                </div>
+              ))}
+              {rec.campaign_id && (
+                <div className="pt-1 border-t border-surface-border/30">
+                  <p className="text-[9px] text-text-muted mb-0.5">Campaign UUID</p>
+                  <p className="text-[9px] font-mono text-brand break-all">{rec.campaign_id}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(rec.recording_type === 'MANUAL' || rec.recording_type === 'IVR') && (
+            <div className="card !p-3 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">
+                {rec.recording_type === 'IVR' ? 'IVR Session' : 'Conference'}
+              </p>
+              {[
+                ['Room',       rec.conference_room || '—'],
+                ['Created by', rec.created_by      || '—'],
+              ].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-text-muted shrink-0">{k}</span>
+                  <span className="text-[10px] font-medium text-text-primary text-right truncate">{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* File info */}
           <div className="card !p-3 space-y-2">
@@ -317,29 +374,18 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
                 <span className="text-[10px] font-mono font-medium text-text-primary">{v}</span>
               </div>
             ))}
-            {rec.recording_path && (
+            {(rec.relative_path || rec.recording_path) && (
               <div className="pt-1 border-t border-surface-border/30">
-                <p className="text-[9px] font-mono text-text-muted break-all opacity-60">{rec.recording_path}</p>
+                <p className="text-[9px] font-mono text-text-muted break-all opacity-60">
+                  {rec.relative_path || rec.recording_path}
+                </p>
               </div>
             )}
           </div>
-
-          {/* Incident link */}
-          {rec.incident_uuid && (
-            <div className="card !p-3">
-              <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted mb-2">Linked Incident</p>
-              <div className="space-y-1">
-                <div className="text-[10px] font-mono text-brand break-all">{rec.incident_uuid}</div>
-                {rec.incident_status && (
-                  <div className="text-[10px] text-text-muted">Status: {rec.incident_status}</div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
-      {/* Footer actions */}
+      {/* Footer */}
       <div className="border-t border-surface-border p-3 flex gap-2 shrink-0">
         <a
           href={api.recordings.downloadUrl(rec.id)}
@@ -377,13 +423,14 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Recordings() {
-  const [recordings,  setRecordings]  = useState([]);
-  const [total,       setTotal]       = useState(0);
-  const [loading,     setLoading]     = useState(true);
-  const [search,      setSearch]      = useState('');
+  const [recordings,   setRecordings]   = useState([]);
+  const [total,        setTotal]        = useState(0);
+  const [loading,      setLoading]      = useState(true);
+  const [search,       setSearch]       = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [selected,    setSelected]    = useState(null);
-  const [detail,      setDetail]      = useState(null);
+  const [typeFilter,   setTypeFilter]   = useState('');
+  const [selected,     setSelected]     = useState(null);
+  const [detail,       setDetail]       = useState(null);
 
   const user    = useAuthStore(s => s.user);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
@@ -392,8 +439,9 @@ export default function Recordings() {
     setLoading(true);
     try {
       const res = await api.recordings.list({
-        search:         search         || undefined,
-        status:         statusFilter   || undefined,
+        search:         search       || undefined,
+        status:         statusFilter || undefined,
+        recording_type: typeFilter   || undefined,
         limit: 100,
       });
       setRecordings(res.recordings || []);
@@ -403,11 +451,10 @@ export default function Recordings() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter]);
+  }, [search, statusFilter, typeFilter]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Open detail panel — load full record
   const openDetail = async (rec) => {
     if (selected === rec.id) {
       setSelected(null);
@@ -426,8 +473,7 @@ export default function Recordings() {
     if (!detail) return;
     await api.recordings.archive(detail.id);
     load();
-    const updated = { ...detail, status: 'ARCHIVED', archived_at: new Date().toISOString() };
-    setDetail(updated);
+    setDetail({ ...detail, status: 'ARCHIVED', archived_at: new Date().toISOString() });
   };
 
   const handleDelete = async () => {
@@ -438,10 +484,13 @@ export default function Recordings() {
     load();
   };
 
-  // Summary stats
+  // Summary counts
+  const byType = recordings.reduce((acc, r) => {
+    acc[r.recording_type] = (acc[r.recording_type] || 0) + 1;
+    return acc;
+  }, {});
   const active    = recordings.filter(r => r.status === 'RECORDING').length;
   const completed = recordings.filter(r => r.status === 'COMPLETED').length;
-  const archived  = recordings.filter(r => r.status === 'ARCHIVED').length;
 
   return (
     <div className="space-y-5 relative">
@@ -462,7 +511,7 @@ export default function Recordings() {
           <Headphones size={18} className="text-red-400" />
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-text-primary">Conference Recordings</h1>
+          <h1 className="text-xl font-bold text-text-primary">Recordings</h1>
           <p className="text-xs text-text-muted">{total} recording{total !== 1 ? 's' : ''} total</p>
         </div>
         <button onClick={load}
@@ -472,25 +521,58 @@ export default function Recordings() {
         </button>
       </div>
 
-      {/* Stats */}
+      {/* Module type tabs */}
+      <div className="flex items-center gap-1 border-b border-surface-border pb-0 -mb-1 overflow-x-auto">
+        {MODULE_TABS.map(({ key, label, Icon }) => {
+          const count = key ? (byType[key] || 0) : recordings.length;
+          const isActive = typeFilter === key;
+          return (
+            <button
+              key={key}
+              onClick={() => setTypeFilter(key)}
+              className={[
+                'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium whitespace-nowrap',
+                'border-b-2 transition-colors -mb-px',
+                isActive
+                  ? 'border-brand text-brand'
+                  : 'border-transparent text-text-muted hover:text-text-primary hover:border-surface-border',
+              ].join(' ')}
+            >
+              <Icon size={11} />
+              {label}
+              {!loading && count > 0 && (
+                <span className={[
+                  'text-[9px] px-1 py-px rounded font-bold',
+                  isActive ? 'bg-brand/15 text-brand' : 'bg-surface-hover text-text-muted',
+                ].join(' ')}>
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Stats strip */}
       {!loading && total > 0 && (
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            { label: 'Total',     value: total,     icon: Headphones, color: 'text-text-primary' },
-            { label: 'Recording', value: active,    icon: Radio,      color: 'text-red-400' },
-            { label: 'Completed', value: completed, icon: CheckCircle, color: 'text-green-500' },
-            { label: 'Archived',  value: archived,  icon: Archive,    color: 'text-text-muted' },
-          ].map(({ label, value, icon: Icon, color }) => (
-            <div key={label} className="card !p-3 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-surface-hover flex items-center justify-center shrink-0">
-                <Icon size={13} className={color} />
-              </div>
-              <div>
-                <div className={`text-lg font-bold tabular-nums ${color}`}>{value}</div>
-                <div className="text-[9px] text-text-muted uppercase tracking-wide">{label}</div>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center gap-4 text-[10px] text-text-muted">
+          {active > 0 && (
+            <span className="flex items-center gap-1 text-red-400">
+              <Radio size={9} className="animate-pulse" /> {active} recording
+            </span>
+          )}
+          <span className="flex items-center gap-1">
+            <CheckCircle size={9} className="text-green-500" /> {completed} completed
+          </span>
+          {Object.entries(byType).map(([t, n]) => {
+            const tm = TYPE_META[t];
+            if (!tm || !n) return null;
+            return (
+              <span key={t} className={`flex items-center gap-1 ${tm.cls} px-1.5 py-px rounded border text-[9px] font-bold`}>
+                <tm.Icon size={8} /> {n} {tm.short}
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -519,7 +601,7 @@ export default function Recordings() {
         </select>
       </div>
 
-      {/* Table */}
+      {/* List */}
       {loading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => (
@@ -531,13 +613,16 @@ export default function Recordings() {
           <Headphones size={36} className="mx-auto text-text-muted/20 mb-3" />
           <p className="text-sm font-semibold text-text-secondary">No recordings</p>
           <p className="text-xs text-text-muted mt-1">
-            {search || statusFilter ? 'No results match your filter' : 'Conference recordings will appear here automatically'}
+            {search || statusFilter || typeFilter
+              ? 'No results match your filter'
+              : 'Recordings from ERS incidents, ENS campaigns, and operator sessions will appear here'}
           </p>
         </div>
       ) : (
         <div className="space-y-1.5">
           {recordings.map(r => {
-            const s   = STATUS[r.status] || STATUS.COMPLETED;
+            const s    = STATUS[r.status]               || STATUS.COMPLETED;
+            const tm   = TYPE_META[r.recording_type]    || TYPE_META.MANUAL;
             const isActive = selected === r.id;
             return (
               <div
@@ -550,23 +635,26 @@ export default function Recordings() {
                     : 'border-surface-border bg-surface hover:bg-surface-hover/50',
                 ].join(' ')}
               >
-                {/* Icon */}
+                {/* Type icon */}
                 <div className={[
                   'w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border',
                   r.status === 'RECORDING'
                     ? 'bg-red-500/10 border-red-500/20'
-                    : 'bg-surface-hover border-surface-border',
+                    : tm.cls,
                 ].join(' ')}>
                   {r.status === 'RECORDING'
                     ? <Radio size={14} className="text-red-400 animate-pulse" />
-                    : <FileAudio size={14} className="text-text-muted" />}
+                    : <tm.Icon size={14} />}
                 </div>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-text-primary truncate max-w-xs font-mono">
-                      {r.recording_file || r.conference_room}
+                      {r.conference_room || r.conference_name || r.relative_path || 'recording'}
+                    </span>
+                    <span className={`text-[9px] px-1.5 py-px rounded border font-bold ${tm.cls}`}>
+                      {tm.short}
                     </span>
                     <span className={`text-[9px] px-1.5 py-px rounded border font-bold flex items-center gap-0.5 ${s.cls}`}>
                       <s.Icon size={7} /> {s.label}
@@ -574,14 +662,15 @@ export default function Recordings() {
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-[10px] text-text-muted tabular-nums flex-wrap">
                     {r.organization_name && (
-                      <span className="flex items-center gap-1">
-                        <Building2 size={9} /> {r.organization_name}
-                      </span>
+                      <span>{r.organization_name}</span>
                     )}
                     {r.ers_name && (
                       <span className="text-brand/70">{r.ers_name}</span>
                     )}
-                    {r.duration_sec != null && <span>{fmtDuration(r.duration_sec)}</span>}
+                    {r.caller_number && (
+                      <span>{r.caller_number}</span>
+                    )}
+                    {r.duration_sec  != null && <span>{fmtDuration(r.duration_sec)}</span>}
                     {r.file_size_bytes != null && <span>{fmtSize(r.file_size_bytes)}</span>}
                     {r.codec && <span className="font-mono uppercase">{r.codec}</span>}
                     <span className="flex items-center gap-1">
@@ -590,7 +679,7 @@ export default function Recordings() {
                   </div>
                 </div>
 
-                {/* Actions */}
+                {/* Row download */}
                 <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   {(r.status === 'COMPLETED' || r.status === 'ARCHIVED') && (
                     <a

@@ -27,8 +27,9 @@ const REQUIRED = {
     // Added by migration 025:
     'waveform_peaks',
   ],
-  conference_recordings: [
-    'id', 'conference_room', 'recording_path', 'recording_file',
+  recordings: [
+    'id', 'recording_type', 'conference_room', 'recording_path', 'recording_file',
+    'relative_path', 'waveform_peaks',
     'status', 'started_at', 'ended_at', 'tenant_id', 'created_at', 'updated_at',
     'deleted_at',
   ],

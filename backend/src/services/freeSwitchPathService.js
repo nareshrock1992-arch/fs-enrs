@@ -51,7 +51,29 @@ class FreeSwitchPathService {
     return path.posix.join(this.#cfg.recordingDir, 'ers');
   }
 
-  /** Conference monitoring (manual record) recordings */
+  /** Operator-initiated manual recordings (conferences without an ERS incident) */
+  getManualRecordingDir() {
+    return path.posix.join(this.#cfg.recordingDir, 'manual');
+  }
+
+  /**
+   * Dispatch recording directory by module type.
+   * Used by monitoringController and any code that needs the canonical dir
+   * for a given recording type rather than hardcoding paths.
+   */
+  getRecordingDirForType(type) {
+    switch (type) {
+      case 'ERS':    return this.getErsRecordingDir();
+      case 'ENS':    return this.getEnsRecordingDir();
+      case 'IVR':    return this.getIvrRecordingDir();
+      default:       return this.getManualRecordingDir(); // MANUAL
+    }
+  }
+
+  /**
+   * @deprecated Use getManualRecordingDir() for new operator recordings.
+   * Kept for backward compatibility with old file scanner references.
+   */
   getConfRecordingDir() {
     return path.posix.join(this.#cfg.recordingDir, 'conf');
   }

@@ -622,6 +622,11 @@ async function handleEvent(evt) {
     if (action === 'conference-create') {
       registryGetOrCreate(confName);
       emit('conference.created', { confName });
+      import('./conferenceManager.js').then(({ handleConferenceCreated }) => {
+        handleConferenceCreated(confName).catch(err =>
+          console.error(`[esl] conferenceManager.handleConferenceCreated failed conf="${confName}": ${err.message}`)
+        );
+      }).catch(() => {});
 
     } else if (action === 'conference-destroy') {
       conferenceRegistry.delete(confName);
@@ -663,6 +668,14 @@ async function handleEvent(evt) {
         _uuid:      channelUuid,
       };
       conf.members.set(memberId, member);
+      const memberCount = conf.members.size;
+      if (memberCount === 1) {
+        import('./conferenceManager.js').then(({ handleFirstParticipant }) => {
+          handleFirstParticipant(confName, memberCount).catch(err =>
+            console.error(`[esl] conferenceManager.handleFirstParticipant failed conf="${confName}": ${err.message}`)
+          );
+        }).catch(() => {});
+      }
       emit('conference.member.joined', { confName, member: memberId, callerNum, callerName, memberData: member });
       persistEvent('conference.member.joined', { confName, member: memberId, callerNum });
       trackParticipant(confName, callerNum, 'join');
@@ -756,11 +769,18 @@ async function handleEvent(evt) {
         recordingPath:  conf?.recordingPath || recPath,
         recordingError: null,
       });
-      // Auto-persist recording to DB so it appears in Recording Management
+      // Auto-persist recording to DB so it appears in Recording Management.
+      // Infer recording type from path so ERS and MANUAL recordings are correctly
+      // separated even when both come through the same ESL event handler.
       const finalPath = conf?.recordingPath || recPath;
       if (finalPath) {
+        const recType = finalPath.includes('/ers/')    ? 'ERS'
+                      : finalPath.includes('/ens/')    ? 'ENS'
+                      : finalPath.includes('/ivr/')    ? 'IVR'
+                      : finalPath.includes('/manual/') ? 'MANUAL'
+                      : 'ERS'; // legacy conf/ → treat as ERS for backward compat
         import('../controllers/recordingController.js').then(({ upsertRecordingStart }) => {
-          upsertRecordingStart({ confName, recPath: finalPath, createdBy: 'system' });
+          upsertRecordingStart({ type: recType, confName, recPath: finalPath, createdBy: 'system' });
         }).catch(err => console.error('[esl] upsertRecordingStart import failed:', err.message));
       }
 

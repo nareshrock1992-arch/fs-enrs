@@ -30,9 +30,25 @@ const ErsConfigSchema = z.object({
   queue_priority:               intDef(5, 1, 10),
   queue_hold_audio:             emptyToNull,            // legacy compat
 
-  // Recording
+  // Recording — Lua channel recording (record_session)
   record_conferences:           boolDef(false),
   recording_directory:          emptyToNull,
+
+  // Conference type + backend-driven recording (migration 027)
+  conference_type:              z.enum(['STATIC','DYNAMIC']).default('STATIC'),
+  recording_enabled:            boolDef(false),
+  recording_mode:               z.enum(['AUTO','MANUAL']).default('MANUAL'),
+  recording_trigger:            z.enum(['CONFERENCE_CREATED','FIRST_PARTICIPANT','MODERATOR_JOIN']).default('CONFERENCE_CREATED'),
+  recording_format:             z.string().max(8).default('wav'),
+
+  // Conference behaviour (Phase 4 — reserved; stored but not yet enforced)
+  max_participants:             intDef(0),        // 0 = unlimited
+  conference_lock:              boolDef(false),
+  auto_destroy:                 boolDef(true),
+  allow_external:               boolDef(false),
+  allow_duplicate_responders:   boolDef(false),
+  moderator_required:           boolDef(false),
+  bridge_timeout_sec:           intDef(0),        // 0 = disabled
 
   // Retry
   retry_ring_count:             intDef(3),
@@ -198,13 +214,19 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        queue_enabled, queue_announcement_audio, queue_music_path,
        queue_timeout_sec, queue_priority, queue_hold_audio,
        record_conferences, recording_directory,
+       conference_type, recording_enabled, recording_mode,
+       recording_trigger, recording_format,
+       max_participants, conference_lock, auto_destroy,
+       allow_external, allow_duplicate_responders, moderator_required, bridge_timeout_sec,
        retry_ring_count, retry_ring_interval,
        pin, allow_rejoin, cli_authentication,
        primary_retry_count, primary_retry_interval_sec,
        secondary_retry_count, secondary_retry_interval_sec,
        is_active, ring_timeout_seconds
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+       $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
+       $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -213,6 +235,10 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
       d.queue_timeout_sec, d.queue_priority, d.queue_hold_audio ?? null,
       d.record_conferences, d.recording_directory,
+      d.conference_type, d.recording_enabled, d.recording_mode,
+      d.recording_trigger, d.recording_format,
+      d.max_participants, d.conference_lock, d.auto_destroy,
+      d.allow_external, d.allow_duplicate_responders, d.moderator_required, d.bridge_timeout_sec,
       d.retry_ring_count, d.retry_ring_interval,
       d.pin, d.allow_rejoin, d.cli_authentication,
       d.primary_retry_count, d.primary_retry_interval_sec,
@@ -255,18 +281,30 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        queue_hold_audio             = COALESCE($14, queue_hold_audio),
        record_conferences           = COALESCE($15, record_conferences),
        recording_directory          = COALESCE($16, recording_directory),
-       retry_ring_count             = COALESCE($17, retry_ring_count),
-       retry_ring_interval          = COALESCE($18, retry_ring_interval),
-       pin                          = COALESCE($19, pin),
-       allow_rejoin                 = COALESCE($20, allow_rejoin),
-       cli_authentication           = COALESCE($21, cli_authentication),
-       primary_retry_count          = COALESCE($22, primary_retry_count),
-       primary_retry_interval_sec   = COALESCE($23, primary_retry_interval_sec),
-       secondary_retry_count        = COALESCE($24, secondary_retry_count),
-       secondary_retry_interval_sec = COALESCE($25, secondary_retry_interval_sec),
-       is_active                    = COALESCE($26, is_active),
-       tenant_id                    = COALESCE(tenant_id, $27),
-       ring_timeout_seconds         = COALESCE($28, ring_timeout_seconds),
+       conference_type              = COALESCE($17, conference_type),
+       recording_enabled            = COALESCE($18, recording_enabled),
+       recording_mode               = COALESCE($19, recording_mode),
+       recording_trigger            = COALESCE($20, recording_trigger),
+       recording_format             = COALESCE($21, recording_format),
+       max_participants             = COALESCE($22, max_participants),
+       conference_lock              = COALESCE($23, conference_lock),
+       auto_destroy                 = COALESCE($24, auto_destroy),
+       allow_external               = COALESCE($25, allow_external),
+       allow_duplicate_responders   = COALESCE($26, allow_duplicate_responders),
+       moderator_required           = COALESCE($27, moderator_required),
+       bridge_timeout_sec           = COALESCE($28, bridge_timeout_sec),
+       retry_ring_count             = COALESCE($29, retry_ring_count),
+       retry_ring_interval          = COALESCE($30, retry_ring_interval),
+       pin                          = COALESCE($31, pin),
+       allow_rejoin                 = COALESCE($32, allow_rejoin),
+       cli_authentication           = COALESCE($33, cli_authentication),
+       primary_retry_count          = COALESCE($34, primary_retry_count),
+       primary_retry_interval_sec   = COALESCE($35, primary_retry_interval_sec),
+       secondary_retry_count        = COALESCE($36, secondary_retry_count),
+       secondary_retry_interval_sec = COALESCE($37, secondary_retry_interval_sec),
+       is_active                    = COALESCE($38, is_active),
+       tenant_id                    = COALESCE(tenant_id, $39),
+       ring_timeout_seconds         = COALESCE($40, ring_timeout_seconds),
        updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
     [
@@ -277,6 +315,10 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
       d.queue_timeout_sec, d.queue_priority, d.queue_hold_audio,
       d.record_conferences, d.recording_directory,
+      d.conference_type, d.recording_enabled, d.recording_mode,
+      d.recording_trigger, d.recording_format,
+      d.max_participants, d.conference_lock, d.auto_destroy,
+      d.allow_external, d.allow_duplicate_responders, d.moderator_required, d.bridge_timeout_sec,
       d.retry_ring_count, d.retry_ring_interval,
       d.pin, d.allow_rejoin, d.cli_authentication,
       d.primary_retry_count, d.primary_retry_interval_sec,

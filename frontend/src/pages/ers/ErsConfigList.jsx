@@ -25,9 +25,23 @@ const EMPTY = {
   queue_music_path:             '',
   queue_timeout_sec:            0,
   queue_priority:               5,
-  // Recording
+  // Recording — Lua channel recording
   record_conferences:           false,
   recording_directory:          '',
+  // Conference type + backend-driven recording
+  conference_type:              'STATIC',
+  recording_enabled:            false,
+  recording_mode:               'MANUAL',
+  recording_trigger:            'CONFERENCE_CREATED',
+  recording_format:             'wav',
+  // Conference behaviour (reserved — Phase 4)
+  max_participants:             0,
+  conference_lock:              false,
+  auto_destroy:                 true,
+  allow_external:               false,
+  allow_duplicate_responders:   false,
+  moderator_required:           false,
+  bridge_timeout_sec:           0,
   // Ring / retry (shared)
   retry_ring_count:             3,
   retry_ring_interval:          30,
@@ -181,6 +195,18 @@ export default function ErsConfigList() {
         queue_timeout_sec:            Number(form.queue_timeout_sec),
         queue_priority:               Number(form.queue_priority),
         recording_directory:          form.recording_directory || null,
+        conference_type:              form.conference_type,
+        recording_enabled:            form.recording_enabled,
+        recording_mode:               form.recording_mode,
+        recording_trigger:            form.recording_trigger,
+        recording_format:             form.recording_format || 'wav',
+        max_participants:             Number(form.max_participants),
+        conference_lock:              form.conference_lock,
+        auto_destroy:                 form.auto_destroy,
+        allow_external:               form.allow_external,
+        allow_duplicate_responders:   form.allow_duplicate_responders,
+        moderator_required:           form.moderator_required,
+        bridge_timeout_sec:           Number(form.bridge_timeout_sec),
         retry_ring_count:             Number(form.retry_ring_count),
         retry_ring_interval:          Number(form.retry_ring_interval),
         ring_timeout_seconds:         form.ring_timeout_seconds === '' ? null : Number(form.ring_timeout_seconds),
@@ -224,6 +250,18 @@ export default function ErsConfigList() {
         queue_priority:               full.queue_priority ?? 5,
         record_conferences:           full.record_conferences ?? false,
         recording_directory:          full.recording_directory ?? '',
+        conference_type:              full.conference_type ?? 'STATIC',
+        recording_enabled:            full.recording_enabled ?? false,
+        recording_mode:               full.recording_mode ?? 'MANUAL',
+        recording_trigger:            full.recording_trigger ?? 'CONFERENCE_CREATED',
+        recording_format:             full.recording_format ?? 'wav',
+        max_participants:             full.max_participants ?? 0,
+        conference_lock:              full.conference_lock ?? false,
+        auto_destroy:                 full.auto_destroy ?? true,
+        allow_external:               full.allow_external ?? false,
+        allow_duplicate_responders:   full.allow_duplicate_responders ?? false,
+        moderator_required:           full.moderator_required ?? false,
+        bridge_timeout_sec:           full.bridge_timeout_sec ?? 0,
         retry_ring_count:             full.retry_ring_count ?? 3,
         retry_ring_interval:          full.retry_ring_interval ?? 30,
         ring_timeout_seconds:         full.ring_timeout_seconds ?? '',
@@ -458,21 +496,123 @@ export default function ErsConfigList() {
               </div>
             </section>
 
+            {/* ── Conference ── */}
+            <section>
+              <p className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-3">Conference</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="label">Conference Room Type</label>
+                  <select className="input" value={form.conference_type}
+                          onChange={e => f('conference_type', e.target.value)}>
+                    <option value="STATIC">Static — use configured bridge numbers</option>
+                    <option value="DYNAMIC">Dynamic — generate unique room per incident</option>
+                  </select>
+                  {form.conference_type === 'DYNAMIC' && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+                      Dynamic rooms are generated at call time. Bridge numbers below become fallback identifiers only.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+
             {/* ── Recording ── */}
             <section>
               <p className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-3">Recording</p>
+
+              {/* Lua channel recording (existing) */}
               <div className="flex items-center gap-2 mb-3">
                 <input type="checkbox" id="recConf" checked={form.record_conferences}
                        onChange={e => f('record_conferences', e.target.checked)} />
                 <label htmlFor="recConf" className="text-sm text-text-primary cursor-pointer">
-                  Record conferences
+                  Record each leg (Lua record_session)
                 </label>
               </div>
+
+              {/* Backend-driven conference recording */}
+              <div className="border border-surface-border rounded-lg p-3 space-y-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="recEnabled" checked={form.recording_enabled}
+                         onChange={e => f('recording_enabled', e.target.checked)} />
+                  <label htmlFor="recEnabled" className="text-sm font-medium text-text-primary cursor-pointer">
+                    Enable conference recording (ESL)
+                  </label>
+                </div>
+                {form.recording_enabled && (
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <label className="label">Recording Mode</label>
+                      <select className="input" value={form.recording_mode}
+                              onChange={e => f('recording_mode', e.target.value)}>
+                        <option value="MANUAL">Manual — operator starts recording</option>
+                        <option value="AUTO">Auto — backend starts automatically</option>
+                      </select>
+                    </div>
+                    {form.recording_mode === 'AUTO' && (
+                      <div>
+                        <label className="label">Start Trigger</label>
+                        <select className="input" value={form.recording_trigger}
+                                onChange={e => f('recording_trigger', e.target.value)}>
+                          <option value="CONFERENCE_CREATED">Conference Created</option>
+                          <option value="FIRST_PARTICIPANT">First Participant Joins</option>
+                          <option value="MODERATOR_JOIN">Moderator Joins</option>
+                        </select>
+                      </div>
+                    )}
+                    <div>
+                      <label className="label">Format</label>
+                      <select className="input" value={form.recording_format}
+                              onChange={e => f('recording_format', e.target.value)}>
+                        <option value="wav">WAV (uncompressed)</option>
+                        <option value="mp3">MP3</option>
+                        <option value="ogg">OGG</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div>
-                <label className="label">Recording Directory</label>
+                <label className="label">Recording Directory (override)</label>
                 <input className="input font-mono text-xs" value={form.recording_directory}
                        onChange={e => f('recording_directory', e.target.value)}
                        placeholder="/opt/freeswitch/recordings/ers" />
+                <p className="text-[11px] text-text-muted mt-1">Leave blank to use the system default.</p>
+              </div>
+            </section>
+
+            {/* ── Advanced (Phase 4 — reserved) ── */}
+            <section>
+              <p className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-3">Advanced</p>
+              <p className="text-[11px] text-text-muted mb-3">These settings are stored and will be enforced in a future release.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Max Participants (0 = unlimited)</label>
+                  <input className="input" type="number" min="0"
+                         value={form.max_participants}
+                         onChange={e => f('max_participants', Number(e.target.value))} />
+                </div>
+                <div>
+                  <label className="label">Bridge Timeout (s) — 0 = disabled</label>
+                  <input className="input" type="number" min="0"
+                         value={form.bridge_timeout_sec}
+                         onChange={e => f('bridge_timeout_sec', Number(e.target.value))} />
+                </div>
+                <div className="col-span-2 flex flex-wrap gap-x-6 gap-y-2 pt-1">
+                  {[
+                    ['conference_lock',            'Lock conference after moderator joins'],
+                    ['auto_destroy',               'Auto-destroy empty conference'],
+                    ['allow_external',             'Allow external (non-responder) participants'],
+                    ['allow_duplicate_responders', 'Allow same responder to join twice'],
+                    ['moderator_required',         'Require moderator before audio opens'],
+                  ].map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={form[key]}
+                             onChange={e => f(key, e.target.checked)} />
+                      <span className="text-sm text-text-primary">{label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </section>
 
