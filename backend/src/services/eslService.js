@@ -474,40 +474,27 @@ export async function seedConferenceRegistry() {
           memberData: rec,
         });
       } else {
-        // Member already in registry — apply authoritative xml_list state.
-        // talking is intentionally excluded: xml_list is a point-in-time snapshot
-        // that will almost always show talking=false. The ESL start-talking /
-        // stop-talking events are the source of truth for talking state.
+        // Member already in registry — NEVER overwrite event-driven state.
+        //
+        // muted, deaf, talking, floor, locked: owned exclusively by ESL maintenance
+        // events (mute-member, unmute-member, deaf-member, undeaf-member, start-talking,
+        // stop-talking, floor-change, lock, unlock) and by post-command xml_list
+        // verification (syncConferenceFromXml). The seed runs at 30-second intervals
+        // and would race against and overwrite correct event state if it wrote here.
+        //
+        // The seed's job for existing members is structural only:
+        //   • update cosmetic/audio fields (energy, volume) that have no socket events
+        //   • fill in _uuid if it was missing at join time
         const existing = entry.members.get(member.id);
-        const prevMuted = existing.muted;
-        existing.muted     = member.muted;
-        existing.deaf      = member.deaf;
-        existing.moderator = member.moderator;
-        existing.floor     = member.floor;
-        existing.canHear   = member.canHear;
-        existing.canSpeak  = member.canSpeak;
-        existing.energy    = member.energy    ?? existing.energy;
-        existing.volIn     = member.volIn     ?? existing.volIn;
-        existing.volOut    = member.volOut    ?? existing.volOut;
+        existing.energy = member.energy ?? existing.energy;
+        existing.volIn  = member.volIn  ?? existing.volIn;
+        existing.volOut = member.volOut ?? existing.volOut;
         if (!existing._uuid && member._uuid) existing._uuid = member._uuid;
         updMembers++;
-        if (prevMuted !== member.muted) {
-          console.log(
-            `[esl] seedConferenceRegistry: mute state changed by xml_list —` +
-            ` conf="${conf.name}" id=${member.id} muted: ${prevMuted} → ${member.muted}`
-          );
-          emit('conference.member.muted', {
-            confName:  conf.name,
-            member:    member.id,
-            callerNum: member.callerNum,
-            muted:     member.muted,
-          });
-        } else {
-          console.log(
-            `[esl] seedConferenceRegistry: member refreshed — conf="${conf.name}"` +
-            ` id=${member.id} muted=${member.muted} (no change)`
-          );
-        }
+        console.log(
+          `[esl] seedConferenceRegistry: existing member — conf="${conf.name}" id=${member.id}` +
+          ` preserving event state: muted=${existing.muted} talking=${existing.talking} deaf=${existing.deaf}`
+        );
       }
     }
 
@@ -647,6 +634,12 @@ async function handleEvent(evt) {
       const conf  = registryGetOrCreate(confName);
       const rawMF = evt.getHeader('Conference-Member-Flags') || '';
       const pf    = parseMemberFlags(rawMF);
+      // parseMemberFlags uses text-flag inference — it is unreliable for muted state
+      // on some FreeSWITCH versions. Log the raw flags so any inference error is visible.
+      console.log(
+        `[esl] add-member: conf="${confName}" id=${memberId} num=${callerNum}` +
+        ` | raw flags="${rawMF}" → muted=${pf.muted} moderator=${pf.moderator} deaf=${pf.deaf}`
+      );
       const member = {
         id:         memberId,
         callerNum,
@@ -673,6 +666,14 @@ async function handleEvent(evt) {
       emit('conference.member.joined', { confName, member: memberId, callerNum, callerName, memberData: member });
       persistEvent('conference.member.joined', { confName, member: memberId, callerNum });
       trackParticipant(confName, callerNum, 'join');
+      // Schedule a quick xml_list 600ms after join to correct the initial muted/deaf
+      // state, since parseMemberFlags inference can be wrong. The member is already
+      // in the UI by then; syncConferenceFromXml emits a correction event if needed.
+      setTimeout(() => {
+        syncConferenceFromXml(confName).catch(err =>
+          console.error(`[esl] post-join sync failed — conf="${confName}": ${err.message}`)
+        );
+      }, 600);
 
     } else if (action === 'del-member') {
       const conf = conferenceRegistry.get(confName);
@@ -792,6 +793,13 @@ async function handleEvent(evt) {
         import('../controllers/recordingController.js').then(({ closeRecording }) => {
           closeRecording({ confName, recPath: lastPath });
         }).catch(err => console.error('[esl] closeRecording import failed:', err.message));
+      } else {
+        // Log any unhandled conference::maintenance action so we can see exactly
+        // what FreeSWITCH sends — critical for diagnosing missing talking events.
+        console.log(
+          `[esl] conference::maintenance unhandled action="${action}"` +
+          ` conf="${confName}" member=${memberId} num=${callerNum}`
+        );
       }
     }
     return;
@@ -1463,16 +1471,70 @@ export function parseConferenceXmlList(xml) {
   return all.length > 0 ? all[0] : null;
 }
 
-// Execute `conference xml_list` (ALL conferences, no room arg) and return
-// parsed array. Used by seedConferenceRegistry as the authoritative bulk read.
+// Enumerate active conferences and return authoritative per-member state.
+//
+// Uses TWO confirmed-working FreeSWITCH commands in sequence:
+//   1. `conference list`        — text output, parsed for conference NAMES ONLY
+//   2. `conference <n> xml_list` — XML output, parsed for member state (one call per conf)
+//
+// `conference xml_list` (no room arg) is intentionally avoided: it is not
+// present in all FreeSWITCH versions, and if rejected with -ERR the seed
+// would interpret the empty result as "no active conferences" and delete the
+// entire registry — a catastrophic regression. The two-step approach adds one
+// ESL round-trip per active conference but eliminates all version uncertainty.
 async function confXmlListAll() {
+  // Step 1 — get conference names from text list (confirmed working on this FS build)
+  let namesRaw = '';
   try {
-    const raw = await eslCommandTimeout('conference xml_list', 8000);
-    return parseAllConferencesXmlList(raw, 'confXmlListAll');
+    namesRaw = await eslCommandTimeout('conference list', 8000);
   } catch (err) {
-    console.error(`[esl] confXmlListAll: ESL error — ${err.message}`);
+    console.error(`[esl] confXmlListAll: conference list failed — ${err.message}`);
     return [];
   }
+
+  if (!namesRaw) return [];
+
+  if (
+    /no active conference/i.test(namesRaw) ||
+    /no conference/i.test(namesRaw)        ||
+    /^\+OK\s*$/.test(namesRaw.trim())
+  ) {
+    console.log('[esl] confXmlListAll: conference list reports no active conferences');
+    return [];
+  }
+
+  // Parse conference names from header lines only — never parse member lines here.
+  // Header format (either form seen in the wild):
+  //   "+OK Conference 3010 (2 members rate: 8000 flags: dynamic)"
+  //   "Conference 3010 (2 members rate: 8000 flags: dynamic)"
+  const names = new Set();
+  for (const line of namesRaw.split('\n')) {
+    const m = /^(?:\+OK\s+)?[Cc]onference\s+(\S+)\s+\(/.exec(line.trim());
+    if (m) names.add(m[1]);
+  }
+
+  if (names.size === 0) {
+    // Unexpected format — log and return empty so we don't corrupt registry
+    console.warn('[esl] confXmlListAll: could not extract conference names from list output:\n' + namesRaw.slice(0, 500));
+    return [];
+  }
+
+  console.log(`[esl] confXmlListAll: found ${names.size} conference(s) — ${[...names].join(', ')}`);
+
+  // Step 2 — per-conference xml_list for authoritative member state
+  const results = [];
+  for (const name of names) {
+    const data = await confXmlList(name);   // raw XML is logged inside confXmlList
+    if (data) {
+      // confXmlList returns the object from parseConferenceXmlList which already
+      // has { name, locked, rate, rawFlags, members } — use it directly
+      results.push(data);
+    } else {
+      console.warn(`[esl] confXmlListAll: xml_list returned null for conf="${name}" — conference may have ended`);
+    }
+  }
+
+  return results;
 }
 
 // Execute `conference <confName> xml_list` and return parsed result, or null on error.
