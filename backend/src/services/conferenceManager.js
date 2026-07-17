@@ -36,6 +36,47 @@ import { promises as fs } from 'fs';
 import { query } from '../db/pool.js';
 import { fsPathService } from './freeSwitchPathService.js';
 
+// ── Conference profile ────────────────────────────────────────────────────────
+
+/**
+ * Return a valid FreeSWITCH conference profile name from the ERS configuration.
+ *
+ * The `conference_profile` DB field is free-text. Admins sometimes mistakenly
+ * store a SIP domain (e.g. "192.168.1.133") here. FreeSWITCH interprets
+ * `conference(3010@192.168.1.133)` as a domain-scoped room and creates a
+ * conference named "3010-192.168.1.133" instead of "3010".
+ *
+ * This function accepts only profile names that match the FS naming rules
+ * (lowercase/uppercase letters, digits, hyphens, underscores — no dots, no
+ * colons, no slashes). Anything that looks like an IP or FQDN falls back to
+ * "default".
+ *
+ * IMPORTANT: every codepath that constructs a `conference(room@profile)` string
+ * — backend originates, the ersLookup JSON that Lua reads — must call this
+ * function rather than reading conference_profile raw from the DB.
+ *
+ * @param {object} config - ERS configuration row (or lookup response)
+ * @returns {string}      - Validated FreeSWITCH conference profile name
+ */
+export function getConferenceProfile(config) {
+  const raw = (config.conference_profile ?? '').trim();
+  // Reject IPs (v4 and v6) and FQDNs (contain dots or colons).
+  // Accept: letters, digits, hyphens, underscores — nothing else.
+  return /^[a-z0-9_-]{1,64}$/i.test(raw) ? raw : 'default';
+}
+
+/**
+ * Return the FreeSWITCH conference string "room@profile" for an incident slot.
+ * This is the canonical string for use in `conference()` dialplan app and ESL.
+ *
+ * @param {object} config - ERS configuration row
+ * @param {number} slot   - 1 = primary bridge, 2 = secondary bridge
+ * @returns {string}      - e.g. "3010@default"
+ */
+export function getConferenceString(config, slot) {
+  return `${resolveConferenceRoom(config, slot)}@${getConferenceProfile(config)}`;
+}
+
 // ── Room name generation ──────────────────────────────────────────────────────
 
 /**

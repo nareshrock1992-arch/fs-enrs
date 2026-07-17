@@ -88,7 +88,7 @@ async function resolveTierResponders(configId, tier) {
   return contactRows;
 }
 
-async function originateLeg({ contact, room, tenantId, callerIdentity }) {
+async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity }) {
   const { dialString } = await resolveDialString({
     tenantId,
     contactId: contact.id,
@@ -105,8 +105,10 @@ async function originateLeg({ contact, room, tenantId, callerIdentity }) {
     `originate_timeout=${LEG_TIMEOUT_S}`,
   ].join(',');
 
-  // bgapi — fire and return immediately; all legs ring in parallel.
-  return eslCommand(`bgapi originate {${vars}}${dialString} &conference(${room}@default)`);
+  // conferenceProfile comes from ERS config (validated by getConferenceProfile —
+  // guaranteed to be a FreeSWITCH profile name, never a SIP domain/IP).
+  // This ensures responders always land in the same conference as the caller.
+  return eslCommand(`bgapi originate {${vars}}${dialString} &conference(${room}@${conferenceProfile})`);
 }
 
 /**
@@ -114,7 +116,7 @@ async function originateLeg({ contact, room, tenantId, callerIdentity }) {
  * Returns immediately — the loop runs in the background until a responder
  * answers, the timeout hits, or the caller abandons (room empties).
  */
-export function startRingAll({ incidentId, incidentUuid, configId, tier, room, tenantId, callerNumber, ringTimeoutSeconds }) {
+export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds }) {
   if (activeRings.has(room)) return { started: false, reason: 'ring loop already active for this room' };
 
   const controller = { stopped: false };
@@ -170,7 +172,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, t
         for (const contact of responders) {
           if (controller.stopped) break;
           try {
-            await originateLeg({ contact, room, tenantId, callerIdentity });
+            await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity });
           } catch (err) {
             console.error(`[ers-ring] originate failed for contact ${contact.id}:`, err.message);
           }

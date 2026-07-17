@@ -5,6 +5,7 @@ import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
 import { getConferenceMemberCount } from '../../services/eslService.js';
 import { startRingAll, lookupCallerIdentity } from '../../services/ersRingService.js';
+import { resolveConferenceRoom, getConferenceProfile } from '../../services/conferenceManager.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -240,7 +241,10 @@ export const ersLookup = asyncHandler(async (req, res) => {
       // Bridge config — for DYNAMIC conferences these are generated room names
       primary_bridge_number:       primaryBridge,
       secondary_bridge_number:     secondaryBridge,
-      conference_profile:          cfg.conference_profile || 'default',
+      // IMPORTANT: sanitized through getConferenceProfile so Lua always receives
+      // a valid FreeSWITCH profile name (not a SIP domain/IP which would cause
+      // FreeSWITCH to create "3010-192.168.1.133" instead of "3010").
+      conference_profile:          getConferenceProfile(cfg),
       conference_room_prefix:      cfg.conference_room_prefix || 'ers',
       max_concurrent_conferences:  cfg.max_concurrent_conferences,
       max_conference_duration_min: cfg.max_conference_duration_min ?? 0,
@@ -819,7 +823,8 @@ export const ersRingAll = asyncHandler(async (req, res) => {
 
   const { rows: [cfg] } = await query(
     `SELECT id, tenant_id, ring_timeout_seconds,
-            primary_bridge_number, secondary_bridge_number
+            primary_bridge_number, secondary_bridge_number,
+            conference_type, conference_profile
      FROM ers_configurations
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
@@ -879,12 +884,13 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fresh incident — use bridge number as room name when configured
+  // Fresh incident — ConferenceManager is the single source for the room name.
+  // STATIC: returns primary_bridge_number / secondary_bridge_number as-is.
+  // DYNAMIC: generates a unique name (enabled via conference_type = 'DYNAMIC').
   const incidentUuid = uuidv4();
-  const bridgeNumber = d.tier === 'primary'
-    ? cfg.primary_bridge_number
-    : cfg.secondary_bridge_number;
-  const room = roomFromBridgeNumber(bridgeNumber, d.configuration_id, d.tier);
+  const slot = d.tier === 'primary' ? 1 : 2;
+  const room = resolveConferenceRoom(cfg, slot);
+  const conferenceProfile = getConferenceProfile(cfg);
 
   const { rows: [tierGroup] } = await query(
     `SELECT id FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2 LIMIT 1`,
@@ -913,6 +919,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     configId:           d.configuration_id,
     tier:               d.tier,
     room,
+    conferenceProfile,
     tenantId:           cfg.tenant_id,
     callerNumber:       d.caller_number,
     ringTimeoutSeconds: cfg.ring_timeout_seconds,
