@@ -593,7 +593,6 @@ function CenterPanel({ conf, now }) {
             <MetaItem label="Sample Rate">
               {conf.rate ? `${conf.rate} Hz` : '8000 Hz'}
             </MetaItem>
-          </div>
             {conf.incident?.primary_bridge_number && (
               <MetaItem label="Bridge Number">
                 <span className="font-mono">{conf.incident.primary_bridge_number}</span>
