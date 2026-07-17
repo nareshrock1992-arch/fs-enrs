@@ -306,6 +306,39 @@ function TalkingBars() {
   );
 }
 
+// Derive 1-2 initials from a display name or number for the avatar.
+function initials(name) {
+  if (!name) return '?';
+  const clean = name.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return '?';
+}
+
+// Avatar colors cycle by member id so each participant has a consistent color.
+const AVATAR_COLORS = [
+  'bg-blue-500/20 text-blue-400',
+  'bg-emerald-500/20 text-emerald-400',
+  'bg-purple-500/20 text-purple-400',
+  'bg-amber-500/20 text-amber-500',
+  'bg-rose-500/20 text-rose-400',
+  'bg-cyan-500/20 text-cyan-400',
+];
+
+function MemberAvatar({ id, name, talking }) {
+  const color = AVATAR_COLORS[Number(id) % AVATAR_COLORS.length];
+  return (
+    <div className={[
+      'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-[10px] font-bold',
+      color,
+      talking ? 'ring-1 ring-green-500/60' : '',
+    ].join(' ')}>
+      {initials(name)}
+    </div>
+  );
+}
+
 function ParticipantRow({ m, room, now }) {
   const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
   const ext      = m.extension   || m.callerNum  || '';
@@ -327,26 +360,22 @@ function ParticipantRow({ m, room, now }) {
       m.talking ? 'bg-green-500/4' : 'hover:bg-surface-hover/50',
     ].join(' ')}>
 
-      {/* ID */}
-      <td className="px-2 py-2.5">
-        <span className="text-[10px] font-mono font-bold text-text-muted">#{m.id}</span>
-      </td>
-
-      {/* Name + talking indicator */}
-      <td className="px-2 py-2.5">
-        <div className="flex items-center gap-1.5 min-w-0">
-          {m.talking && <TalkingBars />}
-          <span className="text-xs font-semibold text-text-primary truncate">{display}</span>
+      {/* Participant — avatar + name + extension + talking bars */}
+      <td className="px-2 py-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <MemberAvatar id={m.id} name={display} talking={m.talking} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              {m.talking && <TalkingBars />}
+              <span className="text-xs font-semibold text-text-primary truncate">{display}</span>
+            </div>
+            <span className="text-[9px] font-mono text-text-muted">{ext || `#${m.id}`}</span>
+          </div>
         </div>
       </td>
 
-      {/* Extension */}
-      <td className="px-2 py-2.5 hidden sm:table-cell">
-        <span className="text-[10px] font-mono text-text-secondary">{ext || '—'}</span>
-      </td>
-
       {/* Role */}
-      <td className="px-2 py-2.5">
+      <td className="px-2 py-2">
         <div className="flex items-center gap-1">
           {m.moderator ? (
             <span className="text-[9px] px-1.5 py-px rounded-full
@@ -364,36 +393,40 @@ function ParticipantRow({ m, room, now }) {
         </div>
       </td>
 
-      {/* Audio state — mute badge */}
-      <td className="px-2 py-2.5">
-        {m.muted ? (
-          <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold">MUTED</span>
-        ) : (
-          <span className="text-[9px] text-emerald-500 font-medium flex items-center gap-0.5">
-            <Mic size={8} /> ON
-          </span>
-        )}
-        {m.deaf && (
-          <span className="ml-1 text-[9px] px-1 py-px rounded bg-orange-500/15 text-orange-500 font-bold">DEAF</span>
-        )}
-      </td>
-
-      {/* Energy */}
-      <td className="px-2 py-2.5 text-center hidden md:table-cell">
-        <span className="text-[10px] font-mono tabular-nums text-text-muted">{m.energy ?? 0}</span>
-      </td>
-
-      {/* Joined */}
-      <td className="px-2 py-2.5 hidden lg:table-cell">
-        <span className="text-[9px] font-mono text-text-muted tabular-nums">
-          {joinSecs != null ? fmtDur(joinSecs) : '—'}
-        </span>
-      </td>
-
-      {/* Actions — min-width so they never clip */}
-      <td className="px-2 py-2.5" style={{ minWidth: '160px' }}>
+      {/* Audio — muted / deaf / on */}
+      <td className="px-2 py-2">
         <div className="flex items-center gap-1">
-          {/* Mute toggle */}
+          {m.muted ? (
+            <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold flex items-center gap-0.5">
+              <MicOff size={7} /> MUTED
+            </span>
+          ) : (
+            <span className="text-[9px] text-emerald-500 font-medium flex items-center gap-0.5">
+              <Mic size={8} /> ON
+            </span>
+          )}
+          {m.deaf && (
+            <span className="text-[9px] px-1 py-px rounded bg-orange-500/15 text-orange-500 font-bold flex items-center gap-0.5">
+              <EarOff size={7} /> DEAF
+            </span>
+          )}
+        </div>
+      </td>
+
+      {/* Joined — duration since join */}
+      <td className="px-2 py-2 hidden lg:table-cell">
+        <div className="text-[9px] font-mono text-text-muted tabular-nums">
+          {joinSecs != null ? fmtDur(joinSecs) : '—'}
+        </div>
+        <div className="text-[8px] text-text-muted/50 tabular-nums">
+          {m.energy ? `⚡${m.energy}` : ''}
+        </div>
+      </td>
+
+      {/* Actions */}
+      <td className="px-2 py-2" style={{ minWidth: '148px' }}>
+        <div className="flex items-center gap-0.5">
+          {/* Mic toggle — state comes ONLY from socket events (xml_list verified) */}
           <button
             title={m.muted ? 'Unmute' : 'Mute'}
             onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
@@ -435,7 +468,7 @@ function ParticipantRow({ m, room, now }) {
             <PhoneForwarded size={11} />
           </button>
 
-          {/* Volume adjust */}
+          {/* Volume */}
           <button
             title="Volume +"
             onClick={() => act(api.monitoring.volume, m.id, 'in', 1)}
@@ -487,7 +520,7 @@ function ParticipantTable({ members, room, now }) {
       <table className="w-full text-left border-collapse" style={{ minWidth: '640px' }}>
         <thead>
           <tr>
-            {['ID', 'Name', 'Ext', 'Role', 'Audio', 'Energy', 'Joined', 'Actions'].map(h => (
+            {['Participant', 'Role', 'Audio', 'Joined', 'Actions'].map(h => (
               <th key={h}
                   className="px-2 py-2 text-[9px] font-bold uppercase tracking-wider
                              text-text-muted bg-surface-hover/40 whitespace-nowrap
@@ -559,6 +592,20 @@ function CenterPanel({ conf, now }) {
             </MetaItem>
             <MetaItem label="Sample Rate">
               {conf.rate ? `${conf.rate} Hz` : '8000 Hz'}
+            </MetaItem>
+          </div>
+            {conf.incident?.primary_bridge_number && (
+              <MetaItem label="Bridge Number">
+                <span className="font-mono">{conf.incident.primary_bridge_number}</span>
+              </MetaItem>
+            )}
+            {conf.incident?.incident_uuid && (
+              <MetaItem label="Incident UUID">
+                <span className="font-mono text-[10px] break-all">{conf.incident.incident_uuid}</span>
+              </MetaItem>
+            )}
+            <MetaItem label="Created">
+              <span className="font-mono tabular-nums">{conf.createdAt ? fmtTime(conf.createdAt) : '—'}</span>
             </MetaItem>
           </div>
           <div>

@@ -21,8 +21,20 @@ import {
   setConferenceRecordingStarting, setConferenceRecordingActive,
   setConferenceRecordingStopping,
   setConferenceRecordingPath, setConferenceRecordingError,
-  eslStatus,
+  eslStatus, syncConferenceFromXml,
 } from '../services/eslService.js';
+
+// Schedule a post-command xml_list verification 300 ms after the HTTP response.
+// Runs conference xml_list, compares against the in-memory registry, and emits
+// socket.io correction events for any field that differs from FreeSWITCH truth.
+// Never blocks the HTTP response — fire-and-forget.
+function scheduleSync(room, delayMs = 300) {
+  setTimeout(() => {
+    syncConferenceFromXml(room).catch(err =>
+      console.error(`[monitoring] post-command sync failed — room="${room}": ${err.message}`)
+    );
+  }, delayMs);
+}
 
 // ── GET /monitoring/conferences ───────────────────────────────────────────────
 //
@@ -87,11 +99,13 @@ export const getStatus = asyncHandler(async (_req, res) => {
 export const lockConference = asyncHandler(async (req, res) => {
   await confLock(req.params.room);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const unlockConference = asyncHandler(async (req, res) => {
   await confUnlock(req.params.room);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 // ── Recording file verification ───────────────────────────────────────────────
@@ -306,26 +320,31 @@ export const terminateConference = asyncHandler(async (req, res) => {
 export const muteMember = asyncHandler(async (req, res) => {
   await confMute(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const unmuteMember = asyncHandler(async (req, res) => {
   await confUnmute(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const kickMember = asyncHandler(async (req, res) => {
   await confKick(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const deafMember = asyncHandler(async (req, res) => {
   await confDeaf(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const undeafMember = asyncHandler(async (req, res) => {
   await confUndeaf(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const setVolume = asyncHandler(async (req, res) => {
@@ -337,6 +356,7 @@ export const setVolume = asyncHandler(async (req, res) => {
     await confVolumeOut(req.params.room, req.params.memberId, level);
   }
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const setEnergy = asyncHandler(async (req, res) => {
@@ -344,11 +364,13 @@ export const setEnergy = asyncHandler(async (req, res) => {
   if (level == null) return res.status(400).json({ error: 'level required' });
   await confEnergy(req.params.room, req.params.memberId, level);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const setFloor = asyncHandler(async (req, res) => {
   await confFloor(req.params.room, req.params.memberId);
   res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 export const transferMember = asyncHandler(async (req, res) => {
