@@ -393,12 +393,17 @@ export async function seedConferenceRegistry() {
     return [];
   }
 
-  console.log('[esl] seedConferenceRegistry: querying FreeSWITCH live state…');
+  // Use xml_list (authoritative) — NOT the text `conference list` parser.
+  // The text parser infers muted from pipe-delimited flags which is unreliable:
+  // a member that FreeSWITCH considers unmuted may not have 'speak' in its
+  // text flags, causing the text parser to return muted=true incorrectly.
+  // xml_list returns explicit <can_speak> booleans with no inference needed.
+  console.log('[esl] seedConferenceRegistry: querying FreeSWITCH via xml_list…');
   let conferences;
   try {
-    conferences = await confListAll();
+    conferences = await confXmlListAll();
   } catch (err) {
-    console.error('[esl] seedConferenceRegistry: confListAll failed —', err.message);
+    console.error('[esl] seedConferenceRegistry: confXmlListAll failed —', err.message);
     return [];
   }
 
@@ -417,13 +422,18 @@ export async function seedConferenceRegistry() {
     const isNew = !conferenceRegistry.has(conf.name);
     const entry = registryGetOrCreate(conf.name);
 
-    // Always refresh rate/rawFlags from the live header
+    // Refresh rate and flags from xml_list header
     if (conf.rate     != null) entry.rate     = conf.rate;
     if (conf.rawFlags != null) entry.rawFlags = conf.rawFlags;
+    // Lock state from xml_list is authoritative
+    if (conf.locked !== entry.locked) {
+      entry.locked = conf.locked;
+      emit('conference.locked', { confName: conf.name, locked: conf.locked });
+    }
 
     if (isNew) {
       addedConfs++;
-      console.log(`[esl] seedConferenceRegistry: conference inserted — name="${conf.name}" rate=${conf.rate} flags=${conf.rawFlags}`);
+      console.log(`[esl] seedConferenceRegistry: conference inserted — name="${conf.name}" rate=${conf.rate} locked=${conf.locked} flags="${conf.rawFlags}"`);
       emit('conference.created', { confName: conf.name });
     } else {
       console.log(`[esl] seedConferenceRegistry: conference updated — name="${conf.name}" members=${conf.members.length}`);
@@ -432,27 +442,29 @@ export async function seedConferenceRegistry() {
     for (const member of conf.members) {
       if (!entry.members.has(member.id)) {
         const rec = {
-          id:         member.id,
-          callerNum:  member.callerNum  || '',
-          callerName: member.callerName || '',
-          muted:      member.muted      ?? false,
-          deaf:       member.deaf       ?? false,
-          moderator:  member.moderator  ?? false,
-          talking:    member.talking    ?? false,
-          floor:      member.floor      ?? false,
-          canHear:    member.canHear    ?? true,
-          canSpeak:   member.canSpeak   ?? true,
-          volIn:      member.volIn      ?? 0,
-          volOut:     member.volOut     ?? 0,
-          energy:     member.energy     ?? 0,
-          joinedAt:   member.joinedAt   || null,
-          _uuid:      member._uuid      || '',
+          id:          member.id,
+          callerNum:   member.callerNum  || '',
+          callerName:  member.callerName || '',
+          displayName: member.displayName || member.callerName || member.callerNum || `Member #${member.id}`,
+          muted:       member.muted      ?? false,
+          deaf:        member.deaf       ?? false,
+          moderator:   member.moderator  ?? false,
+          talking:     false,            // xml_list is a snapshot; start with false,
+                                         // start-talking event will correct if needed
+          floor:       member.floor      ?? false,
+          canHear:     member.canHear    ?? true,
+          canSpeak:    member.canSpeak   ?? true,
+          volIn:       member.volIn      ?? 0,
+          volOut:      member.volOut     ?? 0,
+          energy:      member.energy     ?? 0,
+          joinedAt:    member.joinedAt   || null,
+          _uuid:       member._uuid      || '',
         };
         entry.members.set(member.id, rec);
         addedMembers++;
         console.log(
           `[esl] seedConferenceRegistry: member inserted — conf="${conf.name}"` +
-          ` id=${member.id} num=${member.callerNum} mod=${member.moderator}`
+          ` id=${member.id} num=${member.callerNum} muted=${member.muted} mod=${member.moderator}`
         );
         emit('conference.member.joined', {
           confName:   conf.name,
@@ -462,20 +474,40 @@ export async function seedConferenceRegistry() {
           memberData: rec,
         });
       } else {
-        // Member already in registry — update mutable fields from live state
+        // Member already in registry — apply authoritative xml_list state.
+        // talking is intentionally excluded: xml_list is a point-in-time snapshot
+        // that will almost always show talking=false. The ESL start-talking /
+        // stop-talking events are the source of truth for talking state.
         const existing = entry.members.get(member.id);
-        existing.muted     = member.muted     ?? existing.muted;
-        existing.deaf      = member.deaf      ?? existing.deaf;
-        existing.moderator = member.moderator ?? existing.moderator;
-        existing.floor     = member.floor     ?? existing.floor;
-        existing.canHear   = member.canHear   ?? existing.canHear;
-        existing.canSpeak  = member.canSpeak  ?? existing.canSpeak;
+        const prevMuted = existing.muted;
+        existing.muted     = member.muted;
+        existing.deaf      = member.deaf;
+        existing.moderator = member.moderator;
+        existing.floor     = member.floor;
+        existing.canHear   = member.canHear;
+        existing.canSpeak  = member.canSpeak;
         existing.energy    = member.energy    ?? existing.energy;
         existing.volIn     = member.volIn     ?? existing.volIn;
         existing.volOut    = member.volOut    ?? existing.volOut;
         if (!existing._uuid && member._uuid) existing._uuid = member._uuid;
         updMembers++;
-        console.log(`[esl] seedConferenceRegistry: member updated — conf="${conf.name}" id=${member.id}`);
+        if (prevMuted !== member.muted) {
+          console.log(
+            `[esl] seedConferenceRegistry: mute state changed by xml_list —` +
+            ` conf="${conf.name}" id=${member.id} muted: ${prevMuted} → ${member.muted}`
+          );
+          emit('conference.member.muted', {
+            confName:  conf.name,
+            member:    member.id,
+            callerNum: member.callerNum,
+            muted:     member.muted,
+          });
+        } else {
+          console.log(
+            `[esl] seedConferenceRegistry: member refreshed — conf="${conf.name}"` +
+            ` id=${member.id} muted=${member.muted} (no change)`
+          );
+        }
       }
     }
 
@@ -1293,36 +1325,24 @@ export async function verifyExtensionLoaded(extensionName, { attempts = 3, delay
   return { loaded: false, raw: lastRaw, error: lastErr?.message, attempts };
 }
 
-// ─── xml_list helpers ─────────────────────────────────────────────────────────
+// ─── Canonical xml_list parser ───────────────────────────────────────────────
 //
-// `conference <name> xml_list` returns the authoritative member state with
-// explicit boolean tags — no inference from pipe-delimited flag strings.
-// Used for post-command verification and as the source of truth whenever the
-// text `conference list` flags may be ambiguous.
+// THIS IS THE SINGLE SOURCE OF TRUTH for member state.
+// Both seedConferenceRegistry and syncConferenceFromXml use these functions.
+// The text-list parser (parseMemberFlags / parseConferenceListAll) is kept
+// only for debugConfSync diagnostics — it must NEVER write to the registry.
 //
-// Sample FreeSWITCH xml_list output:
-//   <conferences>
-//     <conference name="3010" rate="8000" locked="false" ...>
-//       <members>
-//         <member type="caller">
-//           <id>64</id>
-//           <uuid>...</uuid>
-//           <caller_id_name>7001004</caller_id_name>
-//           <caller_id_number>7001004</caller_id_number>
-//           <flags>
-//             <can_hear>true</can_hear>
-//             <can_speak>true</can_speak>
-//             <talking>false</talking>
-//             <has_floor>true</has_floor>
-//             <is_moderator>true</is_moderator>
-//           </flags>
-//           <volume_in>0</volume_in>
-//           <volume_out>0</volume_out>
-//           <energy>300</energy>
-//         </member>
-//       </members>
-//     </conference>
-//   </conferences>
+// FreeSWITCH xml_list uses explicit boolean tags with no inference:
+//   <can_speak>true</can_speak>  → NOT muted
+//   <can_speak>false</can_speak> → muted
+//   <can_hear>true</can_hear>    → NOT deaf
+//   <talking>true</talking>      → currently speaking (energy > threshold)
+//   <is_moderator>true</is_moderator>
+//   <has_floor>true</has_floor>
+//
+// `conference xml_list` (no arg) → all conferences
+// `conference <name> xml_list`   → one conference
+// Both produce the same XML structure inside <conferences>.
 
 function xmlBool(xml, tag) {
   const m = new RegExp(`<${tag}>([^<]+)</${tag}>`).exec(xml);
@@ -1334,48 +1354,125 @@ function xmlText(xml, tag) {
   return m ? m[1].trim() : null;
 }
 
-// Parse the output of `conference <name> xml_list`.
-// Returns { members, locked, rate } or null when the conference doesn't exist.
-export function parseConferenceXmlList(xml) {
-  if (!xml) return null;
-  const t = xml.trim();
-  if (t.startsWith('-ERR') || t.startsWith('-USAGE') || !t.includes('<conference')) return null;
+// Parse a single <member type="caller"> XML block.
+// Returns a normalized member object or null if <id> is missing.
+// Logs every field that maps to muted/talking so bugs are visible in pm2 logs.
+function parseMemberXml(mxml, confName) {
+  const id = xmlText(mxml, 'id');
+  if (!id) return null;
 
-  // Conference-level attributes from the <conference> opening tag
-  const hdrMatch = /<conference\s+([^>]+?)(?:\s*\/)?>/i.exec(t);
-  const hdrAttrs = hdrMatch ? hdrMatch[1] : '';
-  const locked   = /\blocked="true"/i.test(hdrAttrs);
-  const rateStr  = (/\brate="(\d+)"/i.exec(hdrAttrs) || [])[1];
+  const flagsM   = /<flags>([\s\S]*?)<\/flags>/i.exec(mxml);
+  const flagsXml = flagsM ? flagsM[1] : '';
 
-  const members = [];
-  for (const m of t.matchAll(/<member\s+type="caller">([\s\S]*?)<\/member>/gi)) {
-    const mxml     = m[1];
-    const flagsM   = /<flags>([\s\S]*?)<\/flags>/i.exec(mxml);
-    const flagsXml = flagsM ? flagsM[1] : '';
-    const id       = xmlText(mxml, 'id');
-    if (!id) continue;
+  const rawCanSpeak  = xmlBool(flagsXml, 'can_speak');
+  const rawCanHear   = xmlBool(flagsXml, 'can_hear');
+  const rawTalking   = xmlBool(flagsXml, 'talking');
+  const rawModerator = xmlBool(flagsXml, 'is_moderator');
+  const rawFloor     = xmlBool(flagsXml, 'has_floor');
 
-    const canSpeak = xmlBool(flagsXml, 'can_speak');
-    const canHear  = xmlBool(flagsXml, 'can_hear');
-    members.push({
-      id,
-      uuid:       xmlText(mxml, 'uuid')             || '',
-      callerName: xmlText(mxml, 'caller_id_name')   || '',
-      callerNum:  xmlText(mxml, 'caller_id_number') || '',
-      canSpeak:   canSpeak  ?? true,
-      canHear:    canHear   ?? true,
-      muted:      canSpeak  === null ? false : !canSpeak,
-      deaf:       canHear   === null ? false : !canHear,
-      talking:    xmlBool(flagsXml, 'talking')      ?? false,
-      floor:      xmlBool(flagsXml, 'has_floor')    ?? false,
-      moderator:  xmlBool(flagsXml, 'is_moderator') ?? false,
-      energy:     parseInt(xmlText(mxml, 'energy')    || '0', 10) || 0,
-      volIn:      parseInt(xmlText(mxml, 'volume_in') || '0', 10) || 0,
-      volOut:     parseInt(xmlText(mxml, 'volume_out')|| '0', 10) || 0,
-    });
+  const muted   = rawCanSpeak  === null ? false : !rawCanSpeak;
+  const deaf    = rawCanHear   === null ? false : !rawCanHear;
+  const talking = rawTalking   ?? false;
+
+  const callerName = xmlText(mxml, 'caller_id_name')   || '';
+  const callerNum  = xmlText(mxml, 'caller_id_number') || '';
+  const uuid       = xmlText(mxml, 'uuid')             || '';
+
+  console.log(
+    `[esl] parseMemberXml: conf="${confName}" id=${id} num=${callerNum}` +
+    ` | raw can_speak=${rawCanSpeak} → muted=${muted}` +
+    ` | raw talking=${rawTalking} → talking=${talking}` +
+    ` | raw is_moderator=${rawModerator} raw has_floor=${rawFloor}`
+  );
+
+  return {
+    id,
+    _uuid:      uuid,
+    callerName,
+    callerNum,
+    displayName: (callerName && callerName !== callerNum && !/^\+?\d+$/.test(callerName))
+      ? callerName : (callerNum || `Member #${id}`),
+    canSpeak:   rawCanSpeak  ?? true,
+    canHear:    rawCanHear   ?? true,
+    muted,
+    deaf,
+    talking,
+    floor:      rawFloor     ?? false,
+    moderator:  rawModerator ?? false,
+    energy:     parseInt(xmlText(mxml, 'energy')    || '0', 10) || 0,
+    volIn:      parseInt(xmlText(mxml, 'volume_in') || '0', 10) || 0,
+    volOut:     parseInt(xmlText(mxml, 'volume_out')|| '0', 10) || 0,
+    joinedAt:   null,   // not available in xml_list; preserved from ESL add-member event
+  };
+}
+
+// Parse full xml_list output (from `conference xml_list` or `conference <n> xml_list`).
+// Strips the optional "+OK " bgapi prefix. Returns an array of conference objects,
+// each with { name, locked, rate, members[] }. Returns [] on error or empty.
+export function parseAllConferencesXmlList(xml, label = 'xml_list') {
+  if (!xml) return [];
+  // Strip the "+OK " prefix that bgapi prepends to the XML body
+  const t = xml.replace(/^\+OK\s*/i, '').trim();
+
+  if (t.startsWith('-ERR') || t.startsWith('-USAGE')) {
+    console.warn(`[esl] ${label}: FreeSWITCH returned error — ${t.slice(0, 120)}`);
+    return [];
+  }
+  if (!t.includes('<conference')) {
+    // No active conferences — not an error
+    console.log(`[esl] ${label}: no <conference> elements in response`);
+    return [];
   }
 
-  return { members, locked, rate: rateStr ? parseInt(rateStr, 10) : null };
+  // Log the raw XML so we can see exactly what FreeSWITCH returned
+  console.log(`[esl] ${label}: raw XML (first 2000 chars):\n${t.slice(0, 2000)}`);
+
+  const results = [];
+  for (const confMatch of t.matchAll(/<conference\s+([^>]+?)>([\s\S]*?)<\/conference>/gi)) {
+    const hdrAttrs = confMatch[1];
+    const confBody = confMatch[2];
+
+    const nameM = /\bname="([^"]+)"/.exec(hdrAttrs);
+    if (!nameM) continue;
+    const confName = nameM[1];
+    const locked   = /\blocked="true"/i.test(hdrAttrs);
+    const rateM    = /\brate="(\d+)"/i.exec(hdrAttrs);
+    const rate     = rateM ? parseInt(rateM[1], 10) : null;
+    // FreeSWITCH may include flags="running|answered|dynamic" as a conference attribute
+    const flagsAttrM = /\bflags="([^"]*)"/.exec(hdrAttrs);
+    const rawFlags   = flagsAttrM ? flagsAttrM[1] : null;
+
+    console.log(`[esl] ${label}: conference="${confName}" locked=${locked} rate=${rate} flags="${rawFlags}"`);
+
+    const members = [];
+    for (const memMatch of confBody.matchAll(/<member\s+type="caller">([\s\S]*?)<\/member>/gi)) {
+      const m = parseMemberXml(memMatch[1], confName);
+      if (m) members.push(m);
+    }
+
+    console.log(`[esl] ${label}: conference="${confName}" parsed ${members.length} member(s)`);
+    results.push({ name: confName, locked, rate, rawFlags, members });
+  }
+
+  return results;
+}
+
+// Parse xml_list for a single conference (returns first result or null).
+export function parseConferenceXmlList(xml) {
+  const all = parseAllConferencesXmlList(xml, 'parseConferenceXmlList');
+  return all.length > 0 ? all[0] : null;
+}
+
+// Execute `conference xml_list` (ALL conferences, no room arg) and return
+// parsed array. Used by seedConferenceRegistry as the authoritative bulk read.
+async function confXmlListAll() {
+  try {
+    const raw = await eslCommandTimeout('conference xml_list', 8000);
+    return parseAllConferencesXmlList(raw, 'confXmlListAll');
+  } catch (err) {
+    console.error(`[esl] confXmlListAll: ESL error — ${err.message}`);
+    return [];
+  }
 }
 
 // Execute `conference <confName> xml_list` and return parsed result, or null on error.
@@ -1383,6 +1480,7 @@ export async function confXmlList(confName) {
   if (!confName) return null;
   try {
     const raw = await eslCommandTimeout(`conference ${confName} xml_list`, 5000);
+    console.log(`[esl] confXmlList: raw XML for conf="${confName}" (first 1000 chars):\n${String(raw || '').slice(0, 1000)}`);
     return parseConferenceXmlList(raw);
   } catch (err) {
     console.error(`[esl] confXmlList: failed — conf="${confName}" err="${err.message}"`);
@@ -1394,6 +1492,10 @@ export async function confXmlList(confName) {
 // for each field that differs. Called 300 ms after every member/conference control
 // command so clients always see authoritative FreeSWITCH state regardless of
 // whether the corresponding ESL maintenance event was received.
+//
+// Does NOT update talking — talking state is event-driven (start-talking /
+// stop-talking ESL events) and must not be overwritten by a point-in-time
+// xml_list snapshot that will almost always show talking=false.
 export async function syncConferenceFromXml(confName) {
   const xmlData = await confXmlList(confName);
   if (!xmlData) {
@@ -1419,15 +1521,15 @@ export async function syncConferenceFromXml(confName) {
     if (!entry.members.has(m.id)) continue;
     const e = entry.members.get(m.id);
 
-    const mutedChanged   = e.muted   !== m.muted;
-    const deafChanged    = e.deaf    !== m.deaf;
-    const talkingChanged = e.talking !== m.talking;
-    const floorChanged   = e.floor   !== m.floor;
+    const mutedChanged = e.muted !== m.muted;
+    const deafChanged  = e.deaf  !== m.deaf;
+    const floorChanged = e.floor !== m.floor;
 
-    // Apply authoritative xml_list state
+    // Apply authoritative xml_list state.
+    // talking is intentionally excluded — it is a point-in-time snapshot
+    // that would overwrite the event-driven state from start/stop-talking.
     e.muted     = m.muted;
     e.deaf      = m.deaf;
-    e.talking   = m.talking;
     e.floor     = m.floor;
     e.moderator = m.moderator;
     e.canSpeak  = m.canSpeak;
@@ -1442,9 +1544,6 @@ export async function syncConferenceFromXml(confName) {
     }
     if (deafChanged) {
       emit('conference.member.deaf', { confName, member: m.id, deaf: m.deaf });
-    }
-    if (talkingChanged) {
-      emit('conference.member.talking', { confName, member: m.id, callerNum: m.callerNum, talking: m.talking });
     }
     if (floorChanged && m.floor) {
       emit('conference.floor.changed', { confName, member: m.id });
