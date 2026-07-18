@@ -42,14 +42,19 @@ module.exports = {
       min_uptime: '5s',
       max_restarts: 10,
 
-      env: {
-        NODE_ENV: 'production',
-        // Do NOT put secrets here — they live in .env only.
-        // Only add vars that CANNOT go in .env (e.g. deploy-time toggles).
-      },
+      // Default env block — intentionally empty of NODE_ENV so the value
+      // in .env is used as-is. Do NOT set NODE_ENV here; let .env own it.
+      // Secrets must never appear here — they live in .env only.
+      env: {},
 
+      // Explicit profiles: pass --env development or --env production
+      // when starting via pm2 to select one of these.
       env_development: {
         NODE_ENV: 'development',
+      },
+
+      env_production: {
+        NODE_ENV: 'production',
       },
 
       // Write stdout/stderr to separate files so issues are easy to find.

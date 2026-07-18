@@ -1,4 +1,6 @@
-import 'dotenv/config';
+// dotenv is loaded by load-env.js at the server.js entry point.
+// Do NOT call dotenv.config() here — that would use process.cwd() which
+// may be wrong under PM2, and would re-parse .env after env vars are set.
 import { fsConfig } from './fsConfig.js';
 
 // All configuration read from environment variables.

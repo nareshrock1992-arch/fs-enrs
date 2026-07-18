@@ -1,4 +1,9 @@
-import 'dotenv/config';
+// Load .env from the same directory as this file, regardless of cwd.
+// Must be the very first import so that all subsequent imports see the
+// correct environment variables. PM2's `env` block values are intentionally
+// NOT overridden here (override: false), so explicit PM2 env overrides
+// (e.g. a per-deploy NODE_ENV) are still respected.
+import './load-env.js';
 
 // ── Global safety net ─────────────────────────────────────────
 // Unhandled promise rejections that escape asyncHandler or try/catch would
@@ -19,11 +24,13 @@ import helmet          from 'helmet';
 import cookieParser    from 'cookie-parser';
 import rateLimit       from 'express-rate-limit';
 
+import { existsSync } from 'fs';
 import bcrypt         from 'bcryptjs';
 import { config }      from './src/config/index.js';
 import { testConnection, query } from './src/db/pool.js';
 import { validateSchema }  from './src/db/validateSchema.js';
-import { connect as eslConnect, eslEvents, reconcileAllActiveIncidents, startBackgroundJobs } from './src/services/eslService.js';
+import { connect as eslConnect, eslEvents, eslStatus, reconcileAllActiveIncidents, startBackgroundJobs, seedConferenceRegistry } from './src/services/eslService.js';
+import { fsPathService } from './src/services/freeSwitchPathService.js';
 import { scanRecordingDirectory } from './src/controllers/recordingController.js';
 import { initSocket }  from './src/services/socketService.js';
 import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/services/campaignEngine.js';
@@ -143,27 +150,146 @@ async function ensureAdminUser() {
 }
 
 // ── Credential security checks ────────────────────────────────────────────────
-// Production: fatal exit on insecure defaults.
-// Development: warn and continue so devs can work with default credentials.
+// Policy:
+//   development — warn only, never exit. Devs use default passwords intentionally.
+//   production  — fatal exit for weak JWT, missing INTERNAL_API_KEY, weak DB_PASSWORD.
+//                 ESL_PASSWORD=ClueCon is WARN only even in production, because
+//                 ClueCon is a valid password on many lab and on-prem FreeSWITCH
+//                 deployments. Change it before Internet-facing deploys.
 function checkCredentials() {
   const isProduction = config.env === 'production';
   const warn  = (msg) => console.warn(`[boot] SECURITY WARNING: ${msg}`);
   const fatal = (msg) => { console.error(`[boot] FATAL: ${msg}`); process.exit(1); };
-  const flag  = isProduction ? fatal : warn;
+
+  // Diagnostic: always log the effective NODE_ENV and ESL_PASSWORD presence
+  // so the value is visible in PM2 logs before any checks run.
+  console.log(`[boot] NODE_ENV=${config.env}  ESL_PASSWORD=${process.env.ESL_PASSWORD ? '(set)' : '(unset)'}`);
 
   const WEAK_JWT = ['CHANGE_ME_access_secret_32plus', 'CHANGE_ME_refresh_secret_32plus'];
   if (WEAK_JWT.includes(config.jwt.accessSecret) || WEAK_JWT.includes(config.jwt.refreshSecret)) {
-    flag('JWT secrets are set to insecure defaults. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in .env.');
+    (isProduction ? fatal : warn)(
+      'JWT secrets are set to insecure defaults. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in .env.'
+    );
   }
   if (!process.env.INTERNAL_API_KEY || process.env.INTERNAL_API_KEY.length < 32) {
-    flag('INTERNAL_API_KEY must be at least 32 characters. Set INTERNAL_API_KEY in .env.');
+    (isProduction ? fatal : warn)(
+      'INTERNAL_API_KEY must be at least 32 characters. Set INTERNAL_API_KEY in .env.'
+    );
   }
   if (process.env.DB_PASSWORD === 'changeme' || !process.env.DB_PASSWORD) {
-    flag('DB_PASSWORD is set to an insecure default. Set DB_PASSWORD in .env.');
+    (isProduction ? fatal : warn)(
+      'DB_PASSWORD is set to an insecure default. Set DB_PASSWORD in .env.'
+    );
   }
+  // ESL_PASSWORD — warn only in both dev and production.
+  // ClueCon is the upstream FreeSWITCH default and is valid on many
+  // lab and on-prem systems. Change it before Internet-facing deployment.
   if (process.env.ESL_PASSWORD === 'ClueCon' || !process.env.ESL_PASSWORD) {
-    flag('ESL_PASSWORD is the publicly-known FreeSWITCH default. Set ESL_PASSWORD in .env.');
+    warn(
+      'ESL_PASSWORD is the publicly-known FreeSWITCH default (ClueCon). ' +
+      'Change it before Internet-facing deployment.'
+    );
   }
+}
+
+// ── Startup Validation Banner ─────────────────────────────────────────────────
+// Prints a formatted summary of every subsystem check 3 seconds after the
+// server starts listening. The delay lets ESL complete its handshake and
+// conference sync run before we sample their state.
+//
+// Each row: label (left-padded to a fixed width) : value  status-icon
+// OK = ✓  WARN = ⚠  FAIL = ✗
+async function printStartupBanner() {
+  const W = 57; // total banner width between the === borders
+
+  const ok   = (v) => `${v} \x1b[32m✓\x1b[0m`;
+  const warn = (v) => `${v} \x1b[33m⚠\x1b[0m`;
+  const fail = (v) => `${v} \x1b[31m✗\x1b[0m`;
+
+  const line  = '='.repeat(W);
+  const blank = '';
+
+  // Collect checks
+  const rows = [];
+
+  const add = (label, value) => rows.push({ label, value });
+
+  // ── Environment ──
+  add('Environment',      config.env === 'production' ? ok(config.env) : warn(config.env + ' (not production)'));
+  add('Node',             ok(process.version));
+  add('Backend Port',     ok(config.port));
+  add('Frontend Port',    ok(process.env.FRONTEND_PORT || 8100));
+
+  // ── Database ──
+  let dbStatus;
+  try {
+    const dbOk = await testConnection();
+    dbStatus = dbOk ? ok('Connected') : fail('Unreachable');
+  } catch {
+    dbStatus = fail('Error');
+  }
+  add('Database', dbStatus);
+
+  // ── FreeSWITCH ESL ──
+  const esl = eslStatus();
+  add('FreeSWITCH ESL',
+    esl.connected
+      ? ok(`Connected  (${esl.host}:${esl.port})`)
+      : warn(`Offline — will retry  (${esl.host}:${esl.port})`));
+
+  // ── Credentials ──
+  const WEAK_JWT = ['CHANGE_ME_access_secret_32plus', 'CHANGE_ME_refresh_secret_32plus'];
+  const jwtOk = !WEAK_JWT.includes(config.jwt.accessSecret) && !WEAK_JWT.includes(config.jwt.refreshSecret);
+  add('JWT', jwtOk ? ok('OK') : (config.env === 'production' ? fail('Weak secrets') : warn('Weak secrets')));
+
+  const apiKeyOk = process.env.INTERNAL_API_KEY && process.env.INTERNAL_API_KEY.length >= 32;
+  add('Internal API Key', apiKeyOk ? ok('OK') : (config.env === 'production' ? fail('Missing / short') : warn('Missing / short')));
+
+  // ── FreeSWITCH Paths ──
+  const checkPath = (label, dir) => {
+    if (!dir) { add(label, warn('Not configured')); return; }
+    add(label, existsSync(dir) ? ok(dir) : warn(`Not found: ${dir}`));
+  };
+
+  checkPath('Recordings Path', fsPathService.getRecordingDir());
+  checkPath('Lua Scripts Path', fsPathService.getScriptDir());
+  checkPath('Sound Path',       fsPathService.getSoundDir());
+  checkPath('Dialplan Path',    fsPathService.getDialplanDir());
+
+  // ── Conference Sync ──
+  let syncStatus;
+  try {
+    const confs = await seedConferenceRegistry();
+    syncStatus = ok(`${confs.length} conference${confs.length !== 1 ? 's' : ''} loaded`);
+  } catch (e) {
+    syncStatus = esl.connected
+      ? warn(`Sync failed: ${e.message}`)
+      : warn('Skipped (ESL offline)');
+  }
+  add('Conference Sync', syncStatus);
+
+  // ── Render ──
+  const COL = 17; // label column width
+  const renderRow = ({ label, value }) => {
+    const padded = label.padEnd(COL);
+    return `  ${padded}: ${value}`;
+  };
+
+  const lines = [
+    blank,
+    line,
+    '  FS-ENRS Startup Validation',
+    line,
+    blank,
+    ...rows.map(renderRow),
+    blank,
+    line,
+    '  READY',
+    line,
+    blank,
+  ];
+
+  console.log(lines.join('\n'));
 }
 
 async function start() {
@@ -187,8 +313,7 @@ async function start() {
 
   // Start listening
   server.listen(config.port, () => {
-    console.log(`[boot] fs-enrs API running on port ${config.port}`);
-    console.log(`[boot] Environment: ${config.env}`);
+    console.log(`[boot] fs-enrs listening on :${config.port}  (${config.env})`);
   });
 
   // Non-fatal — a stale registry entry shouldn't block boot, but must be
@@ -203,6 +328,14 @@ async function start() {
   // (not at module load time) so that scripts/tests that import eslService
   // don't inherit intervals that outlive their pool.
   startBackgroundJobs();
+
+  // Startup validation banner — fires 3 s after listen so ESL has time to
+  // complete its handshake before we sample its connected state.
+  setTimeout(() => {
+    printStartupBanner().catch(err =>
+      console.error('[boot] startup banner error:', err.message)
+    );
+  }, 3000);
 
   // Startup incident reconciliation — mark any ACTIVE incident whose
   // deterministic conference room is now empty as COMPLETED. Runs once at
