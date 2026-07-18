@@ -228,7 +228,7 @@ router.get('/ers', asyncHandler(async (req, res) => {
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      JOIN organizations o ON o.id = e.organization_id
-     LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id AND r.deleted_at IS NULL
+     LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
      WHERE i.deleted_at IS NULL
        AND i.tenant_id = $1
        AND ($2::date IS NULL OR i.started_at >= $2::date)
@@ -275,7 +275,7 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
          c.first_name, c.last_name, c.mobile_number, c.extension_number, c.role AS contact_role
        FROM ers_incident_responders r
        LEFT JOIN emergency_contacts c ON c.id = r.emergency_contact_id
-       WHERE r.ers_incident_id = $1 AND r.deleted_at IS NULL
+       WHERE r.ers_incident_id = $1
        ORDER BY r.join_time`,
       [incident.id]
     ),
