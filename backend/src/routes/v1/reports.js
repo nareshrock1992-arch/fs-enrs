@@ -220,10 +220,10 @@ router.get('/ers', asyncHandler(async (req, res) => {
     `SELECT i.id, i.incident_uuid, i.status, i.group_type,
        i.caller_number, i.caller_name, i.conference_room,
        i.recording_path, i.started_at, i.ended_at, i.queued_at, i.dequeued_at, i.cancelled_at,
-       e.name AS ers_name, e.id AS ers_configuration_id, e.priority,
+       e.name AS ers_name, e.id AS ers_configuration_id,
        o.name AS org_name, o.id AS organization_id,
        COUNT(DISTINCT r.id)::INT AS responder_count,
-       COUNT(DISTINCT r.id) FILTER (WHERE r.answered_at IS NOT NULL)::INT AS answered_count,
+       COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('JOINED','REJOINED'))::INT AS answered_count,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
@@ -235,7 +235,7 @@ router.get('/ers', asyncHandler(async (req, res) => {
        AND ($3::date IS NULL OR i.started_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR i.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)
-     GROUP BY i.id, e.name, e.id, e.priority, o.name, o.id
+     GROUP BY i.id, e.name, e.id, o.name, o.id
      ORDER BY i.started_at DESC
      LIMIT $6 OFFSET $7`,
     [req.user.tenantId, from || null, to || null, status || null, org_id || null, limit, offset]
@@ -249,7 +249,7 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
   const { incidentUuid } = req.params;
 
   const { rows: [incident] } = await query(
-    `SELECT i.*, e.name AS ers_name, e.priority, o.name AS org_name,
+    `SELECT i.*, e.name AS ers_name, o.name AS org_name,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
@@ -270,8 +270,8 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
       [incident.id]
     ),
     query(
-      `SELECT r.status, r.joined_via, r.rejoin_count, r.answered_at, r.hangup_cause,
-         r.join_time, r.leave_time, r.call_uuid,
+      `SELECT r.status, r.joined_via, r.rejoin_count,
+         r.join_time, r.leave_time, r.call_uuid, r.mobile_number AS responder_mobile,
          c.first_name, c.last_name, c.mobile_number, c.extension_number, c.role AS contact_role
        FROM ers_incident_responders r
        LEFT JOIN emergency_contacts c ON c.id = r.emergency_contact_id
@@ -300,14 +300,12 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
         rejoined_at: p.rejoined_at,
       })),
       responders: responders.map(r => ({
-        name:         r.first_name ? `${r.first_name} ${r.last_name}`.trim() : (r.mobile_number || 'Unknown'),
-        number:       r.extension_number || r.mobile_number,
+        name:         r.first_name ? `${r.first_name} ${r.last_name}`.trim() : (r.mobile_number || r.responder_mobile || 'Unknown'),
+        number:       r.extension_number || r.mobile_number || r.responder_mobile,
         contact_role: r.contact_role,
         status:       r.status,
         joined_via:   r.joined_via,
         rejoin_count: r.rejoin_count,
-        answered_at:  r.answered_at,
-        hangup_cause: r.hangup_cause,
         join_time:    r.join_time,
         leave_time:   r.leave_time,
         call_uuid:    r.call_uuid,
@@ -332,7 +330,7 @@ router.get('/ens', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
      JOIN organizations o ON o.id = e.organization_id
      WHERE n.deleted_at IS NULL
-       AND n.tenant_id = $1
+       AND e.tenant_id = $1
        AND ($2::date IS NULL OR n.created_at >= $2::date)
        AND ($3::date IS NULL OR n.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR n.status = $4)
@@ -353,7 +351,7 @@ router.get('/ens', asyncHandler(async (req, res) => {
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
      WHERE n.deleted_at IS NULL
-       AND n.tenant_id = $1
+       AND e.tenant_id = $1
        AND ($2::date IS NULL OR n.created_at >= $2::date)
        AND ($3::date IS NULL OR n.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR n.status = $4)
@@ -376,7 +374,7 @@ router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
      LEFT JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
-     WHERE n.notification_uuid = $1 AND n.tenant_id = $2 AND n.deleted_at IS NULL`,
+     WHERE n.notification_uuid = $1 AND e.tenant_id = $2 AND n.deleted_at IS NULL`,
     [notificationUuid, req.user.tenantId]
   );
   if (!notification) return res.status(404).json({ error: 'Notification not found' });
