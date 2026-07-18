@@ -23,6 +23,8 @@ import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
 import ReportErsIncidents  from './pages/reports/ReportErsIncidents.jsx';
 import ReportEnsBroadcasts from './pages/reports/ReportEnsBroadcasts.jsx';
+import ErsReport           from './pages/reports/ErsReport.jsx';
+import EnsReport           from './pages/reports/EnsReport.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
@@ -91,10 +93,13 @@ export default function App() {
         <Route path="contacts"             element={<ContactList />} />
         <Route path="groups"               element={<GroupList />} />
 
-        {/* Reports */}
+        {/* Reports — unified */}
+        <Route path="reports/ers"           element={<ErsReport />} />
+        <Route path="reports/ens"           element={<EnsReport />} />
+        <Route path="reports/contact-usage" element={<ReportContactUsage />} />
+        {/* Legacy report routes — kept so old bookmarks still work */}
         <Route path="reports/notifications" element={<ReportNotifications />} />
         <Route path="reports/incidents"     element={<ReportIncidents />} />
-        <Route path="reports/contact-usage" element={<ReportContactUsage />} />
         <Route path="reports/ers-incidents"  element={<ReportErsIncidents />} />
         <Route path="reports/ens-broadcasts" element={<ReportEnsBroadcasts />} />
 

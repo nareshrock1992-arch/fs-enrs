@@ -42,11 +42,9 @@ const NAV = [
 
   {
     label: 'Reports', icon: FileBarChart2, children: [
-      { label: 'Notification Report',    to: '/reports/notifications' },
-      { label: 'Incident Report',        to: '/reports/incidents' },
+      { label: 'ERS Reports',            to: '/reports/ers' },
+      { label: 'ENS Reports',            to: '/reports/ens' },
       { label: 'Contact Usage',          to: '/reports/contact-usage' },
-      { label: 'ERS Incident Detail',    to: '/reports/ers-incidents' },
-      { label: 'ENS Broadcast Detail',   to: '/reports/ens-broadcasts' },
       { label: 'Conference Recordings',  to: '/recordings' },
     ]
   },

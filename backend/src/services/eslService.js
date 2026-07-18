@@ -629,6 +629,18 @@ async function handleEvent(evt) {
       }).catch(() => {});
 
     } else if (action === 'conference-destroy') {
+      // Capture recording state BEFORE deleting the registry entry.
+      // stop-recording may arrive after conference-destroy on some FS versions,
+      // at which point conf is null and conf?.recordingPath would be undefined.
+      // Closing here ensures the recording is always finalised on conference end.
+      const destroyedConf = conferenceRegistry.get(confName);
+      const activeRecPath = destroyedConf?.recordingPath || null;
+      if (activeRecPath && (destroyedConf?.recording || destroyedConf?.recordingState === 'ACTIVE' || destroyedConf?.recordingState === 'STARTING')) {
+        import('../controllers/recordingController.js').then(({ closeRecording }) => {
+          closeRecording({ confName, recPath: activeRecPath });
+        }).catch(err => console.error('[esl] closeRecording on conference-destroy failed:', err.message));
+      }
+
       conferenceRegistry.delete(confName);
       // Reconcile DB BEFORE emitting to socket — so any REST reseed triggered
       // by the socket event sees the incident already marked COMPLETED, not ACTIVE.

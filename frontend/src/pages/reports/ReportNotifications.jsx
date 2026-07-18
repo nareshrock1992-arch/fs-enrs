@@ -29,8 +29,10 @@ export default function ReportNotifications() {
   const f = (k, v) => setFilters(p => ({ ...p, [k]: v }));
 
   function exportCsv() {
-    const h = ['ID', 'Title', 'Status', 'Created At'];
-    const lines = [h.join(','), ...rows.map(r => [r.id, r.title, r.status, fmt(r.created_at)].join(','))];
+    const h = ['ID', 'ENS Name', 'Status', 'Targets', 'Answered', 'Created At'];
+    const lines = [h.join(','), ...rows.map(r =>
+      [r.id, `"${r.ens_name || ''}"`, r.status, r.total_targets ?? '', r.total_answered ?? '', fmt(r.created_at)].join(',')
+    )];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = 'notifications.csv'; a.click();
@@ -72,14 +74,15 @@ export default function ReportNotifications() {
       ) : (
         <Table>
           <thead><tr className="bg-surface-hover">
-            <Th>Title</Th><Th>Status</Th><Th>Deliveries</Th><Th>Created</Th>
+            <Th>ENS Name</Th><Th>Status</Th><Th>Targets</Th><Th>Answered</Th><Th>Created</Th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 ? <EmptyRow cols={4} /> : rows.map(r => (
+            {rows.length === 0 ? <EmptyRow cols={5} /> : rows.map(r => (
               <Tr key={r.id}>
-                <Td className="font-medium">{r.title || r.id}</Td>
+                <Td className="font-medium">{r.ens_name || r.id}</Td>
                 <Td><StatusBadge status={r.status} /></Td>
-                <Td className="text-text-muted">{r.delivery_count ?? '—'}</Td>
+                <Td className="text-text-muted">{r.total_targets ?? '—'}</Td>
+                <Td className="text-text-muted">{r.total_answered ?? '—'}</Td>
                 <Td className="text-text-muted text-xs">{fmt(r.created_at)}</Td>
               </Tr>
             ))}

@@ -484,10 +484,29 @@ export async function scanRecordingDirectory() {
 
     for (const fullPath of files) {
       const { rows: [existing] } = await query(
-        `SELECT id FROM recordings WHERE recording_path = $1 AND deleted_at IS NULL`,
+        `SELECT id, status FROM recordings WHERE recording_path = $1 AND deleted_at IS NULL`,
         [fullPath]
       ).catch(() => ({ rows: [{}] }));
-      if (existing) { totalSkipped++; continue; }
+      if (existing) {
+        // Heal rows stuck in RECORDING state — the file exists on disk but
+        // the stop-recording event never finalised it (e.g. conference-destroy race).
+        if (existing.status === 'RECORDING') {
+          let healMeta = {};
+          try { healMeta = await extractAudioMetadata(fullPath); } catch { /* optional */ }
+          await query(
+            `UPDATE recordings
+             SET status = 'COMPLETED', ended_at = now(),
+                 file_size_bytes = COALESCE($2, file_size_bytes),
+                 duration_sec    = COALESCE($3, duration_sec),
+                 updated_at      = now()
+             WHERE id = $1 AND status = 'RECORDING' AND deleted_at IS NULL`,
+            [existing.id, healMeta.size_bytes ?? null, healMeta.duration_sec ?? null]
+          ).catch(err => console.warn(`[recordings] scan: heal failed for id=${existing.id} — ${err.message}`));
+          console.log(`[recordings] scan: healed stuck RECORDING row id=${existing.id} for "${path.basename(fullPath)}"`);
+        }
+        totalSkipped++;
+        continue;
+      }
 
       let meta = {};
       try {
