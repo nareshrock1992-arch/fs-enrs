@@ -13,18 +13,21 @@ import {
 } from '../../controllers/mediaLibraryController.js';
 
 const router = Router();
-router.use(requireAuth);
 
-router.get('/categories',         adminOrOp, listCategories);
-router.get('/',                   adminOrOp, listMedia);
-router.get('/:id',                adminOrOp, getMedia);
+// Streaming routes accept ?token= for <audio src> compatibility — do NOT add
+// requireAuth here; requireAuthOrToken handles both Bearer and ?token= forms.
 router.get('/:id/stream',         requireAuthOrToken, streamMedia);
 router.get('/:id/download',       requireAuthOrToken, downloadMedia);
 router.get('/:id/waveform',       requireAuthOrToken, getWaveform);
-router.post('/scan',              adminOnly, scanMedia);
-router.post('/upload',            adminOnly, uploadMiddleware, uploadMedia);
-router.put('/:id',                adminOnly, updateMedia);
-router.post('/:id/deploy',        adminOnly, deployMedia);
-router.delete('/:id',             adminOnly, deleteMedia);
+
+// All other routes require a full Bearer session.
+router.get('/categories',         requireAuth, adminOrOp, listCategories);
+router.get('/',                   requireAuth, adminOrOp, listMedia);
+router.get('/:id',                requireAuth, adminOrOp, getMedia);
+router.post('/scan',              requireAuth, adminOnly, scanMedia);
+router.post('/upload',            requireAuth, adminOnly, uploadMiddleware, uploadMedia);
+router.put('/:id',                requireAuth, adminOnly, updateMedia);
+router.post('/:id/deploy',        requireAuth, adminOnly, deployMedia);
+router.delete('/:id',             requireAuth, adminOnly, deleteMedia);
 
 export default router;

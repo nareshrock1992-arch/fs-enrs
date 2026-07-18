@@ -619,26 +619,38 @@ export const deployMedia = asyncHandler(async (req, res) => {
 // ── Stream (authenticated preview) ───────────────────────────────────────────
 
 export const streamMedia = asyncHandler(async (req, res) => {
+  const mediaId = req.params.id;
+  console.log(`[media-stream] request — id=${mediaId}`);
+
   const { rows: [record] } = await query(
     `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    [mediaId]
   );
-  if (!record) return res.status(404).json({ error: 'Not found' });
+  if (!record) {
+    console.warn(`[media-stream] id=${mediaId} — DB record not found`);
+    return res.status(404).json({ error: 'Not found' });
+  }
 
-  // Prefer deployed FS path; fall back to uploads path (always streamable)
+  console.log(`[media-stream] id=${record.id} name="${record.name}" is_deployed=${record.is_deployed} fs_path="${record.fs_path || '(null)'}" path_or_uri="${record.path_or_uri || '(null)'}"`);
+
+  // Prefer deployed FS path; fall back to uploads path (always streamable).
+  // fs_path is set on deploy; path_or_uri is set on upload (always the staging copy).
   const candidates = [record.fs_path, record.path_or_uri].filter(Boolean);
   let filePath = null;
   for (const p of candidates) {
-    // Resolve relative paths against process CWD so stored relative paths work
     const resolved = path.isAbsolute(p) ? p : path.resolve(p);
-    try { await fs.access(resolved); filePath = resolved; break; } catch {}
+    try {
+      await fs.access(resolved);
+      filePath = resolved;
+      console.log(`[media-stream] id=${record.id} — resolved path: "${filePath}"`);
+      break;
+    } catch {
+      console.warn(`[media-stream] id=${record.id} — not accessible: "${resolved}"`);
+    }
   }
 
   if (!filePath) {
-    console.warn(`[media-stream] id=${record.id} name="${record.name}" — file not found on disk`);
-    console.warn(`[media-stream]   fs_path     = ${record.fs_path || '(null)'}`);
-    console.warn(`[media-stream]   path_or_uri = ${record.path_or_uri || '(null)'}`);
-    console.warn(`[media-stream]   CWD = ${process.cwd()}`);
+    console.error(`[media-stream] id=${record.id} — file not found on disk. tried: ${candidates.join(', ')} | CWD=${process.cwd()}`);
     return res.status(404).json({
       error: 'File not found on disk',
       tried: candidates,
@@ -646,11 +658,11 @@ export const streamMedia = asyncHandler(async (req, res) => {
   }
 
   const stat = await fs.stat(filePath);
-  const ext  = path.extname(filePath).toLowerCase();
-  const mime = MIME_MAP[ext] || 'application/octet-stream';
   const size = stat.size;
+  const ext  = path.extname(filePath).toLowerCase();
+  const mime = MIME_MAP[ext] || 'audio/wav';
 
-  console.log(`[media-stream] id=${record.id} name="${record.name}" path="${filePath}" mime=${mime} bytes=${size}`);
+  console.log(`[media-stream] id=${record.id} name="${record.name}" path="${filePath}" ext="${ext}" mime=${mime} bytes=${size}`);
 
   const range = req.headers.range;
   if (range) {
