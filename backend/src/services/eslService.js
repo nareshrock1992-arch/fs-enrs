@@ -906,6 +906,33 @@ async function handleEvent(evt) {
     return;
   }
 
+  // Lua record_session completed — register recording in DB immediately.
+  // FreeSWITCH fires RECORD_STOP for both record_session (Lua) and conference record (ESL).
+  // For ESL conference recordings, upsertRecordingStart was already called from the
+  // start-recording event handler; ON CONFLICT DO NOTHING prevents duplicates.
+  if (name === 'RECORD_STOP') {
+    const recPath  = evt.getHeader('Record-File-Path') || evt.getHeader('variable_record_file_path');
+    const confName = evt.getHeader('variable_conference_name') || evt.getHeader('Conference-Name');
+    console.log(`[esl] RECORD_STOP — path="${recPath}" conf="${confName}"`);
+    if (recPath) {
+      const recType = recPath.includes('/ers/')    ? 'ERS'
+                    : recPath.includes('/ens/')    ? 'ENS'
+                    : recPath.includes('/ivr/')    ? 'IVR'
+                    : recPath.includes('/manual/') ? 'MANUAL'
+                    : 'ERS';
+      import('../controllers/recordingController.js').then(({ upsertRecordingStart, closeRecording }) => {
+        upsertRecordingStart({ type: recType, confName: confName || null, recPath, createdBy: 'system' })
+          .then(row => {
+            // closeRecording via the stop-recording ESL event handles ESL conference recordings.
+            // For Lua record_session we call it here since no stop-recording event fires for them.
+            closeRecording({ confName: confName || null, recPath });
+          })
+          .catch(err => console.error('[esl] RECORD_STOP registration failed:', err.message));
+      }).catch(() => {});
+    }
+    return;
+  }
+
   // Custom ENS/ERS events from Lua scripts
   if (name === 'CUSTOM' && subclass.startsWith('enrs::')) {
     const payload = {};
@@ -1056,6 +1083,7 @@ export function connect() {
         'CHANNEL_CREATE',
         'CHANNEL_BRIDGE',
         'DTMF',
+        'RECORD_STOP',
       ]);
 
       conn.on('esl::event', handleEvent);
@@ -1806,4 +1834,15 @@ export function startBackgroundJobs() {
     if (!isConn) return;
     reconcileAllActiveIncidents().catch(() => {});
   }, 60_000);
+
+  // 2-minute recording scan — heals recordings whose stop-recording event was
+  // missed (ESL disconnect during call) and registers any file the start-recording
+  // event failed to insert. The scan is idempotent and O(filesystem), not O(DB).
+  setInterval(() => {
+    import('../controllers/recordingController.js').then(({ scanRecordingDirectory }) => {
+      scanRecordingDirectory().catch(err =>
+        console.warn('[recordings] periodic scan failed:', err.message)
+      );
+    }).catch(() => {});
+  }, 120_000);
 }

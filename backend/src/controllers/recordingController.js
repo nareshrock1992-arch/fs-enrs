@@ -398,6 +398,7 @@ export async function closeRecording({ confName, recPath }) {
   if (!recPath) return;
 
   const doClose = async () => {
+    console.log(`[recordings] closeRecording started — room="${confName}" path="${recPath}"`);
     let meta = {};
     let waveformPeaks = null;
     try {
@@ -412,7 +413,7 @@ export async function closeRecording({ confName, recPath }) {
       console.warn('[recordings] metadata extraction failed:', err.message);
     }
 
-    await query(
+    const { rowCount } = await query(
       `UPDATE recordings
        SET status          = 'COMPLETED',
            ended_at        = now(),
@@ -438,10 +439,15 @@ export async function closeRecording({ confName, recPath }) {
         meta.checksum     ?? null,
         waveformPeaks ? JSON.stringify(waveformPeaks) : null,
       ]
-    ).catch(err => console.error('[recordings] closeRecording update failed:', err.message));
+    ).catch(err => { console.error('[recordings] closeRecording update failed:', err.message); return { rowCount: 0 }; });
+    if (rowCount > 0) {
+      console.log(`[recordings] closeRecording COMPLETED — room="${confName}" file="${path.basename(recPath)}" size=${meta.size_bytes} duration=${meta.duration_sec}s`);
+    } else {
+      console.warn(`[recordings] closeRecording: no RECORDING row matched path="${recPath}" room="${confName}" — row may have been inserted by boot scan or already completed`);
+    }
   };
 
-  doClose();  // fire-and-forget
+  doClose().catch(err => console.error('[recordings] closeRecording doClose failed:', err.message));
 }
 
 // ── Startup: scan all module recording directories ────────────────────────────

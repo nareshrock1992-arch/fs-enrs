@@ -200,8 +200,14 @@ async function startAutoRecording(confName, config) {
 
     console.log(`[conference-mgr] auto-recording started — conf="${confName}" path="${recPath}" resp="${resp}"`);
 
-    // The ESL start-recording event will register the row via upsertRecordingStart.
-    // We don't insert here to avoid a race condition with the event handler.
+    // Register the recording row immediately — don't rely solely on the start-recording
+    // ESL event, which can be delayed or dropped on some FreeSWITCH versions.
+    // ON CONFLICT DO NOTHING in upsertRecordingStart handles the duplicate case
+    // if the ESL event also fires.
+    import('../controllers/recordingController.js').then(({ upsertRecordingStart }) => {
+      upsertRecordingStart({ type: 'ERS', confName, recPath, createdBy: 'system' })
+        .catch(err => console.error(`[conference-mgr] upsertRecordingStart failed — conf="${confName}": ${err.message}`));
+    }).catch(() => {});
   } catch (err) {
     console.error(`[conference-mgr] auto-record failed — conf="${confName}": ${err.message}`);
   }

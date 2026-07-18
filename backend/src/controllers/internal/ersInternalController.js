@@ -200,7 +200,12 @@ export const ersLookup = asyncHandler(async (req, res) => {
     [number]
   );
 
-  if (!cfg) return res.status(404).json({ success: false, error: 'ERS number not found' });
+  if (!cfg) {
+    console.warn(`[ers] lookup MISS number=${number} — no active ERS configuration matched`);
+    return res.status(404).json({ success: false, error: 'ERS number not found' });
+  }
+
+  console.log(`[ers] lookup HIT number=${number} config_id=${cfg.configuration_id} name="${cfg.name}"`);
 
   const [primaryResponders, secondaryResponders, activeResult] = await Promise.all([
     resolveResponders(cfg.configuration_id, 'primary'),
@@ -292,7 +297,7 @@ export const ersCreateIncident = asyncHandler(async (req, res) => {
   const d = IncidentCreateSchema.parse(req.body);
 
   const { rows: [cfg] } = await query(
-    `SELECT id FROM ers_configurations
+    `SELECT id, tenant_id FROM ers_configurations
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
   );
@@ -300,17 +305,21 @@ export const ersCreateIncident = asyncHandler(async (req, res) => {
 
   const incidentUuid = uuidv4();
 
+  console.log(`[ers] creating incident conference=${d.conference_room} config=${d.configuration_id} tenant=${cfg.tenant_id}`);
+
   const { rows: [incident] } = await query(
     `INSERT INTO ers_incidents
-       (incident_uuid, ers_configuration_id, status,
+       (incident_uuid, ers_configuration_id, tenant_id, status,
         caller_number, caller_name, conference_room,
         group_type, recording_path, started_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
      RETURNING id, incident_uuid`,
-    [incidentUuid, d.configuration_id, d.status,
+    [incidentUuid, d.configuration_id, cfg.tenant_id, d.status,
      d.caller_number, d.caller_name, d.conference_room,
      d.group_type, d.recording_path]
   );
+
+  console.log(`[ers] ERS INCIDENT CREATED id=${incident.id} uuid=${incident.incident_uuid} conference=${d.conference_room} tenant=${cfg.tenant_id}`);
 
   emitInternal('enrs::ers_incident_created', {
     incident_uuid:    incident.incident_uuid,
