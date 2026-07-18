@@ -150,10 +150,13 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
           if (!recordingStarted) {
             recordingStarted = true;
             const { rows: [cfg] } = await query(
-              `SELECT record_conferences, recording_directory FROM ers_configurations WHERE id = $1`,
+              `SELECT record_conferences, recording_directory, recording_enabled, recording_mode
+               FROM ers_configurations WHERE id = $1`,
               [configId]
             );
-            if (cfg?.record_conferences) {
+            // Skip Lua-path recording when backend auto-recording (conferenceManager) is active
+            // to prevent dual recording of the same conference.
+            if (cfg?.record_conferences && !(cfg?.recording_enabled && cfg?.recording_mode === 'AUTO')) {
               const dir  = cfg.recording_directory || fsPathService.getErsRecordingDir();
               const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
               const path = `${dir}/ers_${room}_${dateStr}.wav`;

@@ -782,6 +782,17 @@ async function handleEvent(evt) {
         import('../controllers/recordingController.js').then(({ upsertRecordingStart }) => {
           upsertRecordingStart({ type: recType, confName, recPath: finalPath, createdBy: 'system' });
         }).catch(err => console.error('[esl] upsertRecordingStart import failed:', err.message));
+        // Sync recording_path onto the active ERS incident so the monitoring UI
+        // and reports can link directly to the recording without a JOIN on recordings.
+        if (recType === 'ERS') {
+          import('../db/pool.js').then(({ query: dbQuery }) => {
+            dbQuery(
+              `UPDATE ers_incidents SET recording_path = $1
+               WHERE conference_room = $2 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+              [finalPath, confName]
+            ).catch(err => console.error('[esl] ers_incidents recording_path sync failed:', err.message));
+          }).catch(() => {});
+        }
       }
 
     } else if (action === 'energy-level') {

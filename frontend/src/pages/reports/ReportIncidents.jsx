@@ -41,7 +41,7 @@ export default function ReportIncidents() {
     a.download = 'incidents.csv'; a.click();
   }
 
-  const STATUSES = ['', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'QUEUED'];
+  const STATUSES = ['', 'ACTIVE', 'COMPLETED', 'CANCELLED', 'QUEUED'];
 
   return (
     <div className="space-y-4">

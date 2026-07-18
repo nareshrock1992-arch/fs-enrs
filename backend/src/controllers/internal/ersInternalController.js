@@ -342,8 +342,13 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
       `UPDATE ers_incidents
        SET status = 'COMPLETED', ended_at = now(),
            recording_path = COALESCE($2, recording_path)
-       WHERE incident_uuid = $1 AND deleted_at IS NULL AND status != 'COMPLETED'
-       RETURNING id, ers_configuration_id, group_type`,
+       FROM ers_configurations c
+       WHERE ers_incidents.incident_uuid = $1
+         AND ers_incidents.deleted_at IS NULL
+         AND ers_incidents.status != 'COMPLETED'
+         AND c.id = ers_incidents.ers_configuration_id
+       RETURNING ers_incidents.id, ers_incidents.ers_configuration_id,
+                 ers_incidents.group_type, c.tenant_id`,
       [incidentUuid, recordingFile]
     );
 
@@ -413,8 +418,9 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
 
   emitInternal('enrs::ers_incident_ended', {
     incident_uuid: incidentUuid,
+    status:        'COMPLETED',
     ended_at:      new Date().toISOString(),
-  });
+  }, result.tenant_id);
 
   return result;
 }
@@ -735,9 +741,22 @@ export function roomFromBridgeNumber(bridgeNumber, configId, tier) {
   return `ers_cfg${configId}_${tier}`;
 }
 
-// Async variant — queries DB for bridge number then computes room name.
-// Use this wherever you only have configId + tier and need the room name.
+// Async variant — queries DB for conference room name.
+// For DYNAMIC conferences: returns the stored conference_room from the active
+// incident (set at incident-creation time). Falls back to bridge-number-based
+// name for STATIC conferences and for cases with no active incident.
 async function resolveRoom(configId, tier) {
+  // Check for an active incident with a stored conference_room first (DYNAMIC mode).
+  const { rows: [activeInc] } = await query(
+    `SELECT conference_room FROM ers_incidents
+     WHERE ers_configuration_id = $1 AND group_type = $2
+       AND status = 'ACTIVE' AND deleted_at IS NULL
+     ORDER BY started_at DESC LIMIT 1`,
+    [configId, tier]
+  );
+  if (activeInc?.conference_room) return activeInc.conference_room;
+
+  // Fall back to bridge-number-based name for STATIC or when no active incident.
   const col = tier === 'primary' ? 'primary_bridge_number' : 'secondary_bridge_number';
   const { rows: [row] } = await query(
     `SELECT ${col} AS bridge_number FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL`,
@@ -831,27 +850,6 @@ export const ersRingAll = asyncHandler(async (req, res) => {
   );
   if (!cfg) return res.status(404).json({ success: false, error: 'ERS configuration not found' });
 
-  // Rejoin path — live occupancy check, never status alone.
-  const live = await tierLiveStatus(d.configuration_id, d.tier);
-  if (live.occupied) {
-    const identity = await lookupCallerIdentity(d.caller_number);
-    if (live.incident_uuid) {
-      await query(
-        `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
-         SELECT i.id, NULL, $2, 'responder', now()
-         FROM ers_incidents i WHERE i.incident_uuid = $1`,
-        [live.incident_uuid, d.caller_number]
-      ).catch(() => {});
-    }
-    return res.json({
-      success:         true,
-      rejoin:          true,
-      incident_uuid:   live.incident_uuid,
-      conference_room: live.conference_room,
-      caller_name:     identity.name,
-    });
-  }
-
   // Pre-flight: verify at least one responder is configured before creating
   // an incident. Zero responders means the caller would join a silent empty
   // conference — instead return a clear error so the Lua node plays a
@@ -884,34 +882,69 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fresh incident — ConferenceManager is the single source for the room name.
-  // STATIC: returns primary_bridge_number / secondary_bridge_number as-is.
-  // DYNAMIC: generates a unique name (enabled via conference_type = 'DYNAMIC').
+  // Advisory lock on this config_id prevents two concurrent callers from both
+  // seeing an empty tier and both creating incidents (TOCTOU race). The lock is
+  // transaction-scoped and released automatically on commit/rollback.
   const incidentUuid = uuidv4();
   const slot = d.tier === 'primary' ? 1 : 2;
-  const room = resolveConferenceRoom(cfg, slot);
   const conferenceProfile = getConferenceProfile(cfg);
 
-  const { rows: [tierGroup] } = await query(
+  let live, incident;
+  const tierGroupResult = await query(
     `SELECT id FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2 LIMIT 1`,
     [d.configuration_id, d.tier]
   );
+  const tierGroup = tierGroupResult.rows[0];
 
-  const { rows: [incident] } = await query(
-    `INSERT INTO ers_incidents
-       (incident_uuid, ers_configuration_id, tier_group_id, status,
-        caller_number, caller_name, conference_room, group_type, started_at)
-     VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $6, $7, now())
-     RETURNING id, incident_uuid`,
-    [incidentUuid, d.configuration_id, tierGroup?.id ?? null,
-     d.caller_number, d.caller_name ?? null, room, d.tier]
-  );
+  ({ live, incident } = await withTransaction(async (tq) => {
+    // Serialize all ring-all requests for this config so only one incident
+    // is created when multiple callers hit the same tier simultaneously.
+    await tq(`SELECT pg_advisory_xact_lock($1)`, [d.configuration_id]);
 
-  await query(
-    `INSERT INTO ers_incident_participants (incident_id, raw_number, role, joined_at)
-     VALUES ($1, $2, 'initiator', now())`,
-    [incident.id, d.caller_number]
-  ).catch(() => {});
+    // Re-check occupancy inside the lock — the state may have changed since
+    // the pre-lock tierLiveStatus call above.
+    const liveStatus = await tierLiveStatus(d.configuration_id, d.tier);
+    if (liveStatus.occupied) return { live: liveStatus, incident: null };
+
+    const room = resolveConferenceRoom(cfg, slot);
+    const { rows: [inc] } = await tq(
+      `INSERT INTO ers_incidents
+         (incident_uuid, ers_configuration_id, tier_group_id, status,
+          caller_number, caller_name, conference_room, group_type, started_at)
+       VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $6, $7, now())
+       RETURNING id, incident_uuid, conference_room`,
+      [incidentUuid, d.configuration_id, tierGroup?.id ?? null,
+       d.caller_number, d.caller_name ?? null, room, d.tier]
+    );
+    await tq(
+      `INSERT INTO ers_incident_participants (incident_id, raw_number, role, joined_at)
+       VALUES ($1, $2, 'initiator', now())`,
+      [inc.id, d.caller_number]
+    ).catch(() => {});
+    return { live: null, incident: inc };
+  }));
+
+  // Rejoin path — tier was occupied (either before or inside the lock).
+  if (live?.occupied) {
+    const identity = await lookupCallerIdentity(d.caller_number);
+    if (live.incident_uuid) {
+      await query(
+        `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
+         SELECT i.id, NULL, $2, 'responder', now()
+         FROM ers_incidents i WHERE i.incident_uuid = $1`,
+        [live.incident_uuid, d.caller_number]
+      ).catch(() => {});
+    }
+    return res.json({
+      success:         true,
+      rejoin:          true,
+      incident_uuid:   live.incident_uuid,
+      conference_room: live.conference_room,
+      caller_name:     identity.name,
+    });
+  }
+
+  const room = incident.conference_room;
 
   startRingAll({
     incidentId:         incident.id,
@@ -933,7 +966,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     conference_room:  room,
     group_type:       d.tier,
     status:           'ACTIVE',
-  });
+  }, cfg.tenant_id);
 
   res.status(201).json({
     success:         true,
@@ -1040,6 +1073,14 @@ export const ersOverflowEnqueue = asyncHandler(async (req, res) => {
       [incidentUuid, d.configuration_id, d.caller_number, d.caller_name ?? null]
     );
 
+    // Lock the queue rows for this config to prevent two concurrent callers
+    // from receiving the same MAX(position) — must run inside the transaction.
+    await tq(
+      `SELECT id FROM ers_queues
+       WHERE ers_configuration_id = $1 AND status = 'QUEUED'
+       FOR UPDATE`,
+      [d.configuration_id]
+    );
     const { rows: [{ next_pos }] } = await tq(
       `SELECT COALESCE(MAX(position), 0) + 1 AS next_pos
        FROM ers_queues WHERE ers_configuration_id = $1 AND status = 'QUEUED'`,

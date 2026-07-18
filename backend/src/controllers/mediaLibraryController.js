@@ -724,9 +724,14 @@ export const getWaveform = asyncHandler(async (req, res) => {
 
   const numPeaks = Math.min(500, Math.max(50, Number(req.query.peaks) || 200));
 
-  // Serve cached peaks if available and size matches
-  if (record.waveform_peaks && Array.isArray(record.waveform_peaks) && record.waveform_peaks.length >= 50) {
-    return res.json({ peaks: record.waveform_peaks, file: record.name, duration_sec: record.duration_sec, cached: true });
+  // Serve cached peaks if available and size matches.
+  // pg may return JSONB columns as a JSON string rather than a parsed array,
+  // so parse before the Array.isArray check.
+  const cachedPeaks = typeof record.waveform_peaks === 'string'
+    ? (() => { try { return JSON.parse(record.waveform_peaks); } catch { return null; } })()
+    : record.waveform_peaks;
+  if (cachedPeaks && Array.isArray(cachedPeaks) && cachedPeaks.length >= 50) {
+    return res.json({ peaks: cachedPeaks, file: record.name, duration_sec: record.duration_sec, cached: true });
   }
 
   const candidates = [record.fs_path, record.path_or_uri].filter(Boolean);

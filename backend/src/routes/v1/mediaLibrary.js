@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { requireAuth, requireAuthOrToken } from '../../middleware/auth.js';
-import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
+import { adminOnly, adminOrOp, adminOrSuper } from '../../middleware/rbac.js';
 import {
   listMedia, listCategories, uploadMedia, uploadMiddleware,
   scanMedia, getMedia, updateMedia, deployMedia,
@@ -25,7 +25,7 @@ router.get('/categories',         requireAuth, adminOrOp, listCategories);
 router.get('/',                   requireAuth, adminOrOp, listMedia);
 router.get('/:id',                requireAuth, adminOrOp, getMedia);
 router.post('/scan',              requireAuth, adminOnly, scanMedia);
-router.post('/upload',            requireAuth, adminOnly, uploadMiddleware, uploadMedia);
+router.post('/upload',            requireAuth, adminOrSuper, uploadMiddleware, uploadMedia);
 router.put('/:id',                requireAuth, adminOnly, updateMedia);
 router.post('/:id/deploy',        requireAuth, adminOnly, deployMedia);
 router.delete('/:id',             requireAuth, adminOnly, deleteMedia);

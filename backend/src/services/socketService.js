@@ -5,9 +5,16 @@ import { setSocketIO, eslStatus } from './eslService.js';
 
 let _io = null;
 
-// Emit an event from internal API controllers to all connected dashboard clients
-export function emitInternal(event, data) {
-  if (_io) _io.emit(event, data);
+// Emit an event to connected dashboard clients.
+// Pass tenantId to scope the emission to a single tenant's sockets.
+// Omit tenantId only for system-wide events (ESL status, etc.).
+export function emitInternal(event, data, tenantId) {
+  if (!_io) return;
+  if (tenantId) {
+    _io.to(`tenant:${tenantId}`).emit(event, data);
+  } else {
+    _io.emit(event, data);
+  }
 }
 
 export function initSocket(httpServer) {
@@ -36,6 +43,7 @@ export function initSocket(httpServer) {
         socket.user = user;
         socket.join(`user:${user.id}`);
         socket.join(`role:${user.role}`);
+        if (user.tenantId) socket.join(`tenant:${user.tenantId}`);
         socket.emit('authenticated', { userId: user.id, role: user.role });
         // Re-send ESL status now that we know the user — also seeds their
         // initial state with the current esl host/port which the UI displays.

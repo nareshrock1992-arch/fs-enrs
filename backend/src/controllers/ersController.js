@@ -82,25 +82,29 @@ const ErsConfigSchema = z.object({
 // ── Tier group helpers ────────────────────────────────────────────────────────
 
 async function syncTierGroups(configId, tier, groupIds) {
-  await query(`DELETE FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
-  for (const gid of groupIds) {
-    await query(
-      `INSERT INTO ers_tier_groups (ers_configuration_id, tier, group_id)
-       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-      [configId, tier, gid]
-    );
-  }
+  await withTransaction(async (tq) => {
+    await tq(`DELETE FROM ers_tier_groups WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
+    for (const gid of groupIds) {
+      await tq(
+        `INSERT INTO ers_tier_groups (ers_configuration_id, tier, group_id)
+         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [configId, tier, gid]
+      );
+    }
+  });
 }
 
 async function syncTierContacts(configId, tier, contactIds) {
-  await query(`DELETE FROM ers_tier_contacts WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
-  for (const cid of contactIds) {
-    await query(
-      `INSERT INTO ers_tier_contacts (ers_configuration_id, tier, contact_id)
-       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-      [configId, tier, cid]
-    );
-  }
+  await withTransaction(async (tq) => {
+    await tq(`DELETE FROM ers_tier_contacts WHERE ers_configuration_id = $1 AND tier = $2`, [configId, tier]);
+    for (const cid of contactIds) {
+      await tq(
+        `INSERT INTO ers_tier_contacts (ers_configuration_id, tier, contact_id)
+         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [configId, tier, cid]
+      );
+    }
+  });
 }
 
 async function loadTierData(configId) {

@@ -96,6 +96,14 @@ async function start() {
       console.error('[boot] FATAL: INTERNAL_API_KEY must be at least 32 characters in production.');
       process.exit(1);
     }
+    if (process.env.DB_PASSWORD === 'changeme' || !process.env.DB_PASSWORD) {
+      console.error('[boot] FATAL: DB_PASSWORD is set to an insecure default. Set DB_PASSWORD in .env.');
+      process.exit(1);
+    }
+    if (process.env.ESL_PASSWORD === 'ClueCon' || !process.env.ESL_PASSWORD) {
+      console.error('[boot] FATAL: ESL_PASSWORD is the publicly-known FreeSWITCH default. Set ESL_PASSWORD in .env.');
+      process.exit(1);
+    }
   }
 
   // Verify DB before starting

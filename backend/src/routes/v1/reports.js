@@ -25,7 +25,7 @@ router.get('/notifications', asyncHandler(async (req, res) => {
      LIMIT 500`,
     [from || null, to || null, status || null, org_id || null]
   );
-  res.json(rows);
+  res.json({ notifications: rows });
 }));
 
 // GET /api/v1/reports/incidents?from=&to=&status=&org_id=
@@ -51,7 +51,7 @@ router.get('/incidents', asyncHandler(async (req, res) => {
      LIMIT 500`,
     [from || null, to || null, status || null, org_id || null]
   );
-  res.json(rows);
+  res.json({ incidents: rows });
 }));
 
 // GET /api/v1/reports/contact-usage
@@ -70,7 +70,8 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
      LEFT JOIN ers_incident_responders eir ON eir.emergency_contact_id = c.id
      WHERE c.deleted_at IS NULL
      GROUP BY c.id, o.name
-     ORDER BY c.last_name, c.first_name`
+     ORDER BY c.last_name, c.first_name
+     LIMIT 500`
   );
   res.json({ contacts: rows });
 }));
