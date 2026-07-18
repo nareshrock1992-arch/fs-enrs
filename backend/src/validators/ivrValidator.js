@@ -266,7 +266,8 @@ export const GraphSchema = z.object({
 export const DraftGraphSchema = z.object({
   entry_node_id: z.string().max(64),
   nodes:         z.record(z.string().max(64), AnyNodeSchema),
-  _layout:       z.record(z.any()).optional(), // stripped by backend, not stored
+  _layout:   z.record(z.any()).optional(),  // per-node {x,y} — stored, restores canvas positions
+  _viewport: z.object({ x: z.number(), y: z.number(), scale: z.number() }).optional(), // pan+zoom
 }).passthrough();  // ignore any extra top-level keys the frontend might add
 
 // ── Request body schemas ──────────────────────────────────────────────────────

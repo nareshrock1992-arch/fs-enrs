@@ -73,10 +73,11 @@ export function serialiseGraph(nodes, entryNodeId) {
 // ── Deserialise API graph → canvas nodes (add positions) ─────────────────────
 
 export function deserialiseGraph(apiGraph) {
-  if (!apiGraph?.nodes) return { nodes: {}, entryNodeId: '' };
+  if (!apiGraph?.nodes) return { nodes: {}, entryNodeId: '', viewport: null };
 
-  const layout = apiGraph._layout || {};
-  const nodes  = {};
+  const layout   = apiGraph._layout   || {};
+  const viewport = apiGraph._viewport || null;
+  const nodes    = {};
   let col = 0;
 
   for (const [id, node] of Object.entries(apiGraph.nodes)) {
@@ -85,7 +86,7 @@ export function deserialiseGraph(apiGraph) {
     col++;
   }
 
-  return { nodes, entryNodeId: apiGraph.entry_node_id || '' };
+  return { nodes, entryNodeId: apiGraph.entry_node_id || '', viewport };
 }
 
 // ── Reducer ───────────────────────────────────────────────────────────────────
@@ -101,15 +102,19 @@ const INIT = {
   nodeWarnings: {},
   warnings:     [],
   flowMeta:     null,
+  viewport:     null, // null = new flow (default transform); object = restore saved pan+zoom
 };
 
 function reducer(state, action) {
   switch (action.type) {
 
     case 'SEED': {
-      const { nodes, entryNodeId } = deserialiseGraph(action.flow.graph);
-      return { ...INIT, nodes, entryNodeId, flowMeta: action.flow };
+      const { nodes, entryNodeId, viewport } = deserialiseGraph(action.flow.graph);
+      return { ...INIT, nodes, entryNodeId, viewport, flowMeta: action.flow };
     }
+
+    case 'MOVE_VIEWPORT':
+      return { ...state, viewport: action.viewport, dirty: true };
 
     case 'RESTORE_SNAPSHOT':
       return {
@@ -287,6 +292,7 @@ export function useIvrGraph(flowUuid) {
       const layout = {};
       for (const [id, node] of Object.entries(s.nodes)) layout[id] = { x: node.x, y: node.y };
       graph._layout = layout;
+      if (s.viewport) graph._viewport = s.viewport;
       await api.ivr.update(s.flowMeta.flow_uuid, { graph });
       dispatch({ type: 'MARK_SAVED' });
     } catch (e) {
@@ -302,7 +308,7 @@ export function useIvrGraph(flowUuid) {
     saveTimer.current = setTimeout(() => { persistGraph().catch(() => {}); }, 800);
     return () => clearTimeout(saveTimer.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.dirty, state.saving]);
+  }, [state.dirty, state.saving, state.viewport]);
 
   const saveNow = useCallback(async () => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
@@ -349,9 +355,10 @@ export function useIvrGraph(flowUuid) {
     dispatch({ type: 'DISCONNECT', from, fromPort });
   }, []);
 
-  const setSelected = useCallback((id) => dispatch({ type: 'SET_SELECTED', id }), []);
-  const setEntry    = useCallback((id) => dispatch({ type: 'SET_ENTRY',    id }), []);
-  const updateMeta  = useCallback((patch) => dispatch({ type: 'UPDATE_META', patch }), []);
+  const setSelected   = useCallback((id) => dispatch({ type: 'SET_SELECTED', id }), []);
+  const setEntry      = useCallback((id) => dispatch({ type: 'SET_ENTRY',    id }), []);
+  const updateMeta    = useCallback((patch) => dispatch({ type: 'UPDATE_META', patch }), []);
+  const moveViewport  = useCallback((viewport) => dispatch({ type: 'MOVE_VIEWPORT', viewport }), []);
 
   // ── Undo / Redo ──────────────────────────────────────────────────────────
 
@@ -407,7 +414,7 @@ export function useIvrGraph(flowUuid) {
     dispatch,
     addNode, duplicateNode, updateNode, moveNode, deleteNode,
     connect, disconnect,
-    setSelected, setEntry, updateMeta,
+    setSelected, setEntry, updateMeta, moveViewport,
     validate, saveNow,
     undo, redo,
     canUndo: undoStack.current.length > 0,

@@ -135,6 +135,8 @@ export default function FlowCanvas({
   onDuplicateNode,
   onUndo,
   onRedo,
+  savedViewport,
+  onViewportChange,
 }) {
   const canvasRef  = useRef(null);
   const { transform, setTransform, transformRef, cssTransform, onWheel, pan, zoomTo, reset, toCanvas } = useZoomPan();
@@ -148,6 +150,39 @@ export default function FlowCanvas({
   const [guides,    setGuides]    = useState([]);
   const [snapGrid,  setSnapGrid]  = useState(false);
   const [spaceDown, setSpaceDown] = useState(false);
+
+  // ── Viewport persistence ──────────────────────────────────────────────────
+  // Restore the saved pan+zoom once when the flow first loads (savedViewport
+  // transitions from null to an object).  After that, notify the parent of
+  // any user-initiated transform changes so the position can be auto-saved.
+
+  const viewportRestoredRef = useRef(false);
+  const skipNextVpNotifyRef = useRef(false);
+
+  // One-time restore: apply savedViewport the first time it becomes available.
+  useEffect(() => {
+    if (savedViewport && !viewportRestoredRef.current) {
+      viewportRestoredRef.current = true;
+      skipNextVpNotifyRef.current = true; // suppress the echo notification
+      setTransform({ x: savedViewport.x, y: savedViewport.y, scale: savedViewport.scale });
+    }
+  }, [savedViewport, setTransform]);
+
+  // Debounced notification: tell the parent whenever the user pans or zooms.
+  const vpNotifyTimerRef = useRef(null);
+  useEffect(() => {
+    if (!onViewportChange) return;
+    if (skipNextVpNotifyRef.current) {
+      skipNextVpNotifyRef.current = false;
+      return;
+    }
+    clearTimeout(vpNotifyTimerRef.current);
+    vpNotifyTimerRef.current = setTimeout(() => {
+      onViewportChange({ x: transform.x, y: transform.y, scale: transform.scale });
+    }, 400);
+    return () => clearTimeout(vpNotifyTimerRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transform, onViewportChange]);
 
   // Clipboard for copy/paste
   const clipboardRef = useRef(null);

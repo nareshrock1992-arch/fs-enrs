@@ -126,6 +126,8 @@ export default function IvrBuilder() {
             onDuplicateNode={graph.duplicateNode}
             onUndo={graph.undo}
             onRedo={graph.redo}
+            savedViewport={graph.viewport}
+            onViewportChange={graph.moveViewport}
           />
 
           {/* Zoom controls and stats are rendered by FlowCanvas */}

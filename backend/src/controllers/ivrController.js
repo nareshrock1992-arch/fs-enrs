@@ -182,9 +182,9 @@ export const updateFlow = asyncHandler(async (req, res) => {
   if (description !== undefined)  { params.push(description);                   sets.push(`description = $${params.length}`); }
   if (is_test_flow !== undefined) { params.push(is_test_flow);                  sets.push(`is_test_flow = $${params.length}`); }
   if (graph !== undefined) {
-    // Strip _layout (frontend position hints) — never stored in the graph column
-    const { _layout: _ignored, ...graphToStore } = graph;
-    params.push(JSON.stringify(graphToStore));
+    // Persist the graph as-is — _layout (node positions) and _viewport (pan/zoom)
+    // are canvas state needed to restore the designer view on re-open.
+    params.push(JSON.stringify(graph));
     sets.push(`graph = $${params.length}`);
   }
 
