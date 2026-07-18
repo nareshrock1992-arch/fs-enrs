@@ -19,8 +19,9 @@ import helmet          from 'helmet';
 import cookieParser    from 'cookie-parser';
 import rateLimit       from 'express-rate-limit';
 
+import bcrypt         from 'bcryptjs';
 import { config }      from './src/config/index.js';
-import { testConnection } from './src/db/pool.js';
+import { testConnection, query } from './src/db/pool.js';
 import { validateSchema }  from './src/db/validateSchema.js';
 import { connect as eslConnect, eslEvents, reconcileAllActiveIncidents, startBackgroundJobs } from './src/services/eslService.js';
 import { scanRecordingDirectory } from './src/controllers/recordingController.js';
@@ -84,27 +85,89 @@ app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.meth
 app.use(errorHandler);
 
 // ── Boot sequence ─────────────────────────────────────────────
-async function start() {
-  // Guard against weak default secrets in production
-  if (config.env === 'production') {
-    const WEAK = ['CHANGE_ME_access_secret_32plus', 'CHANGE_ME_refresh_secret_32plus'];
-    if (WEAK.includes(config.jwt.accessSecret) || WEAK.includes(config.jwt.refreshSecret)) {
-      console.error('[boot] FATAL: JWT secrets are set to insecure defaults. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in .env.');
-      process.exit(1);
+// ── Auto-seed admin user ──────────────────────────────────────────────────────
+// Creates the default admin user and supporting tenant/org/ESL row if they
+// do not already exist. Never mutates an existing user's password — only
+// inserts when the row is absent, so existing logins are never disrupted.
+async function ensureAdminUser() {
+  try {
+    const email    = process.env.SEED_ADMIN_EMAIL    || 'admin@enrs.local';
+    const password = process.env.SEED_ADMIN_PASSWORD || 'Admin@12345';
+
+    // Upsert tenant
+    const { rows: [tenant] } = await query(
+      `INSERT INTO tenants (name, code) VALUES ($1, $2)
+       ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+       RETURNING id`,
+      ['Default Tenant', 'DEFAULT']
+    );
+
+    // Insert admin user only when absent — never overwrite an existing hash
+    const { rows: [existing] } = await query(
+      `SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL`,
+      [email.toLowerCase()]
+    );
+
+    if (!existing) {
+      const hash = await bcrypt.hash(password, 12);
+      await query(
+        `INSERT INTO users (tenant_id, email, password_hash, full_name, role)
+         VALUES ($1, $2, $3, 'System Administrator', 'ADMIN')
+         ON CONFLICT (email) DO NOTHING`,
+        [tenant.id, email.toLowerCase(), hash]
+      );
+      console.log(`[boot] Admin user created: ${email} (change password after first login)`);
     }
-    if (!process.env.INTERNAL_API_KEY || process.env.INTERNAL_API_KEY.length < 32) {
-      console.error('[boot] FATAL: INTERNAL_API_KEY must be at least 32 characters in production.');
-      process.exit(1);
-    }
-    if (process.env.DB_PASSWORD === 'changeme' || !process.env.DB_PASSWORD) {
-      console.error('[boot] FATAL: DB_PASSWORD is set to an insecure default. Set DB_PASSWORD in .env.');
-      process.exit(1);
-    }
-    if (process.env.ESL_PASSWORD === 'ClueCon' || !process.env.ESL_PASSWORD) {
-      console.error('[boot] FATAL: ESL_PASSWORD is the publicly-known FreeSWITCH default. Set ESL_PASSWORD in .env.');
-      process.exit(1);
-    }
+
+    // Default organization
+    await query(
+      `INSERT INTO organizations (tenant_id, name, code, description)
+       VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically')
+       ON CONFLICT DO NOTHING`,
+      [tenant.id]
+    );
+
+    // ESL connection record
+    await query(
+      `INSERT INTO esl_connections (name, host, port, password)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING`,
+      ['Primary FreeSWITCH',
+       process.env.ESL_HOST || '127.0.0.1',
+       Number(process.env.ESL_PORT || 8021),
+       process.env.ESL_PASSWORD || 'ClueCon']
+    ).catch(() => {}); // esl_connections may not exist on all deployments
+  } catch (err) {
+    console.warn('[boot] ensureAdminUser failed (non-fatal):', err.message);
   }
+}
+
+// ── Credential security checks ────────────────────────────────────────────────
+// Production: fatal exit on insecure defaults.
+// Development: warn and continue so devs can work with default credentials.
+function checkCredentials() {
+  const isProduction = config.env === 'production';
+  const warn  = (msg) => console.warn(`[boot] SECURITY WARNING: ${msg}`);
+  const fatal = (msg) => { console.error(`[boot] FATAL: ${msg}`); process.exit(1); };
+  const flag  = isProduction ? fatal : warn;
+
+  const WEAK_JWT = ['CHANGE_ME_access_secret_32plus', 'CHANGE_ME_refresh_secret_32plus'];
+  if (WEAK_JWT.includes(config.jwt.accessSecret) || WEAK_JWT.includes(config.jwt.refreshSecret)) {
+    flag('JWT secrets are set to insecure defaults. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in .env.');
+  }
+  if (!process.env.INTERNAL_API_KEY || process.env.INTERNAL_API_KEY.length < 32) {
+    flag('INTERNAL_API_KEY must be at least 32 characters. Set INTERNAL_API_KEY in .env.');
+  }
+  if (process.env.DB_PASSWORD === 'changeme' || !process.env.DB_PASSWORD) {
+    flag('DB_PASSWORD is set to an insecure default. Set DB_PASSWORD in .env.');
+  }
+  if (process.env.ESL_PASSWORD === 'ClueCon' || !process.env.ESL_PASSWORD) {
+    flag('ESL_PASSWORD is the publicly-known FreeSWITCH default. Set ESL_PASSWORD in .env.');
+  }
+}
+
+async function start() {
+  checkCredentials();
 
   // Verify DB before starting
   const dbOk = await testConnection();
@@ -116,6 +179,11 @@ async function start() {
   // Verify that all required columns exist — exits with a clear message if
   // migrations haven't been run yet (catches controller/schema drift at boot)
   await validateSchema();
+
+  // Auto-seed admin user if it does not exist yet.
+  // This ensures login always works on first boot without requiring a manual
+  // `npm run seed` step. Never overwrites an existing user's password.
+  await ensureAdminUser();
 
   // Start listening
   server.listen(config.port, () => {

@@ -23,16 +23,19 @@ const CHART_INTERVAL_MS = 10_000;
 const MAX_CHART_POINTS  = 60;
 
 const EV = {
-  'conference.created':        { label: 'Conference Created',  color: 'text-emerald-500', Icon: PhoneCall     },
-  'conference.ended':          { label: 'Conference Ended',    color: 'text-slate-400',   Icon: PhoneOff      },
-  'conference.member.joined':  { label: 'Member Joined',       color: 'text-blue-500',    Icon: PhoneIncoming },
-  'conference.member.left':    { label: 'Member Left',         color: 'text-orange-400',  Icon: PhoneOff      },
-  'conference.member.muted':   { label: 'Mute Changed',        color: 'text-yellow-500',  Icon: MicOff        },
-  'conference.member.deaf':    { label: 'Deaf Changed',        color: 'text-orange-500',  Icon: EarOff        },
-  'conference.member.talking': { label: 'Speaking',            color: 'text-green-400',   Icon: Mic           },
-  'conference.floor.changed':  { label: 'Floor Changed',       color: 'text-purple-400',  Icon: Shield        },
-  'conference.locked':         { label: 'Lock Changed',        color: 'text-amber-500',   Icon: Lock          },
-  'conference.recording':      { label: 'Recording',           color: 'text-red-400',     Icon: Radio         },
+  'conference.created':           { label: 'Conference Created',   color: 'text-emerald-500', Icon: PhoneCall     },
+  'conference.ended':             { label: 'Conference Ended',     color: 'text-slate-400',   Icon: PhoneOff      },
+  'conference.member.joined':     { label: 'Member Joined',        color: 'text-blue-500',    Icon: PhoneIncoming },
+  'conference.member.left':       { label: 'Member Left',          color: 'text-orange-400',  Icon: PhoneOff      },
+  'conference.member.muted':      { label: 'Mute Changed',         color: 'text-yellow-500',  Icon: MicOff        },
+  'conference.member.deaf':       { label: 'Deaf Changed',         color: 'text-orange-500',  Icon: EarOff        },
+  'conference.member.talking':    { label: 'Speaking',             color: 'text-green-400',   Icon: Mic           },
+  'conference.member.moderator':  { label: 'Moderator Changed',    color: 'text-amber-400',   Icon: Shield        },
+  'conference.floor.granted':     { label: 'Floor Granted',        color: 'text-purple-400',  Icon: Shield        },
+  'conference.floor.released':    { label: 'Floor Released',       color: 'text-purple-300',  Icon: Shield        },
+  'conference.locked':            { label: 'Conference Locked',    color: 'text-amber-500',   Icon: Lock          },
+  'conference.unlocked':          { label: 'Conference Unlocked',  color: 'text-emerald-400', Icon: Unlock        },
+  'conference.recording':         { label: 'Recording',            color: 'text-red-400',     Icon: Radio         },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -339,10 +342,20 @@ function MemberAvatar({ id, name, talking }) {
   );
 }
 
-function ParticipantRow({ m, room, now }) {
+function ParticipantRow({ m, room, now, talkTracker }) {
   const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
   const ext      = m.extension   || m.callerNum  || '';
   const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
+
+  // Accumulated talk time: stored ms + live ongoing duration if currently talking
+  const totalTalkMs = (() => {
+    const key   = `${room}:${m.id}`;
+    const entry = talkTracker?.current?.get(key);
+    if (!entry) return 0;
+    const live = (m.talking && entry.startMs) ? (Date.now() - entry.startMs) : 0;
+    return entry.totalMs + live;
+  })();
+  const talkSecs = Math.floor(totalTalkMs / 1000);
 
   async function act(fn, ...args) {
     try { await fn(room, ...args); }
@@ -413,14 +426,25 @@ function ParticipantRow({ m, room, now }) {
         </div>
       </td>
 
-      {/* Joined — duration since join */}
+      {/* Joined / Talk duration + energy meter */}
       <td className="px-2 py-2 hidden lg:table-cell">
         <div className="text-[9px] font-mono text-text-muted tabular-nums">
           {joinSecs != null ? fmtDur(joinSecs) : '—'}
         </div>
-        <div className="text-[8px] text-text-muted/50 tabular-nums">
-          {m.energy ? `⚡${m.energy}` : ''}
-        </div>
+        {talkSecs > 0 && (
+          <div className="text-[8px] font-mono text-green-500/70 tabular-nums flex items-center gap-0.5">
+            <Mic size={7} /> {fmtDur(talkSecs)} talk
+          </div>
+        )}
+        {m.energy > 0 && (
+          <div className="flex items-center gap-0.5 mt-0.5" title={`Energy: ${m.energy}`}>
+            {[1,2,3,4,5].map(bar => (
+              <div key={bar}
+                   className={`rounded-sm ${m.energy >= bar * 20 ? 'bg-emerald-500' : 'bg-surface-border'}`}
+                   style={{ width: 3, height: bar * 2 + 2 }} />
+            ))}
+          </div>
+        )}
       </td>
 
       {/* Actions */}
@@ -452,12 +476,30 @@ function ParticipantRow({ m, room, now }) {
             <EarOff size={11} />
           </button>
 
+          {/* Promote/demote moderator */}
+          <button
+            title={m.moderator ? 'Remove moderator' : 'Promote to moderator'}
+            onClick={() => act(api.monitoring.promote, m.id)}
+            className={[
+              'p-1.5 rounded-lg transition-colors',
+              m.moderator
+                ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                : 'text-text-muted hover:bg-amber-500/10 hover:text-amber-400',
+            ].join(' ')}>
+            <Shield size={11} />
+          </button>
+
           {/* Give floor */}
           <button
-            title="Give floor"
+            title={m.floor ? 'Release floor' : 'Give floor'}
             onClick={() => act(api.monitoring.floor, m.id)}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-purple-500/10 hover:text-purple-400 transition-colors">
-            <Shield size={11} />
+            className={[
+              'p-1.5 rounded-lg transition-colors',
+              m.floor
+                ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20'
+                : 'text-text-muted hover:bg-purple-500/10 hover:text-purple-400',
+            ].join(' ')}>
+            <Signal size={11} />
           </button>
 
           {/* Transfer */}
@@ -466,6 +508,14 @@ function ParticipantRow({ m, room, now }) {
             onClick={transfer}
             className="p-1.5 rounded-lg text-text-muted hover:bg-blue-500/10 hover:text-blue-400 transition-colors">
             <PhoneForwarded size={11} />
+          </button>
+
+          {/* Copy caller number */}
+          <button
+            title={`Copy caller: ${ext || m.id}`}
+            onClick={() => navigator.clipboard?.writeText(ext || String(m.id))}
+            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[8px] font-bold leading-none">
+            #
           </button>
 
           {/* Volume */}
@@ -499,7 +549,7 @@ function ParticipantRow({ m, room, now }) {
   );
 }
 
-function ParticipantTable({ members, room, now }) {
+function ParticipantTable({ members, room, now, talkTracker }) {
   const sorted = useMemo(() => [...members].sort((a, b) => {
     if (a.moderator !== b.moderator) return a.moderator ? -1 : 1;
     if (a.talking   !== b.talking)   return a.talking   ? -1 : 1;
@@ -517,10 +567,10 @@ function ParticipantTable({ members, room, now }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left border-collapse" style={{ minWidth: '640px' }}>
+      <table className="w-full text-left border-collapse" style={{ minWidth: '680px' }}>
         <thead>
           <tr>
-            {['Participant', 'Role', 'Audio', 'Joined', 'Actions'].map(h => (
+            {['Participant', 'Role', 'Audio', 'Joined / Talk', 'Actions'].map(h => (
               <th key={h}
                   className="px-2 py-2 text-[9px] font-bold uppercase tracking-wider
                              text-text-muted bg-surface-hover/40 whitespace-nowrap
@@ -532,7 +582,7 @@ function ParticipantTable({ members, room, now }) {
         </thead>
         <tbody>
           {sorted.map(m => (
-            <ParticipantRow key={m.id} m={m} room={room} now={now} />
+            <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} />
           ))}
         </tbody>
       </table>
@@ -540,7 +590,7 @@ function ParticipantTable({ members, room, now }) {
   );
 }
 
-function CenterPanel({ conf, now }) {
+function CenterPanel({ conf, now, talkTracker }) {
   if (!conf) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-4 text-center px-6">
@@ -695,7 +745,7 @@ function CenterPanel({ conf, now }) {
           )}
         </div>
         <div className="card !p-0 overflow-hidden">
-          <ParticipantTable members={conf.members || []} room={conf.name} now={now} />
+          <ParticipantTable members={conf.members || []} room={conf.name} now={now} talkTracker={talkTracker} />
         </div>
       </div>
     </div>
@@ -766,27 +816,26 @@ function RightPanel({ conf }) {
               onChange={() => act('lock', conf?.locked ? api.monitoring.unlock : api.monitoring.lock)}
             />
 
-            {/* Mute All / Unmute All — two small buttons */}
-            <div className="flex gap-1.5">
-              <button
-                disabled={disabled}
-                onClick={() => conf?.members?.forEach(m => api.monitoring.mute(name, m.id))}
-                className="flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-lg
-                           border border-surface-border text-text-secondary
-                           hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20
-                           disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
-                <MicOff size={11} /> Mute All
-              </button>
-              <button
-                disabled={disabled}
-                onClick={() => conf?.members?.forEach(m => api.monitoring.unmute(name, m.id))}
-                className="flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-lg
-                           border border-surface-border text-text-secondary
-                           hover:bg-emerald-500/10 hover:text-emerald-500 hover:border-emerald-500/20
-                           disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
-                <Mic size={11} /> Unmute All
-              </button>
-            </div>
+            {/* Mute All — toggle: checked = all members muted */}
+            {(() => {
+              const members = conf?.members || [];
+              const allMuted = members.length > 0 && members.every(m => m.muted);
+              return (
+                <ToggleSwitch
+                  checked={allMuted}
+                  disabled={disabled || members.length === 0}
+                  labelOn="All Muted — Click to Unmute All"
+                  labelOff="Mute All Participants"
+                  Icon={allMuted ? MicOff : Mic}
+                  colorOn="bg-red-500"
+                  onChange={() => {
+                    if (!name) return;
+                    if (allMuted) members.forEach(m => api.monitoring.unmute(name, m.id));
+                    else          members.forEach(m => api.monitoring.mute(name, m.id));
+                  }}
+                />
+              );
+            })()}
           </div>
         </div>
 
@@ -1009,6 +1058,8 @@ export default function Monitoring() {
   const confsRef      = useRef([]);
   const eventCountRef = useRef(0);
   const eventIdRef    = useRef(0);
+  // talkTracker: Map<memberId, { startMs: number|null, totalMs: number }>
+  const talkTracker   = useRef(new Map());
   const [partHist,  setPartHist]  = useState([0]);
   const [confHist,  setConfHist]  = useState([0]);
   const [evHist,    setEvHist]    = useState([0]);
@@ -1110,6 +1161,10 @@ export default function Monitoring() {
         pushEvent('conference.created', `Conference ${confName} created`);
       },
       'conference.ended': ({ confName }) => {
+        // Clean up talk tracker entries for this conference
+        for (const key of talkTracker.current.keys()) {
+          if (key.startsWith(`${confName}:`)) talkTracker.current.delete(key);
+        }
         setConferences(prev => prev.filter(c => c.name !== confName));
         setSelectedConf(s => s === confName ? null : s);
         pushEvent('conference.ended', `Conference ${confName} ended`);
@@ -1138,6 +1193,7 @@ export default function Monitoring() {
         pushEvent('conference.member.joined', `${display} joined ${confName}`);
       },
       'conference.member.left': ({ confName, member: id, callerNum }) => {
+        talkTracker.current.delete(`${confName}:${id}`);
         upConf(confName, c => ({ ...c, members: c.members.filter(m => m.id !== id) }));
         pushEvent('conference.member.left', `${callerNum || id} left ${confName}`);
       },
@@ -1150,20 +1206,42 @@ export default function Monitoring() {
         pushEvent('conference.member.deaf', `Deaf state changed in ${confName}`);
       },
       'conference.member.talking': ({ confName, member: id, talking, callerNum }) => {
+        const key = `${confName}:${id}`;
+        const tracker = talkTracker.current;
+        if (talking) {
+          if (!tracker.has(key)) tracker.set(key, { startMs: Date.now(), totalMs: 0 });
+          else tracker.get(key).startMs = Date.now();
+        } else {
+          const entry = tracker.get(key);
+          if (entry?.startMs) {
+            entry.totalMs += Date.now() - entry.startMs;
+            entry.startMs = null;
+          }
+        }
         upMember(confName, id, m => ({ ...m, talking }));
         if (talking) pushEvent('conference.member.talking', `${callerNum || id} speaking in ${confName}`);
       },
+      'conference.member.moderator': ({ confName, member: id, callerNum, moderator }) => {
+        upMember(confName, id, m => ({ ...m, moderator }));
+        pushEvent('conference.member.moderator',
+          `${callerNum || id} ${moderator ? 'promoted to moderator' : 'removed from moderator'} in ${confName}`);
+      },
       'conference.floor.changed': ({ confName, member: id }) => {
+        const prevHolder = confsRef.current.find(c => c.name === confName)?.floorHolder;
         upConf(confName, c => ({
           ...c,
           floorHolder: id,
           members: c.members.map(m => ({ ...m, floor: m.id === id })),
         }));
-        pushEvent('conference.floor.changed', `Floor → member ${id} in ${confName}`);
+        if (prevHolder && prevHolder !== id) {
+          pushEvent('conference.floor.released', `Floor released by member ${prevHolder} in ${confName}`);
+        }
+        if (id) pushEvent('conference.floor.granted', `Floor granted to member ${id} in ${confName}`);
       },
       'conference.locked': ({ confName, locked }) => {
         upConf(confName, c => ({ ...c, locked }));
-        pushEvent('conference.locked', `${confName} ${locked ? 'locked' : 'unlocked'}`);
+        pushEvent(locked ? 'conference.locked' : 'conference.unlocked',
+          `${confName} ${locked ? 'locked' : 'unlocked'}`);
       },
       'conference.recording': ({ confName, recording, recordingState, recordingPath, recordingError }) => {
         upConf(confName, c => ({
@@ -1275,7 +1353,7 @@ export default function Monitoring() {
           />
         </div>
         <div className="col-span-6 card !p-4 overflow-hidden">
-          <CenterPanel conf={selectedConference} now={now} />
+          <CenterPanel conf={selectedConference} now={now} talkTracker={talkTracker} />
         </div>
         <div className="col-span-3 card !p-4 overflow-hidden">
           <RightPanel conf={selectedConference} />

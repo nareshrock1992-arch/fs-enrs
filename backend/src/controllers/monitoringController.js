@@ -15,7 +15,7 @@ import {
   getConferenceSnapshot, seedConferenceRegistry,
   confKick, confMute, confUnmute, confDeaf, confUndeaf,
   confVolumeIn, confVolumeOut, confEnergy, confFloor,
-  confTransfer, confLock, confUnlock,
+  confTransfer, confLock, confUnlock, confModerator,
   confRecord, confRecordStop, confRecordStopAll,
   confPlay, confSay, confInvite, confTerminate,
   setConferenceRecordingStarting, setConferenceRecordingActive,
@@ -388,6 +388,12 @@ export const transferMember = asyncHandler(async (req, res) => {
   if (!extension) return res.status(400).json({ error: 'extension required' });
   await confTransfer(req.params.room, req.params.memberId, extension, dialplan, context);
   res.json({ ok: true });
+});
+
+export const promoteMember = asyncHandler(async (req, res) => {
+  await confModerator(req.params.room, req.params.memberId);
+  res.json({ ok: true });
+  scheduleSync(req.params.room);
 });
 
 // ── GET /monitoring/debug/conf-sync ──────────────────────────────────────────

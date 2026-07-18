@@ -21,6 +21,7 @@ import {
   setEnergy,
   setFloor,
   transferMember,
+  promoteMember,
   debugConfSync,
 } from '../../controllers/monitoringController.js';
 
@@ -53,5 +54,6 @@ router.post('/conferences/:room/members/:memberId/volume', adminOrSuper, setVolu
 router.post('/conferences/:room/members/:memberId/energy', adminOrSuper, setEnergy);
 router.post('/conferences/:room/members/:memberId/floor', adminOrSuper, setFloor);
 router.post('/conferences/:room/members/:memberId/transfer', adminOrSuper, transferMember);
+router.post('/conferences/:room/members/:memberId/moderator', adminOrSuper, promoteMember);
 
 export default router;

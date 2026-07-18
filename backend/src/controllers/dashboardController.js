@@ -1,6 +1,6 @@
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { eslStatus, getConferenceSnapshot } from '../services/eslService.js';
+import { eslStatus, getConferenceSnapshot, seedConferenceRegistry } from '../services/eslService.js';
 
 // GET /api/v1/dashboard/metrics
 export const getMetrics = asyncHandler(async (req, res) => {
@@ -42,9 +42,16 @@ export const getMetrics = asyncHandler(async (req, res) => {
        WHERE i.deleted_at IS NULL AND i.started_at >= CURRENT_DATE AND ec.tenant_id = $1`,
       [tid]
     ),
-    // Active conferences: use the live ESL registry (real-time) rather than
-    // DB incident count, which can lag after a backend restart or ESL outage.
-    Promise.resolve({ rows: [{ n: getConferenceSnapshot().length }] }),
+    // Active conferences: live ESL registry. Seed from FreeSWITCH when the
+    // registry is empty (catches first page-load after backend restart).
+    (async () => {
+      let snap = getConferenceSnapshot();
+      if (snap.length === 0) {
+        try { await seedConferenceRegistry(); } catch {}
+        snap = getConferenceSnapshot();
+      }
+      return { rows: [{ n: snap.length }] };
+    })(),
     // ers_queues has no tenant_id — scope via ers_configurations join
     query(
       `SELECT COUNT(q.id)::INT AS n
@@ -72,6 +79,13 @@ export const getMetrics = asyncHandler(async (req, res) => {
 // GET /api/v1/dashboard/active  — real-time: active conferences and queued calls
 export const getActive = asyncHandler(async (req, res) => {
   const tid = req.user.tenantId;
+
+  // Seed conference registry if empty so dashboard shows live conferences
+  // even when monitoring page hasn't been opened yet.
+  if (getConferenceSnapshot().length === 0) {
+    try { await seedConferenceRegistry(); } catch {}
+  }
+
   const { rows: incidents } = await query(
     `SELECT
        i.id, i.incident_uuid, i.conference_room, i.caller_number,
@@ -106,11 +120,35 @@ export const getActive = asyncHandler(async (req, res) => {
     (responderMap[r.ers_incident_id] ??= []).push(r);
   }
 
-  const conferences = incidents.map(i => ({
+  // Start with DB-backed ERS incidents (have rich metadata)
+  const ersRooms = new Set(incidents.map(i => i.conference_room));
+  const ersConferences = incidents.map(i => ({
     ...i,
     responders:    responderMap[i.id] || [],
     member_count:  (responderMap[i.id] || []).length,
   }));
+
+  // Append non-ERS conferences visible in the ESL registry (e.g. manually
+  // created conferences, monitoring rooms, or rooms created before the incident
+  // was persisted to the DB).
+  const registryConferences = getConferenceSnapshot()
+    .filter(c => !ersRooms.has(c.name))
+    .map(c => ({
+      id:              null,
+      incident_uuid:   null,
+      conference_room: c.name,
+      caller_number:   null,
+      group_type:      null,
+      started_at:      c.createdAt,
+      status:          'ACTIVE',
+      ers_name:        null,
+      duration_seconds: Math.floor((Date.now() - new Date(c.createdAt)) / 1000),
+      responders:      [],
+      member_count:    c.members ? c.members.length : 0,
+      source:          'esl_registry',
+    }));
+
+  const conferences = [...ersConferences, ...registryConferences];
 
   // ers_queues has no caller_number, queued_at, or tenant_id
   // caller_number comes from the linked incident; queued_at aliases created_at

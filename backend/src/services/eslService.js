@@ -803,6 +803,15 @@ async function handleEvent(evt) {
       if (conf?.members.has(memberId)) conf.members.get(memberId).energy = energyVal;
       // No socket event needed — energy is reflected in the next snapshot/joined event.
 
+    } else if (action === 'moderator') {
+      // FreeSWITCH toggles moderator flag when `conference <room> moderator <id>` is called.
+      const conf = conferenceRegistry.get(confName);
+      if (conf?.members.has(memberId)) {
+        const m = conf.members.get(memberId);
+        m.moderator = !m.moderator;
+        emit('conference.member.moderator', { confName, member: memberId, callerNum, moderator: m.moderator });
+      }
+
     } else if (action === 'stop-recording') {
       const conf    = conferenceRegistry.get(confName);
       const recPath = evt.getHeader('Path') || evt.getHeader('Recording-File') || evt.getHeader('Recording-Path') || conf?.recordingPath || null;
@@ -852,6 +861,36 @@ async function handleEvent(evt) {
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
     emit('channel.answer', { uuid, callerNum });
     eslEvents.emit('CHANNEL_ANSWER', { uuid, callerNum });
+    return;
+  }
+
+  // Channel create — new call leg established
+  if (name === 'CHANNEL_CREATE') {
+    const uuid      = evt.getHeader('Unique-ID');
+    const callerNum = evt.getHeader('Caller-Caller-ID-Number');
+    const destNum   = evt.getHeader('Caller-Destination-Number');
+    emit('channel.create', { uuid, callerNum, destNum });
+    eslEvents.emit('CHANNEL_CREATE', { uuid, callerNum, destNum });
+    return;
+  }
+
+  // Channel bridge — two legs connected
+  if (name === 'CHANNEL_BRIDGE') {
+    const uuid       = evt.getHeader('Unique-ID');
+    const bridgeUuid = evt.getHeader('Bridge-B-Unique-ID');
+    const callerNum  = evt.getHeader('Caller-Caller-ID-Number');
+    emit('channel.bridge', { uuid, bridgeUuid, callerNum });
+    eslEvents.emit('CHANNEL_BRIDGE', { uuid, bridgeUuid, callerNum });
+    return;
+  }
+
+  // DTMF digit pressed during a call
+  if (name === 'DTMF') {
+    const uuid   = evt.getHeader('Unique-ID');
+    const digit  = evt.getHeader('DTMF-Digit');
+    const dur    = evt.getHeader('DTMF-Duration');
+    emit('channel.dtmf', { uuid, digit, duration: dur });
+    eslEvents.emit('DTMF', { uuid, digit, duration: dur });
     return;
   }
 
@@ -995,11 +1034,16 @@ export function connect() {
       reconnectCount = 0;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
 
-      // Subscribe to events we care about
+      // Subscribe to events we care about.
+      // DTMF: digit events for PIN / IVR navigation
+      // CHANNEL_CREATE / CHANNEL_BRIDGE: call lifecycle for monitoring
       conn.subscribe([
         'CUSTOM conference::maintenance',
         'CHANNEL_HANGUP',
         'CHANNEL_ANSWER',
+        'CHANNEL_CREATE',
+        'CHANNEL_BRIDGE',
+        'DTMF',
       ]);
 
       conn.on('esl::event', handleEvent);
@@ -1235,6 +1279,10 @@ export async function confSay(confName, text) {
 // ─── Invite a number into the conference ────────────────────
 export async function confInvite(confName, dialString) {
   return eslCommand(`conference ${confName} bgdial ${dialString}`);
+}
+
+export async function confModerator(confName, memberId) {
+  return eslCommand(`conference ${confName} moderator ${memberId}`);
 }
 
 // ─── List all members in a conference ───────────────────────

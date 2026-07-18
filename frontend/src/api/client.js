@@ -312,5 +312,6 @@ export const api = {
     energy:   (room, id, level) => request('POST', `/monitoring/conferences/${room}/members/${id}/energy`, { level }),
     floor:    (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/floor`),
     transfer: (room, id, extension) => request('POST', `/monitoring/conferences/${room}/members/${id}/transfer`, { extension }),
+    promote:  (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/moderator`),
   },
 };
