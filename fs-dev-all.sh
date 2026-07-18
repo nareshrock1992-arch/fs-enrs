@@ -153,7 +153,7 @@ start_enrs() {
   echo "[5/5] Starting frontend (Vite)..."
   cd "$FS_ENRS/frontend" && npm run dev -- --host 0.0.0.0 --port 8100 &
 
-  if wait_port_listening 8100 "Frontend (Vite)"; then
+  if wait_http_ready "http://localhost:8100/" "Frontend (Vite)"; then
     echo ""
     echo "  ✓ Frontend Ready"
   else

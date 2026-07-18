@@ -24,6 +24,7 @@
  *     Fix the file and re-run — already-applied migrations are skipped.
  */
 
+import '../../load-env.js';
 import { readFileSync, readdirSync } from 'fs';
 import { join, dirname }             from 'path';
 import { fileURLToPath }             from 'url';

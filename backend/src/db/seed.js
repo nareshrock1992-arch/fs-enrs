@@ -1,5 +1,6 @@
 // Run: node src/db/seed.js
 // Creates a default admin user and a sample tenant/organization.
+import '../../load-env.js';
 import bcrypt from 'bcryptjs';
 import { pool, testConnection, query } from './pool.js';
 

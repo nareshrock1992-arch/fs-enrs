@@ -31,6 +31,7 @@ import Recordings          from './pages/recordings/Recordings.jsx';
 import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
 import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
 import CampaignDashboard   from './pages/ens/CampaignDashboard.jsx';
+import ErrorBoundary        from './components/ui/ErrorBoundary.jsx';
 
 function RequireAuth({ children }) {
   const token = useAuthStore(s => s.token);
@@ -54,6 +55,7 @@ export default function App() {
   }, [theme]);
 
   return (
+    <ErrorBoundary>
     <Routes>
       <Route path="/login" element={<Login />} />
 
@@ -104,5 +106,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
+    </ErrorBoundary>
   );
 }

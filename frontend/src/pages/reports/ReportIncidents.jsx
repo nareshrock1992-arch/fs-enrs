@@ -68,7 +68,7 @@ export default function ReportIncidents() {
           <tbody>
             {rows.length === 0 ? <EmptyRow cols={4} /> : rows.map(r => (
               <Tr key={r.id}>
-                <Td className="font-mono text-xs">{r.id?.slice(0,8)}…</Td>
+                <Td className="font-mono text-xs">{r.id}</Td>
                 <Td><StatusBadge status={r.status} /></Td>
                 <Td className="text-text-muted text-xs">{fmt(r.started_at)}</Td>
                 <Td className="text-text-muted">{dur(r.started_at, r.ended_at)}</Td>

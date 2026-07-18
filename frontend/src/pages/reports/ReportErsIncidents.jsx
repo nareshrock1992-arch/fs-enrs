@@ -84,9 +84,9 @@ export default function ReportErsIncidents() {
 
                 <div>
                   <p className="text-[10px] font-medium text-text-muted uppercase tracking-wide mb-1.5">
-                    Participants ({inc.participants.length})
+                    Participants ({(inc.participants || []).length})
                   </p>
-                  {inc.participants.length === 0
+                  {(inc.participants || []).length === 0
                     ? <p className="text-[11px] text-text-muted">No participant events recorded.</p>
                     : (
                       <table className="w-full text-[11px]">
@@ -99,7 +99,7 @@ export default function ReportErsIncidents() {
                           <th className="py-1 font-medium">Rejoined</th>
                         </tr></thead>
                         <tbody>
-                          {inc.participants.map((p, i) => (
+                          {(inc.participants || []).map((p, i) => (
                             <tr key={i} className="border-t border-surface-border/50">
                               <td className="py-1.5 pr-3 text-text-primary">{p.name}</td>
                               <td className="py-1.5 pr-3 font-mono text-text-muted">{p.number}</td>

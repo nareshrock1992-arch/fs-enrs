@@ -82,9 +82,9 @@ export default function ReportEnsBroadcasts() {
             {expanded[b.id] && (
               <div className="px-4 pb-4 border-t border-surface-border pt-3">
                 <p className="text-[10px] font-medium text-text-muted uppercase tracking-wide mb-1.5">
-                  Deliveries ({b.deliveries.length})
+                  Deliveries ({(b.deliveries || []).length})
                 </p>
-                {b.deliveries.length === 0
+                {(b.deliveries || []).length === 0
                   ? <p className="text-[11px] text-text-muted">No delivery rows.</p>
                   : (
                     <table className="w-full text-[11px]">
@@ -96,7 +96,7 @@ export default function ReportEnsBroadcasts() {
                         <th className="py-1 font-medium">Hangup Cause</th>
                       </tr></thead>
                       <tbody>
-                        {b.deliveries.map((d, i) => (
+                        {(b.deliveries || []).map((d, i) => (
                           <tr key={i} className="border-t border-surface-border/50">
                             <td className="py-1.5 pr-3 font-mono text-text-primary">{d.contact_number}</td>
                             <td className="py-1.5 pr-3"><Badge variant={deliveryVariant(d.delivery_status)}>{d.delivery_status}</Badge></td>
@@ -131,7 +131,8 @@ export default function ReportEnsBroadcasts() {
               </tr></thead>
               <tbody>
                 {playbackLog.map((entry, i) => {
-                  const d = typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details;
+                  let d = entry.details;
+                  if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
                   return (
                     <tr key={i} className="border-t border-surface-border/50">
                       <td className="py-1.5 pr-3 text-text-muted">{fmt(entry.created_at)}</td>
