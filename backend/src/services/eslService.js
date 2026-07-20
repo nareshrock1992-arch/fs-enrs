@@ -615,9 +615,13 @@ async function handleEvent(evt) {
     const action     = evt.getHeader('Action');
     const confName   = evt.getHeader('Conference-Name');
     const memberId   = evt.getHeader('Member-ID');
-    const callerNum  = evt.getHeader('Caller-Caller-ID-Number') || '';
-    const callerName = evt.getHeader('Caller-Caller-ID-Name')   || '';
-    const channelUuid = evt.getHeader('Caller-Unique-ID')       || '';
+    const callerNum   = evt.getHeader('Caller-Caller-ID-Number')    || '';
+    const callerName  = evt.getHeader('Caller-Caller-ID-Name')     || '';
+    const channelUuid = evt.getHeader('Caller-Unique-ID')          || '';
+    // For ring-all originated legs, Caller-Caller-ID-Number = initiator's number
+    // (set by origination_caller_id_number so the responder's phone shows the right caller).
+    // The responder's actual extension is in Caller-Destination-Number.
+    const destNum     = evt.getHeader('Caller-Destination-Number') || '';
 
     if (action === 'conference-create') {
       registryGetOrCreate(confName);
@@ -690,7 +694,7 @@ async function handleEvent(evt) {
       }
       emit('conference.member.joined', { confName, member: memberId, callerNum, callerName, memberData: member });
       persistEvent('conference.member.joined', { confName, member: memberId, callerNum });
-      trackParticipant(confName, callerNum, 'join');
+      trackParticipant(confName, callerNum, destNum, 'join', memberId);
       // Schedule a quick xml_list 600ms after join to correct the initial muted/deaf
       // state, since parseMemberFlags inference can be wrong. The member is already
       // in the UI by then; syncConferenceFromXml emits a correction event if needed.
@@ -704,7 +708,7 @@ async function handleEvent(evt) {
       const conf = conferenceRegistry.get(confName);
       if (conf) conf.members.delete(memberId);
       emit('conference.member.left', { confName, member: memberId, callerNum });
-      trackParticipant(confName, callerNum, 'leave');
+      trackParticipant(confName, callerNum, destNum, 'leave', null);
 
     } else if (action === 'mute-member') {
       const conf = conferenceRegistry.get(confName);
@@ -983,8 +987,22 @@ async function reconcileOrphanedIncident(confName) {
 // add-member/del-member events so it's accurate regardless of WHICH path
 // put the leg in the room (ring-all originate, caller's own Lua bridge,
 // a rejoin redial).
-async function trackParticipant(confName, callerNum, event) {
-  if (!confName || !callerNum) return;
+// trackParticipant — called from add-member / del-member ESL events.
+//
+// WHY destNum-first resolution:
+//   For ring-all originated legs, FreeSWITCH sets Caller-Caller-ID-Number to the
+//   INITIATOR's number (via origination_caller_id_number, so the responder's phone
+//   shows the right caller). The responder's actual extension is in
+//   Caller-Destination-Number. If we only use callerNum we always find the initiator,
+//   see their pre-existing participant row, and silently skip the write — leaving
+//   ers_incident_participants with 1 row (initiator) and ers_incident_responders empty.
+//
+//   Fix: try destNum first. It correctly identifies the responder for originated legs.
+//   If destNum is empty or doesn't match a contact (e.g. the initiator's inbound join
+//   where destNum = the ERS number, which lives in emergency_numbers not emergency_contacts),
+//   fall back to callerNum (which IS the initiator's own number for inbound joins).
+async function trackParticipant(confName, callerNum, destNum, event, memberId) {
+  if (!confName || (!callerNum && !destNum)) return;
   try {
     const { rows: [incident] } = await query(
       `SELECT id FROM ers_incidents
@@ -992,82 +1010,123 @@ async function trackParticipant(confName, callerNum, event) {
        ORDER BY started_at DESC LIMIT 1`,
       [confName]
     );
-    if (!incident) return; // not an ERS room (e.g. an unrelated conference)
+    if (!incident) return; // not an ERS room
 
-    const last9 = String(callerNum).replace(/\D/g, '').slice(-9);
-    const { rows: [contact] } = await query(
-      `SELECT id FROM emergency_contacts
-       WHERE deleted_at IS NULL
-         AND (extension_number = $1
-              OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
-       LIMIT 1`,
-      [callerNum, last9]
-    );
+    // Phase 1: try to resolve the contact from Caller-Destination-Number (responder's extension).
+    let contact     = null;
+    let trackingNum = callerNum; // default: use presented CallerID
+
+    if (destNum) {
+      const lastD9 = String(destNum).replace(/\D/g, '').slice(-9);
+      const { rows: [destContact] } = await query(
+        `SELECT id, first_name, last_name FROM emergency_contacts
+         WHERE deleted_at IS NULL
+           AND (extension_number = $1
+                OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
+         LIMIT 1`,
+        [destNum, lastD9]
+      );
+      if (destContact) {
+        contact     = destContact;
+        trackingNum = destNum;
+
+        // Fix the in-memory conference registry so the monitoring page shows the
+        // responder's actual name instead of "Outbound Call" / the initiator's CallerID.
+        if (memberId && event === 'join') {
+          const conf = conferenceRegistry.get(confName);
+          if (conf?.members.has(memberId)) {
+            const m = conf.members.get(memberId);
+            const resolvedName = `${destContact.first_name || ''} ${destContact.last_name || ''}`.trim() || destNum;
+            m.callerNum   = destNum;
+            m.callerName  = resolvedName;
+            m.displayName = resolvedName;
+            m.extension   = destNum;
+          }
+        }
+      }
+    }
+
+    // Phase 2: if destNum didn't resolve a contact, try callerNum (initiator's inbound join).
+    if (!contact && callerNum) {
+      const last9 = String(callerNum).replace(/\D/g, '').slice(-9);
+      const { rows: [callerContact] } = await query(
+        `SELECT id, first_name, last_name FROM emergency_contacts
+         WHERE deleted_at IS NULL
+           AND (extension_number = $1
+                OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
+         LIMIT 1`,
+        [callerNum, last9]
+      );
+      if (callerContact) {
+        contact     = callerContact;
+        trackingNum = callerNum;
+      }
+    }
+
+    if (!trackingNum) return;
 
     if (event === 'join') {
       const { rows: [existing] } = await query(
         `SELECT id, left_at, role FROM ers_incident_participants
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3)
          ORDER BY joined_at DESC LIMIT 1`,
-        [incident.id, callerNum, contact?.id ?? null]
+        [incident.id, trackingNum, contact?.id ?? null]
       );
+
       if (existing && existing.left_at) {
-        // Same person coming back — a rejoin, not a new participant.
+        // Same person coming back — rejoin, not a new participant.
         await query(
           `UPDATE ers_incident_participants
            SET rejoined_at = now(), left_at = NULL WHERE id = $1`,
           [existing.id]
         );
-        // Update responder record on rejoin (not for the initiator)
         if (contact?.id && existing.role !== 'initiator') {
           await query(
             `UPDATE ers_incident_responders
              SET status = 'REJOINED', rejoin_count = rejoin_count + 1, join_time = now()
              WHERE ers_incident_id = $1 AND mobile_number = $2`,
-            [incident.id, callerNum]
+            [incident.id, trackingNum]
           ).catch(() => {});
         }
       } else if (!existing) {
         await query(
           `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
            VALUES ($1, $2, $3, 'responder', now())`,
-          [incident.id, contact?.id ?? null, callerNum]
+          [incident.id, contact?.id ?? null, trackingNum]
         );
-        // Also write to ers_incident_responders so the summary report shows responder counts.
-        // Only when the contact is known — emergency_contact_id is NOT NULL on that table.
         if (contact?.id) {
           await query(
             `INSERT INTO ers_incident_responders
                (ers_incident_id, emergency_contact_id, mobile_number, status, join_time)
              VALUES ($1, $2, $3, 'JOINED', now())
              ON CONFLICT (ers_incident_id, mobile_number) DO UPDATE SET
-               status        = CASE WHEN ers_incident_responders.status = 'INVITED'
-                                    THEN 'JOINED'
-                                    ELSE ers_incident_responders.status END,
-               join_time     = COALESCE(ers_incident_responders.join_time, now()),
+               status               = CASE WHEN ers_incident_responders.status = 'INVITED'
+                                           THEN 'JOINED'
+                                           ELSE ers_incident_responders.status END,
+               join_time            = COALESCE(ers_incident_responders.join_time, now()),
                emergency_contact_id = EXCLUDED.emergency_contact_id`,
-            [incident.id, contact.id, callerNum]
+            [incident.id, contact.id, trackingNum]
           ).catch(err => console.warn('[esl] trackParticipant: responder upsert failed:', err.message));
         }
       }
+      // else: existing with left_at=NULL — same person already counted, no action.
+
     } else if (event === 'leave') {
       await query(
         `UPDATE ers_incident_participants
          SET left_at = now()
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
-        [incident.id, callerNum, contact?.id ?? null]
+        [incident.id, trackingNum, contact?.id ?? null]
       );
-      // Mirror leave time into ers_incident_responders for lifecycle reporting
       await query(
         `UPDATE ers_incident_responders
          SET leave_time = now()
          WHERE ers_incident_id = $1 AND mobile_number = $2 AND leave_time IS NULL`,
-        [incident.id, callerNum]
+        [incident.id, trackingNum]
       ).catch(() => {});
     }
   } catch (err) {
-    // Table may not exist yet (migration 016 pending) — never let audit
-    // tracking break live call event handling.
+    // Never let audit tracking break live call event handling.
     console.error('[esl] trackParticipant failed:', err.message);
   }
 }
