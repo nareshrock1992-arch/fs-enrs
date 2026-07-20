@@ -45,8 +45,10 @@
   *::-webkit-scrollbar-track  { background: transparent; }
   *::-webkit-scrollbar-thumb  { background: rgb(var(--surface-border)); border-radius: 3px; }
 
+  /* Focus ring — written as plain CSS; ring-brand/50 cannot be used inside @apply */
   :focus-visible {
-    @apply outline-none ring-2 ring-brand/50 ring-offset-1 ring-offset-surface-bg;
+    outline: none;
+    box-shadow: 0 0 0 1px rgb(var(--surface-bg)), 0 0 0 3px rgb(var(--brand) / 0.5);
   }
 
   ::selection { background: rgb(37 99 235 / 0.2); }
@@ -61,14 +63,18 @@
     box-shadow: var(--shadow-card);
   }
   .card-hover {
-    @apply card transition-all duration-150
-           hover:border-brand/30 hover:shadow-md;
+    @apply card transition-all duration-150;
+  }
+  /* hover:border-brand/30 cannot be used inside @apply — plain CSS rule instead */
+  .card-hover:hover {
+    border-color: rgb(var(--brand) / 0.3);
+    @apply shadow-md;
   }
 
   /* ── Buttons ───────────────────────────────────────────────── */
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold
-           transition-all duration-150 focus-visible:ring-2 focus-visible:ring-brand/50
+           transition-all duration-150
            disabled:opacity-40 disabled:pointer-events-none select-none;
   }
   .btn-primary {
@@ -76,7 +82,11 @@
   }
   .btn-secondary {
     @apply btn bg-surface-raised text-text-secondary border border-surface-border
-           hover:bg-surface-hover hover:text-text-primary hover:border-brand/30 active:scale-[0.98];
+           hover:bg-surface-hover hover:text-text-primary active:scale-[0.98];
+  }
+  /* hover:border-brand/30 cannot be used inside @apply — plain CSS rule instead */
+  .btn-secondary:hover {
+    border-color: rgb(var(--brand) / 0.3);
   }
   .btn-danger {
     @apply btn bg-danger text-white hover:bg-red-700 active:scale-[0.98];
@@ -96,12 +106,23 @@
   .input {
     @apply w-full bg-surface-raised border border-surface-border rounded-lg px-3 py-2 text-sm
            text-text-primary placeholder-text-muted
-           focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20
+           focus:outline-none focus:border-brand focus:ring-2
            transition-colors duration-150;
+  }
+  /* focus:ring-brand/20 cannot be used inside @apply — set ring color via CSS variable */
+  .input:focus {
+    --tw-ring-color: rgb(var(--brand) / 0.2);
   }
   .input-sm { @apply input py-1.5 text-xs; }
   .label { @apply block text-xs font-semibold uppercase tracking-wider text-text-muted mb-1.5; }
-  .input-error { @apply border-danger focus:ring-danger/20; }
+  .input-error {
+    @apply border-danger;
+  }
+  /* focus:ring-danger/20 cannot be used inside @apply — plain CSS rule instead */
+  .input-error:focus {
+    border-color: rgb(var(--danger));
+    --tw-ring-color: rgb(var(--danger) / 0.2);
+  }
   .helper-text { @apply text-xs text-text-muted mt-1; }
   .error-text  { @apply text-xs text-danger mt-1; }
 
@@ -109,11 +130,32 @@
   .badge {
     @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold tracking-wide;
   }
-  .badge-green  { @apply badge bg-green-500/10  text-green-700  dark:text-green-400  border border-green-500/25; }
-  .badge-red    { @apply badge bg-red-500/10    text-red-700    dark:text-red-400    border border-red-500/25; }
-  .badge-amber  { @apply badge bg-amber-500/10  text-amber-700  dark:text-amber-400  border border-amber-500/25; }
-  .badge-blue   { @apply badge bg-blue-500/10   text-blue-700   dark:text-blue-400   border border-blue-500/25; }
-  .badge-purple { @apply badge bg-purple-500/10 text-purple-700 dark:text-purple-400 border border-purple-500/25; }
+  /* Badge bg + border use opacity modifiers — cannot be used inside @apply */
+  .badge-green {
+    @apply badge text-green-700 dark:text-green-400 border;
+    background-color: rgb(34 197 94 / 0.1);    /* green-500 @ 10% */
+    border-color:     rgb(34 197 94 / 0.25);   /* green-500 @ 25% */
+  }
+  .badge-red {
+    @apply badge text-red-700 dark:text-red-400 border;
+    background-color: rgb(239 68 68 / 0.1);    /* red-500 @ 10% */
+    border-color:     rgb(239 68 68 / 0.25);   /* red-500 @ 25% */
+  }
+  .badge-amber {
+    @apply badge text-amber-700 dark:text-amber-400 border;
+    background-color: rgb(245 158 11 / 0.1);   /* amber-500 @ 10% */
+    border-color:     rgb(245 158 11 / 0.25);  /* amber-500 @ 25% */
+  }
+  .badge-blue {
+    @apply badge text-blue-700 dark:text-blue-400 border;
+    background-color: rgb(59 130 246 / 0.1);   /* blue-500 @ 10% */
+    border-color:     rgb(59 130 246 / 0.25);  /* blue-500 @ 25% */
+  }
+  .badge-purple {
+    @apply badge text-purple-700 dark:text-purple-400 border;
+    background-color: rgb(168 85 247 / 0.1);   /* purple-500 @ 10% */
+    border-color:     rgb(168 85 247 / 0.25);  /* purple-500 @ 25% */
+  }
   .badge-gray   { @apply badge bg-surface-raised text-text-secondary border border-surface-border; }
 
   /* Priority pips */
@@ -130,9 +172,11 @@
            text-text-muted bg-surface-raised px-4 py-3 text-left whitespace-nowrap
            border-b border-surface-border;
   }
-  .table-row  {
-    @apply border-b border-surface-border/60 last:border-0
-           hover:bg-surface-hover transition-colors duration-100;
+  .table-row {
+    @apply last:border-0 hover:bg-surface-hover transition-colors duration-100;
+    /* border-surface-border/60 cannot be used inside @apply */
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(var(--surface-border) / 0.6);
   }
   .table-cell { @apply py-3 px-4 text-sm text-text-primary align-middle; }
   .table-cell-muted { @apply table-cell text-text-muted; }
@@ -145,8 +189,10 @@
            hover:bg-surface-raised hover:text-text-primary;
   }
   .sidebar-link.active {
-    @apply bg-brand/10 text-brand font-semibold;
-    box-shadow: inset 2px 0 0 rgb(37 99 235);
+    @apply text-brand font-semibold;
+    /* bg-brand/10 cannot be used inside @apply */
+    background-color: rgb(var(--brand) / 0.1);
+    box-shadow: inset 2px 0 0 rgb(var(--brand));
   }
 
   /* ── Stat cards ────────────────────────────────────────────── */
@@ -209,15 +255,34 @@
   .alert {
     @apply flex items-start gap-3 px-4 py-3 rounded-xl border text-sm;
   }
-  .alert-info    { @apply alert bg-blue-500/8  border-blue-500/25  text-blue-800  dark:text-blue-300; }
-  .alert-success { @apply alert bg-green-500/8 border-green-500/25 text-green-800 dark:text-green-300; }
-  .alert-warning { @apply alert bg-amber-500/8 border-amber-500/25 text-amber-800 dark:text-amber-300; }
-  .alert-danger  { @apply alert bg-red-500/8   border-red-500/25   text-red-800   dark:text-red-300; }
+  /* Alert bg + border use opacity modifiers — cannot be used inside @apply */
+  .alert-info {
+    @apply alert text-blue-800 dark:text-blue-300;
+    background-color: rgb(59 130 246 / 0.08);   /* blue-500 @ 8% */
+    border-color:     rgb(59 130 246 / 0.25);   /* blue-500 @ 25% */
+  }
+  .alert-success {
+    @apply alert text-green-800 dark:text-green-300;
+    background-color: rgb(34 197 94 / 0.08);    /* green-500 @ 8% */
+    border-color:     rgb(34 197 94 / 0.25);    /* green-500 @ 25% */
+  }
+  .alert-warning {
+    @apply alert text-amber-800 dark:text-amber-300;
+    background-color: rgb(245 158 11 / 0.08);   /* amber-500 @ 8% */
+    border-color:     rgb(245 158 11 / 0.25);   /* amber-500 @ 25% */
+  }
+  .alert-danger {
+    @apply alert text-red-800 dark:text-red-300;
+    background-color: rgb(239 68 68 / 0.08);    /* red-500 @ 8% */
+    border-color:     rgb(239 68 68 / 0.25);    /* red-500 @ 25% */
+  }
 
   /* ── Detail row ────────────────────────────────────────────── */
   .detail-row {
-    @apply flex items-start gap-1 text-xs py-1.5
-           border-b border-surface-border/50 last:border-0;
+    @apply flex items-start gap-1 text-xs py-1.5 last:border-0;
+    /* border-surface-border/50 cannot be used inside @apply */
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(var(--surface-border) / 0.5);
   }
   .detail-label { @apply text-text-muted font-medium w-32 shrink-0; }
   .detail-value { @apply text-text-primary font-medium; }
@@ -275,7 +340,4 @@
     backdrop-filter: blur(12px);
     background: rgb(var(--surface-panel) / 0.85);
   }
-  /* bg-surface-hover is generated by Tailwind from the surface.hover config token.
-     The opacity variants (bg-surface-hover/30, /40, /50) work because the token
-     uses the `/ <alpha-value>` syntax. No manual override needed. */
 }
