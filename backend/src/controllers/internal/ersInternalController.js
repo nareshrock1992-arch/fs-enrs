@@ -363,6 +363,13 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
 
     if (!updated[0]) return null;
 
+    // Mark any responders still INVITED (never answered) as MISSED
+    await tq(
+      `UPDATE ers_incident_responders SET status = 'MISSED'
+       WHERE ers_incident_id = $1 AND status = 'INVITED'`,
+      [updated[0].id]
+    ).catch(() => {});
+
     // Promote next queued entry — lock the row first to prevent races
     const { rows: [queueEntry] } = await tq(
       `SELECT q.id, q.incident_id FROM ers_queues q

@@ -132,6 +132,21 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
         return;
       }
 
+      // Pre-populate ers_incident_responders with INVITED status so reports show
+      // all responders that were rung, even those who never answered.
+      for (const contact of responders) {
+        const invitedNum = contact.extension_number || contact.mobile_number;
+        if (contact.id && invitedNum) {
+          await query(
+            `INSERT INTO ers_incident_responders
+               (ers_incident_id, emergency_contact_id, mobile_number, status)
+             VALUES ($1, $2, $3, 'INVITED')
+             ON CONFLICT (ers_incident_id, mobile_number) DO NOTHING`,
+            [incidentId, contact.id, invitedNum]
+          ).catch(() => {});
+        }
+      }
+
       const deadline = Date.now() + Math.min(
         (ringTimeoutSeconds ? ringTimeoutSeconds * 1000 : MAX_RING_MS),
         MAX_RING_MS

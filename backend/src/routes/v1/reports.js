@@ -229,11 +229,13 @@ router.get('/ers', asyncHandler(async (req, res) => {
        o.name AS org_name, o.id AS organization_id,
        COUNT(DISTINCT r.id)::INT AS responder_count,
        COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('JOINED','REJOINED'))::INT AS answered_count,
+       COUNT(DISTINCT p.id) FILTER (WHERE p.role = 'responder')::INT AS participant_count,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
+     LEFT JOIN ers_incident_participants p ON p.incident_id = i.id
      WHERE i.deleted_at IS NULL
        AND i.tenant_id = $1
        AND ($2::date IS NULL OR i.started_at >= $2::date)

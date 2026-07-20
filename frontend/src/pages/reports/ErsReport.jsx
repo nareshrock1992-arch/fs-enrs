@@ -318,6 +318,8 @@ const DetailPanel = memo(function DetailPanel({ uuid, onClose }) {
 function IncidentCard({ inc, expanded, onToggle }) {
   const sc = STATUS_CONF[inc.status] || STATUS_CONF.COMPLETED;
   const hasRecording = !!(inc.recording_path);
+  // Use participant_count as fallback for incidents created before the responder fix
+  const displayCount = inc.responder_count > 0 ? inc.responder_count : (inc.participant_count || 0);
   const answerPct = inc.responder_count > 0
     ? Math.round((inc.answered_count / inc.responder_count) * 100)
     : null;
@@ -382,12 +384,14 @@ function IncidentCard({ inc, expanded, onToggle }) {
         {/* Right side — metrics + status */}
         <div className="flex items-center gap-4 shrink-0 flex-wrap justify-end">
           {/* Responder progress */}
-          {inc.responder_count > 0 && (
+          {displayCount > 0 && (
             <div className="text-right hidden sm:block">
               <p className="text-xs font-semibold text-text-primary tabular-nums">
-                {inc.answered_count}/{inc.responder_count}
+                {inc.responder_count > 0 ? `${inc.answered_count}/${inc.responder_count}` : displayCount}
               </p>
-              <p className="text-[10px] text-text-muted">responded</p>
+              <p className="text-[10px] text-text-muted">
+                {inc.responder_count > 0 ? 'responded' : 'participants'}
+              </p>
               {answerPct !== null && (
                 <div className="w-16 progress-bar-track mt-1">
                   <div
@@ -489,7 +493,7 @@ function SummaryStats({ incidents }) {
   const total     = incidents.length;
   const active    = incidents.filter(i => i.status === 'ACTIVE').length;
   const completed = incidents.filter(i => i.status === 'COMPLETED').length;
-  const totalResp = incidents.reduce((s, i) => s + (i.responder_count || 0), 0);
+  const totalResp = incidents.reduce((s, i) => s + (i.responder_count || i.participant_count || 0), 0);
   const answered  = incidents.reduce((s, i) => s + (i.answered_count  || 0), 0);
 
   if (total === 0) return null;

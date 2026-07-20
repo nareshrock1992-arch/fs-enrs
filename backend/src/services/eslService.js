@@ -1006,7 +1006,7 @@ async function trackParticipant(confName, callerNum, event) {
 
     if (event === 'join') {
       const { rows: [existing] } = await query(
-        `SELECT id, left_at FROM ers_incident_participants
+        `SELECT id, left_at, role FROM ers_incident_participants
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3)
          ORDER BY joined_at DESC LIMIT 1`,
         [incident.id, callerNum, contact?.id ?? null]
@@ -1018,12 +1018,37 @@ async function trackParticipant(confName, callerNum, event) {
            SET rejoined_at = now(), left_at = NULL WHERE id = $1`,
           [existing.id]
         );
+        // Update responder record on rejoin (not for the initiator)
+        if (contact?.id && existing.role !== 'initiator') {
+          await query(
+            `UPDATE ers_incident_responders
+             SET status = 'REJOINED', rejoin_count = rejoin_count + 1, join_time = now()
+             WHERE ers_incident_id = $1 AND mobile_number = $2`,
+            [incident.id, callerNum]
+          ).catch(() => {});
+        }
       } else if (!existing) {
         await query(
           `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
            VALUES ($1, $2, $3, 'responder', now())`,
           [incident.id, contact?.id ?? null, callerNum]
         );
+        // Also write to ers_incident_responders so the summary report shows responder counts.
+        // Only when the contact is known — emergency_contact_id is NOT NULL on that table.
+        if (contact?.id) {
+          await query(
+            `INSERT INTO ers_incident_responders
+               (ers_incident_id, emergency_contact_id, mobile_number, status, join_time)
+             VALUES ($1, $2, $3, 'JOINED', now())
+             ON CONFLICT (ers_incident_id, mobile_number) DO UPDATE SET
+               status        = CASE WHEN ers_incident_responders.status = 'INVITED'
+                                    THEN 'JOINED'
+                                    ELSE ers_incident_responders.status END,
+               join_time     = COALESCE(ers_incident_responders.join_time, now()),
+               emergency_contact_id = EXCLUDED.emergency_contact_id`,
+            [incident.id, contact.id, callerNum]
+          ).catch(err => console.warn('[esl] trackParticipant: responder upsert failed:', err.message));
+        }
       }
     } else if (event === 'leave') {
       await query(
@@ -1032,6 +1057,13 @@ async function trackParticipant(confName, callerNum, event) {
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
         [incident.id, callerNum, contact?.id ?? null]
       );
+      // Mirror leave time into ers_incident_responders for lifecycle reporting
+      await query(
+        `UPDATE ers_incident_responders
+         SET leave_time = now()
+         WHERE ers_incident_id = $1 AND mobile_number = $2 AND leave_time IS NULL`,
+        [incident.id, callerNum]
+      ).catch(() => {});
     }
   } catch (err) {
     // Table may not exist yet (migration 016 pending) — never let audit
