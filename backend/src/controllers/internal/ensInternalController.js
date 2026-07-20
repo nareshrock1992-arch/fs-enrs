@@ -173,7 +173,7 @@ export const startCampaign = asyncHandler(async (req, res) => {
   });
 
   // Register the Lua blast recording in the unified recordings table.
-  // blast_call.lua records to recordings/ens/ before calling this endpoint.
+  // ens_blast_trigger.lua records to recordings/ens/ before calling this endpoint.
   if (recording_file) {
     import('../recordingController.js').then(({ upsertRecordingStart }) => {
       upsertRecordingStart({
@@ -522,7 +522,7 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
 // ── Latest Campaign (for playback number) ────────────────────────────────────
 
 // GET /api/v1/internal/ens/campaigns/latest?configuration_id=<id>
-// Called by ENS_retry_playback.lua to get the most recent recording to play back.
+// Called by ens_playback_handler.lua to get the most recent recording to play back.
 // Returns: { status: "ACTIVE"|"EXPIRED"|"NO_CAMPAIGN", recording_file, campaign_id }
 export const ensLatestCampaign = asyncHandler(async (req, res) => {
   const configId = parseInt(req.query.configuration_id, 10);
@@ -571,7 +571,7 @@ export const ensLatestCampaign = asyncHandler(async (req, res) => {
   });
 });
 
-// ── Playback Log (called by ENS_retry_playback.lua) ──────────────────────────
+// ── Playback Log (called by ens_playback_handler.lua) ────────────────────────
 
 // GET /api/v1/internal/ens/campaigns/:id/playback-log?caller=<number>
 export const ensPlaybackLog = asyncHandler(async (req, res) => {

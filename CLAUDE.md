@@ -96,14 +96,14 @@ Every configuration row (`ers_configurations`, `ens_configurations`, IVR flows, 
 
 ### ERS conference flow
 
-- Lua: `dial_911_conference.lua` calls `GET /internal/ers/lookup?number=<dest>` → gets full config (bridge numbers, responder tiers, queue settings, slot assignment).
+- Lua: `ers_conference_bridge.lua` calls `GET /internal/ers/lookup?number=<dest>` → gets full config (bridge numbers, responder tiers, queue settings, slot assignment). Responders are invited via `freeswitch.bgapi("originate …")` — non-blocking.
 - Bridge slots: `ers_<config_id>_p` (primary, up to `max_concurrent_conferences`) or `ers_<config_id>_s` (secondary). Slot 3+ go to queue.
 - Responder resolution in `ersInternalController.js` reads from **both** `ers_tier_contacts` (individual contacts) and `ers_tier_groups` + `responder_group_members` (group-based), merges and deduplicates.
 
 ### ENS blast + playback flow
 
-- Lua: `blast_call.lua` → `GET /internal/ens/lookup` → optional PIN via `POST /internal/ens/verify-pin` → record → `POST /internal/ens/campaign/start`.
-- Lua: `ENS_retry_playback.lua` → `GET /internal/ens/lookup` + `GET /internal/ens/campaigns/latest?configuration_id=<id>` → plays recording or speaks configured `no_pending_msg` / `expiry_announcement`.
+- Lua: `ens_blast_trigger.lua` → `GET /internal/ens/lookup` → optional PIN via `POST /internal/ens/verify-pin` → record → `POST /internal/ens/campaign/start`.
+- Lua: `ens_playback_handler.lua` → `GET /internal/ens/lookup` + `GET /internal/ens/campaigns/latest?configuration_id=<id>` → plays recording or speaks configured `no_pending_msg` / `expiry_announcement`.
 - PIN is stored in `ens_configurations.pin`. The lookup endpoint returns only `pin_required: true/false` — the raw PIN is never sent to Lua. Verification goes through `verify-pin` only.
 
 ### IVR builder + deployment chain

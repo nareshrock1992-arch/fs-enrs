@@ -82,7 +82,7 @@ export function getConferenceString(config, slot) {
 /**
  * STATIC: use the bridge number configured on the ERS config, or the
  * deterministic fallback `ers_cfg{id}_{tier}`.  This mirrors exactly what
- * Lua's dial_911_conference.lua already computes from the lookup response —
+ * Lua's ers_conference_bridge.lua already computes from the lookup response —
  * the backend uses the same logic so both sides are always in agreement.
  *
  * DYNAMIC: generate a short, unique, lowercase-alphanumeric room name that

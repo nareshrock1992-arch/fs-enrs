@@ -8,10 +8,10 @@ import {
   Activity, Wifi, WifiOff, Users, Lock, Unlock,
   Mic, MicOff, PhoneOff, Radio, Square,
   PhoneIncoming, Trash2, ChevronDown,
-  Headphones, EarOff, Shield, RefreshCw, Zap,
-  PhoneCall, Bell, Signal, ArrowRight,
+  EarOff, Shield, RefreshCw, Zap,
+  PhoneCall, Bell, Signal,
   Monitor, BarChart2, Hash, PhoneForwarded,
-  CheckCircle, AlertCircle, Circle,
+  AlertCircle,
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { socket } from '../api/socket.js';
@@ -36,6 +36,7 @@ const EV = {
   'conference.locked':            { label: 'Conference Locked',    color: 'text-amber-500',   Icon: Lock          },
   'conference.unlocked':          { label: 'Conference Unlocked',  color: 'text-emerald-400', Icon: Unlock        },
   'conference.recording':         { label: 'Recording',            color: 'text-red-400',     Icon: Radio         },
+  'conference.member.energy':     { label: 'Energy Level',         color: 'text-cyan-400',    Icon: Signal        },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,139 +151,8 @@ const KpiCard = memo(function KpiCard({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LEFT PANEL — Conference Cards
-// ─────────────────────────────────────────────────────────────────────────────
-const ConfCard = memo(function ConfCard({ conf, selected, onSelect, now }) {
-  const secs  = elapsedSec(conf.createdAt, now);
-  const count = conf.members?.length ?? 0;
-  const mods  = conf.members?.filter(m => m.moderator).length ?? 0;
-  const live  = conf.members?.filter(m => m.talking).length  ?? 0;
-
-  return (
-    <button
-      onClick={() => onSelect(conf.name)}
-      className={[
-        'w-full text-left rounded-xl border p-3 transition-all duration-150 cursor-pointer',
-        selected
-          ? 'border-primary/50 bg-primary/8 shadow-sm'
-          : 'border-surface-border bg-surface-card hover:border-primary/20 hover:bg-surface-hover',
-      ].join(' ')}
-    >
-      <div className="flex items-start gap-2 mb-2">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold font-mono text-text-primary leading-none truncate">
-            {conf.name}
-          </p>
-          {conf.incident?.organization_name && (
-            <p className="text-[10px] text-text-muted mt-0.5 truncate">
-              {conf.incident.organization_name}
-            </p>
-          )}
-          {conf.incident?.ers_name && (
-            <p className="text-[10px] text-primary/80 mt-0.5 truncate font-medium">
-              {conf.incident.ers_name}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          {conf.recordingState === 'STARTING' && (
-            <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
-                             font-bold flex items-center gap-0.5 animate-pulse">
-              <Radio size={6} /> START
-            </span>
-          )}
-          {conf.recordingState === 'ACTIVE' && (
-            <span className="text-[8px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500
-                             font-bold flex items-center gap-0.5 animate-pulse">
-              <Radio size={6} /> REC
-            </span>
-          )}
-          {conf.recordingState === 'STOPPING' && (
-            <span className="text-[8px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400
-                             font-bold flex items-center gap-0.5 animate-pulse">
-              <Square size={6} /> STOP
-            </span>
-          )}
-          {conf.locked && (
-            <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
-                             font-bold flex items-center gap-0.5">
-              <Lock size={6} /> LOCK
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2 text-[10px]">
-        <span className={`flex items-center gap-1 font-semibold
-          ${live > 0 ? 'text-green-500' : 'text-text-secondary'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0
-            ${live > 0 ? 'bg-green-500 animate-pulse' : 'bg-text-muted/30'}`} />
-          {count} {count === 1 ? 'member' : 'members'}
-        </span>
-        {mods > 0 && (
-          <span className="flex items-center gap-0.5 text-amber-500">
-            <Shield size={8} /> {mods}
-          </span>
-        )}
-        {live > 0 && (
-          <span className="flex items-center gap-0.5 text-green-500">
-            <Mic size={8} /> {live}
-          </span>
-        )}
-        <span className="ml-auto font-mono text-text-muted tabular-nums">
-          {fmtDur(secs)}
-        </span>
-      </div>
-    </button>
-  );
-});
-
-function LeftPanel({ conferences, selectedConf, onSelect, now, loading }) {
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 mb-2.5 shrink-0">
-        <PhoneCall size={12} className="text-emerald-500" />
-        <span className="text-xs font-bold text-text-primary">Active Conferences</span>
-        <span className="ml-1 text-[10px] px-1.5 py-px rounded-full
-                         bg-emerald-500/15 text-emerald-500 font-bold">
-          {conferences.length}
-        </span>
-      </div>
-
-      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
-        {loading ? (
-          <div className="space-y-2">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="h-20 rounded-xl bg-surface-hover animate-pulse" />
-            ))}
-          </div>
-        ) : conferences.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-12 text-center">
-            <Headphones size={22} className="text-text-muted/25" />
-            <div>
-              <p className="text-xs font-medium text-text-secondary">No Active Conferences</p>
-              <p className="text-[10px] text-text-muted mt-0.5">Waiting for FreeSWITCH…</p>
-            </div>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          </div>
-        ) : (
-          conferences.map(c => (
-            <ConfCard
-              key={c.name}
-              conf={c}
-              selected={selectedConf === c.name}
-              onSelect={onSelect}
-              now={now}
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // CENTER PANEL — Conference Details + Participant Table
+// (Left panel: IncidentSidebar — features/monitoring/sidebar/)
 // ─────────────────────────────────────────────────────────────────────────────
 function MetaItem({ label, children, span }) {
   return (
@@ -1242,6 +1112,9 @@ export default function Monitoring() {
         upConf(confName, c => ({ ...c, locked }));
         pushEvent(locked ? 'conference.locked' : 'conference.unlocked',
           `${confName} ${locked ? 'locked' : 'unlocked'}`);
+      },
+      'conference.member.energy': ({ confName, member: id, energy }) => {
+        upMember(confName, id, m => ({ ...m, energy }));
       },
       'conference.recording': ({ confName, recording, recordingState, recordingPath, recordingError }) => {
         upConf(confName, c => ({

@@ -311,22 +311,22 @@ INTERNAL_API_KEY=change_me_internal_key   # Same value as FS_INTERNAL_KEY on FS 
 <!-- ENS blast trigger (e.g. 9995) -->
 <extension name="ens_blast">
   <condition field="destination_number" expression="^(99[0-9]{2})$">
-    <action application="lua" data="blast_call.lua"/>
+    <action application="lua" data="ens_blast_trigger.lua"/>
   </condition>
 </extension>
 
 <!-- ENS callback replay (e.g. 9996) -->
 <extension name="ens_replay">
   <condition field="destination_number" expression="^(99[0-9]{2})$">
-    <!-- reply_clid numbers are resolved by ENS_retry_playback via API -->
-    <action application="lua" data="ENS_retry_playback.lua"/>
+    <!-- reply_clid numbers are resolved by ens_playback_handler.lua via API -->
+    <action application="lua" data="ens_playback_handler.lua"/>
   </condition>
 </extension>
 
 <!-- ERS emergency (e.g. 1222) -->
 <extension name="ers_emergency">
   <condition field="destination_number" expression="^(1222)$">
-    <action application="lua" data="dial_911_conference.lua"/>
+    <action application="lua" data="ers_conference_bridge.lua"/>
   </condition>
 </extension>
 

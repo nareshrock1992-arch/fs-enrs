@@ -113,15 +113,16 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
+       AND e.tenant_id = $4
        AND ($1::int IS NULL OR e.organization_id = $1)
      ORDER BY e.name
      LIMIT $2 OFFSET $3`,
-    [orgId, limit, offset]
+    [orgId, limit, offset, req.user.tenantId]
   );
   const { rows: cnt } = await query(
     `SELECT COUNT(*)::INT AS total FROM ens_configurations
-     WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
-    [orgId]
+     WHERE deleted_at IS NULL AND tenant_id = $2 AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId, req.user.tenantId]
   );
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
@@ -133,8 +134,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
     `SELECT e.*, o.name AS organization_name
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE e.id = $1 AND e.deleted_at IS NULL`,
-    [req.params.id]
+     WHERE e.id = $1 AND e.deleted_at IS NULL AND e.tenant_id = $2`,
+    [req.params.id, req.user.tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
 
@@ -220,7 +221,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        is_active                 = COALESCE($25, is_active),
        tenant_id                 = COALESCE(tenant_id, $26),
        updated_at                = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $26 RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -254,15 +255,19 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE ens_configurations SET is_active = NOT is_active, updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING id, is_active`,
-    [req.params.id]
+     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2 RETURNING id, is_active`,
+    [req.params.id, req.user.tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
   res.json(rows[0]);
 });
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
-  await query(`UPDATE ens_configurations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
+  const { rowCount } = await query(
+    `UPDATE ens_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2`,
+    [req.params.id, req.user.tenantId]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'ENS configuration not found' });
   res.status(204).end();
 });
 
@@ -273,12 +278,13 @@ export const listNotifications = asyncHandler(async (req, res) => {
     `SELECT n.*, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     WHERE n.deleted_at IS NULL
+     WHERE n.deleted_at IS NULL AND e.tenant_id = $3
      ORDER BY n.created_at DESC
      LIMIT $1 OFFSET $2`,
     [
       Number(req.query.limit) || 50,
       ((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50),
+      req.user.tenantId,
     ]
   );
   res.json(rows);

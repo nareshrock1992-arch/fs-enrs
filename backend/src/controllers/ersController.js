@@ -165,15 +165,16 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      FROM ers_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
+       AND e.tenant_id = $4
        AND ($1::int IS NULL OR e.organization_id = $1)
      ORDER BY e.name
      LIMIT $2 OFFSET $3`,
-    [orgId, limit, offset]
+    [orgId, limit, offset, req.user.tenantId]
   );
   const { rows: cnt } = await query(
     `SELECT COUNT(*)::INT AS total FROM ers_configurations
-     WHERE deleted_at IS NULL AND ($1::int IS NULL OR organization_id = $1)`,
-    [orgId]
+     WHERE deleted_at IS NULL AND tenant_id = $2 AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId, req.user.tenantId]
   );
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
@@ -185,8 +186,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
     `SELECT e.*, o.name AS organization_name
      FROM ers_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE e.id = $1 AND e.deleted_at IS NULL`,
-    [req.params.id]
+     WHERE e.id = $1 AND e.deleted_at IS NULL AND e.tenant_id = $2`,
+    [req.params.id, req.user.tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
 
@@ -310,7 +311,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        tenant_id                    = COALESCE(tenant_id, $39),
        ring_timeout_seconds         = COALESCE($40, ring_timeout_seconds),
        updated_at                   = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND COALESCE(tenant_id, $39) = $39 RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -348,7 +349,11 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
 // ── Delete ───────────────────────────────────────────────────────────────────
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
-  await query(`UPDATE ers_configurations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
+  const { rowCount } = await query(
+    `UPDATE ers_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2`,
+    [req.params.id, req.user.tenantId]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'ERS configuration not found' });
   res.status(204).end();
 });
 
@@ -444,8 +449,8 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE ers_configurations SET is_active = NOT is_active, updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING id, is_active`,
-    [req.params.id]
+     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2 RETURNING id, is_active`,
+    [req.params.id, req.user.tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
   res.json(rows[0]);
@@ -489,11 +494,12 @@ export const listIncidents = asyncHandler(async (req, res) => {
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
      WHERE i.deleted_at IS NULL
+       AND i.tenant_id = $3
        AND ($1::text IS NULL OR i.status = $1)
      GROUP BY i.id, e.name
      ORDER BY i.started_at DESC
      LIMIT $2`,
-    [status, Number(req.query.limit) || 50]
+    [status, Number(req.query.limit) || 50, req.user.tenantId]
   );
   res.json(rows);
 });
@@ -510,7 +516,7 @@ export const createIncident = asyncHandler(async (req, res) => {
 
   const incident = await withTransaction(async (tq) => {
     const { rows: cfgRows } = await tq(
-      `SELECT id, max_concurrent_conferences, queue_enabled
+      `SELECT id, tenant_id, max_concurrent_conferences, queue_enabled
        FROM ers_configurations
        WHERE id = $1 AND is_active = true AND deleted_at IS NULL
        FOR UPDATE`,
@@ -532,11 +538,11 @@ export const createIncident = asyncHandler(async (req, res) => {
 
     const { rows: incRows } = await tq(
       `INSERT INTO ers_incidents
-         (ers_configuration_id, caller_number, caller_name, conference_room,
+         (ers_configuration_id, tenant_id, caller_number, caller_name, conference_room,
           group_type, recording_path, status, queued_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [
-        ers_configuration_id,
+        ers_configuration_id, cfg.tenant_id,
         caller_number, caller_name, conference_room, group_type, recording_path,
         isQueued ? 'QUEUED' : 'ACTIVE',
         isQueued ? new Date() : null,
@@ -637,8 +643,9 @@ export const getQueue = asyncHandler(async (req, res) => {
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
      LEFT JOIN ers_incidents  i ON i.id = q.incident_id
-     WHERE q.status = 'QUEUED'
-     ORDER BY q.ers_configuration_id, q.position`
+     WHERE q.status = 'QUEUED' AND e.tenant_id = $1
+     ORDER BY q.ers_configuration_id, q.position`,
+    [req.user.tenantId]
   );
   res.json(rows);
 });
@@ -653,8 +660,8 @@ export const getIncident = asyncHandler(async (req, res) => {
             e.record_conferences, e.queue_enabled
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     WHERE i.incident_uuid = $1 AND i.deleted_at IS NULL`,
-    [uuid]
+     WHERE i.incident_uuid = $1 AND i.deleted_at IS NULL AND i.tenant_id = $2`,
+    [uuid, req.user.tenantId]
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
@@ -714,7 +721,9 @@ export const cancelQueuedIncident = asyncHandler(async (req, res) => {
     try {
       const { emitInternal } = await import('../services/socketService.js');
       emitInternal('enrs::ers_incident_ended', { incident_uuid: uuid, ended_at: new Date().toISOString(), status: 'CANCELLED' });
-    } catch {}
+    } catch (err) {
+      console.warn('[ers] cancelQueuedIncident socket emit failed:', err.message);
+    }
 
     return incident;
   });

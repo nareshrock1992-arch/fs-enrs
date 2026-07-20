@@ -10,6 +10,7 @@ export default {
           bg:      'rgb(var(--surface-bg)      / <alpha-value>)',
           panel:   'rgb(var(--surface-panel)   / <alpha-value>)',
           raised:  'rgb(var(--surface-raised)  / <alpha-value>)',
+          hover:   'rgb(var(--surface-hover)   / <alpha-value>)',
           border:  'rgb(var(--surface-border)  / <alpha-value>)',
         },
         text: {

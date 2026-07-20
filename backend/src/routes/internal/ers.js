@@ -3,7 +3,7 @@ import * as ctrl from '../../controllers/internal/ersInternalController.js';
 
 const router = Router();
 
-// Number → config lookup (dial_911_conference.lua first call)
+// Number → config lookup (ers_conference_bridge.lua first call)
 router.get('/lookup', ctrl.ersLookup);
 
 // Phase 5 — 3-scenario emergency flow

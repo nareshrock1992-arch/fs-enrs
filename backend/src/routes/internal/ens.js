@@ -3,7 +3,7 @@ import * as ctrl from '../../controllers/internal/ensInternalController.js';
 
 const router = Router();
 
-// Number → config lookup (blast_call.lua first call)
+// Number → config lookup (ens_blast_trigger.lua / ens_playback_handler.lua first call)
 router.get('/lookup', ctrl.ensLookup);
 
 // PIN authentication — Lua calls this after collecting DTMF, before recording
@@ -23,7 +23,7 @@ router.post('/notifications/:uuid/complete',      ctrl.ensCompleteNotification);
 router.get('/campaigns/latest',         ctrl.ensLatestCampaign);
 router.get('/campaigns/:id/playback-log', ctrl.ensPlaybackLog);
 
-// Callback replay (ENS_retry_playback.lua)
+// Callback replay (ens_playback_handler.lua)
 router.get('/callbacks/authorize', ctrl.ensAuthorizeCallback);
 router.post('/callbacks',          ctrl.ensLogCallback);
 

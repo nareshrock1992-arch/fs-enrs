@@ -74,8 +74,9 @@ export const getConferences = asyncHandler(async (req, res) => {
        LEFT JOIN organizations o ON o.id = e.organization_id
        WHERE i.status = 'ACTIVE'
          AND i.deleted_at IS NULL
+         AND i.tenant_id = $2
          AND i.conference_room = ANY($1)`,
-      [rooms]
+      [rooms, req.user.tenantId]
     );
     for (const r of rows) incidentMap[r.conference_room] = r;
   }

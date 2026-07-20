@@ -17,13 +17,14 @@ router.get('/notifications', asyncHandler(async (req, res) => {
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
      WHERE n.deleted_at IS NULL
+       AND e.tenant_id = $5
        AND ($1::date IS NULL OR n.created_at >= $1::date)
        AND ($2::date IS NULL OR n.created_at <  $2::date + interval '1 day')
        AND ($3::text IS NULL OR n.status = $3)
        AND ($4::int  IS NULL OR o.id = $4)
      ORDER BY n.created_at DESC
      LIMIT 500`,
-    [from || null, to || null, status || null, org_id || null]
+    [from || null, to || null, status || null, org_id || null, req.user.tenantId]
   );
   res.json({ notifications: rows });
 }));
@@ -42,6 +43,7 @@ router.get('/incidents', asyncHandler(async (req, res) => {
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
      WHERE i.deleted_at IS NULL
+       AND i.tenant_id = $5
        AND ($1::date IS NULL OR i.started_at >= $1::date)
        AND ($2::date IS NULL OR i.started_at <  $2::date + interval '1 day')
        AND ($3::text IS NULL OR i.status = $3)
@@ -49,7 +51,7 @@ router.get('/incidents', asyncHandler(async (req, res) => {
      GROUP BY i.id, e.name, o.name
      ORDER BY i.started_at DESC
      LIMIT 500`,
-    [from || null, to || null, status || null, org_id || null]
+    [from || null, to || null, status || null, org_id || null, req.user.tenantId]
   );
   res.json({ incidents: rows });
 }));
@@ -68,10 +70,11 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
      LEFT JOIN responder_group_members rgm ON rgm.emergency_contact_id = c.id
      LEFT JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
      LEFT JOIN ers_incident_responders eir ON eir.emergency_contact_id = c.id
-     WHERE c.deleted_at IS NULL
+     WHERE c.deleted_at IS NULL AND o.tenant_id = $1
      GROUP BY c.id, o.name
      ORDER BY c.last_name, c.first_name
-     LIMIT 500`
+     LIMIT 500`,
+    [req.user.tenantId]
   );
   res.json({ contacts: rows });
 }));
@@ -96,11 +99,12 @@ router.get('/ers-incidents', asyncHandler(async (req, res) => {
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE i.deleted_at IS NULL
+       AND i.tenant_id = $3
        AND ($1::date IS NULL OR i.started_at >= $1::date)
        AND ($2::date IS NULL OR i.started_at <  $2::date + interval '1 day')
      ORDER BY i.started_at DESC
      LIMIT 200`,
-    [from || null, to || null]
+    [from || null, to || null, req.user.tenantId]
   );
 
   const ids = incidents.map(i => i.id);
@@ -152,11 +156,12 @@ router.get('/ens-broadcasts', asyncHandler(async (req, res) => {
      LEFT JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.recorded_by
      WHERE n.deleted_at IS NULL
+       AND e.tenant_id = $3
        AND ($1::date IS NULL OR n.created_at >= $1::date)
        AND ($2::date IS NULL OR n.created_at <  $2::date + interval '1 day')
      ORDER BY n.created_at DESC
      LIMIT 200`,
-    [from || null, to || null]
+    [from || null, to || null, req.user.tenantId]
   );
 
   const ids = broadcasts.map(b => b.id);

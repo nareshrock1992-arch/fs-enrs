@@ -142,7 +142,7 @@ For direct-dial ERS numbers that skip the IVR builder:
 ```xml
 <extension name="ers_main_gate">
   <condition field="destination_number" expression="^1222$">
-    <action application="lua" data="dial_911_conference.lua"/>
+    <action application="lua" data="ers_conference_bridge.lua"/>
   </condition>
 </extension>
 ```
@@ -152,7 +152,7 @@ For direct-dial ERS numbers that skip the IVR builder:
 ```xml
 <extension name="ens_blast">
   <condition field="destination_number" expression="^1333$">
-    <action application="lua" data="blast_call.lua"/>
+    <action application="lua" data="ens_blast_trigger.lua"/>
   </condition>
 </extension>
 ```
@@ -162,7 +162,7 @@ For direct-dial ERS numbers that skip the IVR builder:
 ```xml
 <extension name="ens_retry">
   <condition field="destination_number" expression="^1334$">
-    <action application="lua" data="ENS_retry_playback.lua"/>
+    <action application="lua" data="ens_playback_handler.lua"/>
   </condition>
 </extension>
 ```

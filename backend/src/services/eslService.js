@@ -813,7 +813,7 @@ async function handleEvent(evt) {
       const energyVal = parseInt(evt.getHeader('Conference-Energy-Level') || '0', 10) || 0;
       const conf = conferenceRegistry.get(confName);
       if (conf?.members.has(memberId)) conf.members.get(memberId).energy = energyVal;
-      // No socket event needed — energy is reflected in the next snapshot/joined event.
+      emit('conference.member.energy', { confName, member: memberId, callerNum, energy: energyVal });
 
     } else if (action === 'moderator') {
       // FreeSWITCH toggles moderator flag when `conference <room> moderator <id>` is called.
