@@ -12,6 +12,8 @@ export default {
           raised:  'rgb(var(--surface-raised)  / <alpha-value>)',
           hover:   'rgb(var(--surface-hover)   / <alpha-value>)',
           border:  'rgb(var(--surface-border)  / <alpha-value>)',
+          // card is an alias for panel — used by cards and list items
+          card:    'rgb(var(--surface-panel)   / <alpha-value>)',
         },
         text: {
           primary:   'rgb(var(--text-primary)   / <alpha-value>)',
@@ -19,15 +21,33 @@ export default {
           muted:     'rgb(var(--text-muted)     / <alpha-value>)',
         },
         brand: {
-          DEFAULT: '#2563EB',
-          light:   '#60A5FA',
-          dim:     '#1E4FB5',
+          DEFAULT: 'rgb(var(--brand)       / <alpha-value>)',
+          light:   'rgb(var(--brand-light) / <alpha-value>)',
+          dim:     'rgb(var(--brand-dim)   / <alpha-value>)',
         },
+        // primary = semantic alias for brand — use for selection states, focus rings, active borders
+        primary: {
+          DEFAULT: 'rgb(var(--brand) / <alpha-value>)',
+        },
+        // Semantic status tokens — CSS-variable backed so they follow the theme
+        danger: {
+          DEFAULT: 'rgb(var(--danger) / <alpha-value>)',
+        },
+        success: {
+          DEFAULT: 'rgb(var(--success) / <alpha-value>)',
+        },
+        warning: {
+          DEFAULT: 'rgb(var(--warning) / <alpha-value>)',
+        },
+        info: {
+          DEFAULT: 'rgb(var(--info) / <alpha-value>)',
+        },
+        // status.* kept for backwards-compatibility with any direct usage
         status: {
-          success: '#16A34A',
-          warning: '#D97706',
-          danger:  '#DC2626',
-          info:    '#2563EB',
+          success: 'rgb(var(--success) / <alpha-value>)',
+          warning: 'rgb(var(--warning) / <alpha-value>)',
+          danger:  'rgb(var(--danger)  / <alpha-value>)',
+          info:    'rgb(var(--info)    / <alpha-value>)',
         },
       },
       fontFamily: {
