@@ -1072,139 +1072,160 @@ async function persistIncidentEvent(confName, memberId, rawNumber, eventType) {
 //   fall back to callerNum (which IS the initiator's own number for inbound joins).
 async function trackParticipant(confName, callerNum, destNum, event, memberId, channelUuid = '') {
   if (!confName || (!callerNum && !destNum)) return;
-  console.log(`[track] ${event.toUpperCase()} conf="${confName}" callerNum="${callerNum}" destNum="${destNum}" memberId="${memberId}" uuid="${channelUuid}"`);
+
+  // ── Stage 1: entry ──────────────────────────────────────────────────────────
+  console.log(
+    `[track:1] EVENT=${event.toUpperCase()} conf="${confName}"` +
+    ` callerNum="${callerNum}" destNum="${destNum}"` +
+    ` memberId="${memberId}" uuid="${channelUuid}"`
+  );
+
   try {
-    const { rows: [incident] } = await query(
-      `SELECT id FROM ers_incidents
+    // ── Stage 2: incident lookup ─────────────────────────────────────────────
+    const { rows: incRows } = await query(
+      `SELECT id, status, conference_room FROM ers_incidents
        WHERE conference_room = $1 AND deleted_at IS NULL
        ORDER BY started_at DESC LIMIT 1`,
       [confName]
     );
+    const incident = incRows[0];
     if (!incident) {
-      console.log(`[track] no ERS incident for conf="${confName}" — skipping (IVR/ENS room)`);
+      console.log(`[track:2] SKIP — no ERS incident with conference_room="${confName}" (IVR/ENS room or room not yet written)`);
+      // Show any incidents that DO exist so we can spot a name mismatch
+      const { rows: allRooms } = await query(
+        `SELECT id, conference_room, status FROM ers_incidents WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT 5`
+      );
+      console.log(`[track:2] recent ERS incidents:`, JSON.stringify(allRooms));
       return;
     }
-    console.log(`[track] incident id=${incident.id} matched conf="${confName}"`);
+    console.log(`[track:2] MATCHED incident id=${incident.id} status="${incident.status}" room="${incident.conference_room}"`);
 
-    // Phase 1: try to resolve the contact from Caller-Destination-Number (responder's extension).
+    // ── Stage 3: contact resolution — destNum first ──────────────────────────
     let contact     = null;
-    let trackingNum = callerNum; // default: use presented CallerID
+    let trackingNum = callerNum;
 
     if (destNum) {
       const lastD9 = String(destNum).replace(/\D/g, '').slice(-9);
-      const { rows: [destContact] } = await query(
-        `SELECT id, first_name, last_name FROM emergency_contacts
+      console.log(`[track:3a] looking up destNum="${destNum}" (last9="${lastD9}")`);
+      const { rows: destRows } = await query(
+        `SELECT id, first_name, last_name, extension_number, mobile_number
+         FROM emergency_contacts
          WHERE deleted_at IS NULL
            AND (extension_number = $1
                 OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
          LIMIT 1`,
         [destNum, lastD9]
       );
-      if (destContact) {
-        contact     = destContact;
+      if (destRows.length > 0) {
+        contact     = destRows[0];
         trackingNum = destNum;
-        console.log(`[track] resolved contact id=${destContact.id} via destNum="${destNum}"`);
+        console.log(`[track:3a] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}" ext="${contact.extension_number}" mobile="${contact.mobile_number}"`);
 
-        // Fix the in-memory conference registry so the monitoring page shows the
-        // responder's actual name instead of "Outbound Call" / the initiator's CallerID.
         if (memberId && event === 'join') {
           const conf = conferenceRegistry.get(confName);
           if (conf?.members.has(memberId)) {
             const m = conf.members.get(memberId);
-            const resolvedName = `${destContact.first_name || ''} ${destContact.last_name || ''}`.trim() || destNum;
-            m.callerNum   = destNum;
-            m.callerName  = resolvedName;
-            m.displayName = resolvedName;
-            m.extension   = destNum;
-            // Register UUID → incident for CHANNEL_HANGUP correlation.
+            const resolvedName = `${contact.first_name || ''} ${contact.last_name || ''}`.trim() || destNum;
+            m.callerNum = destNum; m.callerName = resolvedName;
+            m.displayName = resolvedName; m.extension = destNum;
             if (m._uuid) {
-              ersChannelMap.set(m._uuid, { incidentId: null /* filled below */, trackingNum: destNum });
-              // Clean up after 2 hours — guards against leaked entries if hangup is never received.
+              ersChannelMap.set(m._uuid, { incidentId: null, trackingNum: destNum });
               setTimeout(() => ersChannelMap.delete(m._uuid), 2 * 60 * 60 * 1000);
             }
           }
         }
+      } else {
+        console.log(`[track:3a] no contact found for destNum="${destNum}" — trying callerNum`);
       }
     }
 
-    // Phase 2: if destNum didn't resolve a contact, try callerNum (initiator's inbound join).
+    // ── Stage 4: fallback — callerNum ────────────────────────────────────────
     if (!contact && callerNum) {
       const last9 = String(callerNum).replace(/\D/g, '').slice(-9);
-      const { rows: [callerContact] } = await query(
-        `SELECT id, first_name, last_name FROM emergency_contacts
+      console.log(`[track:3b] looking up callerNum="${callerNum}" (last9="${last9}")`);
+      const { rows: callerRows } = await query(
+        `SELECT id, first_name, last_name, extension_number, mobile_number
+         FROM emergency_contacts
          WHERE deleted_at IS NULL
            AND (extension_number = $1
                 OR RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2)
          LIMIT 1`,
         [callerNum, last9]
       );
-      if (callerContact) {
-        contact     = callerContact;
+      if (callerRows.length > 0) {
+        contact     = callerRows[0];
         trackingNum = callerNum;
-        console.log(`[track] resolved contact id=${callerContact.id} via callerNum="${callerNum}"`);
+        console.log(`[track:3b] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}"`);
       } else {
-        console.log(`[track] no contact found for callerNum="${callerNum}" — participant row will have contact_id=null`);
+        console.log(`[track:3b] no contact for callerNum="${callerNum}" — participant will have contact_id=null, no responder row`);
       }
     }
 
-    if (!trackingNum) { console.log('[track] no trackingNum — skipping write'); return; }
+    if (!trackingNum) {
+      console.log('[track:4] SKIP — trackingNum is empty');
+      return;
+    }
+    console.log(`[track:4] trackingNum="${trackingNum}" contact_id=${contact?.id ?? 'null'}`);
 
-    // Fill incidentId into the channel map entry now that we know it.
-    // The channel UUID was stored with incidentId=null during the registry patch above.
     if (event === 'join' && channelUuid && ersChannelMap.has(channelUuid)) {
       ersChannelMap.get(channelUuid).incidentId = incident.id;
     }
 
     if (event === 'join') {
-      const { rows: [existing] } = await query(
+      // ── Stage 5: check for existing participant row ───────────────────────
+      const { rows: existRows } = await query(
         `SELECT id, left_at, role FROM ers_incident_participants
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3)
          ORDER BY joined_at DESC LIMIT 1`,
         [incident.id, trackingNum, contact?.id ?? null]
       );
+      const existing = existRows[0];
+      console.log(`[track:5] existing participant check — found=${!!existing} left_at=${existing?.left_at ?? 'n/a'} role=${existing?.role ?? 'n/a'}`);
 
       if (existing && existing.left_at) {
-        // Same person coming back — rejoin, not a new participant.
+        // ── Stage 6a: rejoin path ───────────────────────────────────────────
+        console.log(`[track:6a] REJOIN path — updating participant id=${existing.id}`);
         await query(
-          `UPDATE ers_incident_participants
-           SET rejoined_at = now(), left_at = NULL WHERE id = $1`,
+          `UPDATE ers_incident_participants SET rejoined_at = now(), left_at = NULL WHERE id = $1`,
           [existing.id]
         );
         if (contact?.id && existing.role !== 'initiator') {
-          await query(
+          const rRes = await query(
             `UPDATE ers_incident_responders
              SET status = 'REJOINED', rejoin_count = rejoin_count + 1, join_time = now()
              WHERE ers_incident_id = $1 AND mobile_number = $2`,
             [incident.id, trackingNum]
-          ).catch(() => {});
+          ).catch(err => { console.error(`[track:6a] responder REJOINED update failed: ${err.message}`); return { rowCount: 0 }; });
+          console.log(`[track:6a] responder REJOINED update rowCount=${rRes.rowCount}`);
         }
+
       } else if (!existing) {
+        // ── Stage 6b: new participant INSERT ────────────────────────────────
         const resolvedName = contact
           ? `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
           : null;
-        // Try with migration-031 column (caller_name) first; fall back to base columns
-        // so the insert always succeeds even if migration 031 has not been applied yet.
-        try {
-          await query(
-            `INSERT INTO ers_incident_participants
-               (incident_id, contact_id, raw_number, role, caller_name, joined_at)
-             VALUES ($1, $2, $3, 'responder', $4, now())`,
-            [incident.id, contact?.id ?? null, trackingNum, resolvedName]
-          );
-          console.log(`[track] INSERT participant incident=${incident.id} num="${trackingNum}" name="${resolvedName}" (with caller_name)`);
-        } catch (insertErr) {
-          // Migration 031 not applied — caller_name column absent; retry without it.
-          console.warn(`[track] participant INSERT with caller_name failed (${insertErr.message}), retrying without`);
-          await query(
-            `INSERT INTO ers_incident_participants
-               (incident_id, contact_id, raw_number, role, joined_at)
-             VALUES ($1, $2, $3, 'responder', now())`,
-            [incident.id, contact?.id ?? null, trackingNum]
-          );
-          console.log(`[track] INSERT participant incident=${incident.id} num="${trackingNum}" (base columns)`);
-        }
+        console.log(`[track:6b] NEW participant — incident=${incident.id} trackingNum="${trackingNum}" contact_id=${contact?.id ?? 'null'} name="${resolvedName}"`);
+
+        const pRes = await query(
+          `INSERT INTO ers_incident_participants
+             (incident_id, contact_id, raw_number, role, caller_name, joined_at)
+           VALUES ($1, $2, $3, 'responder', $4, now())
+           RETURNING id`,
+          [incident.id, contact?.id ?? null, trackingNum, resolvedName]
+        );
+        console.log(`[track:6b] participant INSERT → id=${pRes.rows[0]?.id} rowCount=${pRes.rowCount}`);
+
+        // ── Stage 7: responder upsert ───────────────────────────────────────
         if (contact?.id) {
-          await query(
+          // Check what pre-existing responder row looks like (if any from ring-all INVITED)
+          const { rows: preRows } = await query(
+            `SELECT id, status, mobile_number FROM ers_incident_responders
+             WHERE ers_incident_id = $1 AND (mobile_number = $2 OR emergency_contact_id = $3)`,
+            [incident.id, trackingNum, contact.id]
+          );
+          console.log(`[track:7] pre-upsert responder rows: ${JSON.stringify(preRows)}`);
+
+          const rRes = await query(
             `INSERT INTO ers_incident_responders
                (ers_incident_id, emergency_contact_id, mobile_number, status, join_time)
              VALUES ($1, $2, $3, 'JOINED', now())
@@ -1213,40 +1234,45 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
                                            THEN 'JOINED'
                                            ELSE ers_incident_responders.status END,
                join_time            = COALESCE(ers_incident_responders.join_time, now()),
-               emergency_contact_id = EXCLUDED.emergency_contact_id`,
+               emergency_contact_id = EXCLUDED.emergency_contact_id
+             RETURNING id, status, (xmax = 0) AS inserted`,
             [incident.id, contact.id, trackingNum]
-          ).then(() => {
-            console.log(`[track] UPSERT responder incident=${incident.id} contact=${contact.id} num="${trackingNum}" → JOINED`);
-          }).catch(err => {
-            // Most likely cause: migration 031 not run — UNIQUE constraint absent.
-            // Run: cd backend && npm run migrate
-            console.error(
-              `[track] responder upsert FAILED incident=${incident.id} num="${trackingNum}": ${err.message}. ` +
-              'Run npm run migrate to apply migration 031.'
-            );
-          });
+          );
+          const rRow = rRes.rows[0];
+          console.log(`[track:7] responder UPSERT → id=${rRow?.id} status="${rRow?.status}" inserted=${rRow?.inserted} rowCount=${rRes.rowCount}`);
+        } else {
+          console.log(`[track:7] SKIP responder upsert — contact_id is null (unrecognised number)`);
         }
+
+      } else {
+        // ── Stage 6c: already counted, no action ────────────────────────────
+        console.log(`[track:6c] SKIP — participant id=${existing.id} role="${existing.role}" already present (left_at=null)`);
       }
-      // else: existing with left_at=NULL — same person already counted, no action.
 
     } else if (event === 'leave') {
-      await query(
+      // ── Stage 6d: leave path ────────────────────────────────────────────
+      const pRes = await query(
         `UPDATE ers_incident_participants
          SET left_at = now()
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
         [incident.id, trackingNum, contact?.id ?? null]
       );
-      console.log(`[track] UPDATE participant left_at incident=${incident.id} num="${trackingNum}"`);
-      await query(
+      console.log(`[track:6d] participant left_at UPDATE rowCount=${pRes.rowCount} incident=${incident.id} num="${trackingNum}"`);
+
+      const rRes = await query(
         `UPDATE ers_incident_responders
          SET leave_time = now()
          WHERE ers_incident_id = $1 AND mobile_number = $2 AND leave_time IS NULL`,
         [incident.id, trackingNum]
-      ).catch(() => {});
+      ).catch(err => { console.error(`[track:6d] responder leave_time update failed: ${err.message}`); return { rowCount: 0 }; });
+      console.log(`[track:6d] responder leave_time UPDATE rowCount=${rRes.rowCount}`);
     }
+
+    console.log(`[track:END] ${event.toUpperCase()} conf="${confName}" num="${trackingNum}" complete`);
+
   } catch (err) {
-    // Never let audit tracking break live call event handling.
-    console.error(`[track] FATAL trackParticipant error: ${err.message}`, err.stack?.split('\n')[1]);
+    console.error(`[track:ERR] EXCEPTION in trackParticipant: ${err.message}`);
+    console.error(`[track:ERR] stack: ${err.stack?.split('\n').slice(0, 3).join(' | ')}`);
   }
 }
 
