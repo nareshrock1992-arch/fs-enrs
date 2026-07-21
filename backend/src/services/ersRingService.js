@@ -182,8 +182,9 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
             // to prevent dual recording of the same conference.
             if (cfg?.record_conferences && !(cfg?.recording_enabled && cfg?.recording_mode === 'AUTO')) {
               const dir  = cfg.recording_directory || fsPathService.getErsRecordingDir();
-              const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-              const path = `${dir}/ers_${room}_${dateStr}.wav`;
+              // Use incidentUuid for a globally unique filename — two incidents on the
+              // same room on the same day previously collided on the same path.
+              const path = `${dir}/ers_${room}_${incidentUuid}.wav`;
               await eslCommand(`conference ${room} record ${path}`).catch(() => {});
               await query(
                 `UPDATE ers_incidents SET recording_path = $2 WHERE id = $1`,

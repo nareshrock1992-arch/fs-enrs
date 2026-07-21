@@ -568,6 +568,7 @@ local function exec_ers_ring_all(s, node)
     tier             = node.tier or "primary",
     caller_number    = s:getVariable("caller_id_number") or "",
     caller_name      = s:getVariable("caller_id_name") or nil,
+    emergency_number = s:getVariable("destination_number") or nil,
   })
 
   -- d.success == false means the backend rejected the request (e.g. no

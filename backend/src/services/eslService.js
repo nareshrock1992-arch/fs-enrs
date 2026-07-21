@@ -638,6 +638,16 @@ async function handleEvent(evt) {
     if (action === 'conference-create') {
       registryGetOrCreate(confName);
       emit('conference.created', { confName });
+      // Capture Conference-Unique-ID (FreeSWITCH's internal conference UUID) and
+      // write it to ers_incidents.conference_id for CDR tracing and correlation.
+      const confUniqueId = evt.getHeader('Conference-Unique-ID') || null;
+      if (confUniqueId) {
+        query(
+          `UPDATE ers_incidents SET conference_id = $2
+           WHERE conference_room = $1 AND status IN ('ACTIVE','QUEUED') AND deleted_at IS NULL`,
+          [confName, confUniqueId]
+        ).catch(err => console.warn(`[esl] conference_id update failed: ${err.message}`));
+      }
       import('./conferenceManager.js').then(({ handleConferenceCreated }) => {
         handleConferenceCreated(confName).catch(err =>
           console.error(`[esl] conferenceManager.handleConferenceCreated failed conf="${confName}": ${err.message}`)
@@ -888,13 +898,13 @@ async function handleEvent(evt) {
     emit('channel.hangup', { uuid, cause, callerNum });
     eslEvents.emit('CHANNEL_HANGUP', { uuid, cause, callerNum });
 
-    // Update ERS responder status for originated legs that never joined.
-    // Legs that DID join are already JOINED; we only touch INVITED rows here.
+    // Update ERS responder status + participant disconnect_cause for originated legs.
     if (uuid && ersChannelMap.has(uuid)) {
       const { incidentId, trackingNum } = ersChannelMap.get(uuid);
       ersChannelMap.delete(uuid);
       if (incidentId && trackingNum && cause) {
         const finalStatus = mapHangupCauseToStatus(cause);
+        // Update responder row: hangup_cause + promote INVITED → final status
         query(
           `UPDATE ers_incident_responders
            SET hangup_cause = $3,
@@ -902,6 +912,24 @@ async function handleEvent(evt) {
            WHERE ers_incident_id = $1 AND mobile_number = $2`,
           [incidentId, trackingNum, cause, finalStatus]
         ).catch(err => console.warn(`[esl] hangup status update failed: ${err.message}`));
+        // Update participant row: disconnect_cause + total_talk_seconds for legs that joined
+        query(
+          `UPDATE ers_incident_participants
+           SET disconnect_cause = $3,
+               total_talk_seconds = CASE
+                 WHEN left_at IS NOT NULL AND joined_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (left_at - joined_at))::INT)
+                 ELSE total_talk_seconds
+               END
+           WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = (
+             SELECT id FROM emergency_contacts
+             WHERE deleted_at IS NULL
+               AND (extension_number = $2
+                    OR RIGHT(REGEXP_REPLACE(mobile_number,'[^0-9]','','g'),9) = RIGHT(REGEXP_REPLACE($2,'[^0-9]','','g'),9))
+             LIMIT 1
+           ))`,
+          [incidentId, trackingNum, cause]
+        ).catch(() => {});
       }
     }
     return;
@@ -1247,17 +1275,27 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       } else {
         // ── Stage 6c: already counted, no action ────────────────────────────
         console.log(`[track:6c] SKIP — participant id=${existing.id} role="${existing.role}" already present (left_at=null)`);
+        // Capture the initiator's FreeSWITCH channel UUID on first ESL join
+        // (the HTTP incident-create path can't know it yet).
+        if (existing.role === 'initiator' && channelUuid) {
+          query(
+            `UPDATE ers_incidents SET caller_fs_uuid = $2
+             WHERE id = $1 AND caller_fs_uuid IS NULL`,
+            [incident.id, channelUuid]
+          ).catch(err => console.warn(`[track:6c] caller_fs_uuid update failed: ${err.message}`));
+        }
       }
 
     } else if (event === 'leave') {
       // ── Stage 6d: leave path ────────────────────────────────────────────
       const pRes = await query(
         `UPDATE ers_incident_participants
-         SET left_at = now()
+         SET left_at = now(),
+             total_talk_seconds = GREATEST(0, EXTRACT(EPOCH FROM (now() - joined_at))::INT)
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
         [incident.id, trackingNum, contact?.id ?? null]
       );
-      console.log(`[track:6d] participant left_at UPDATE rowCount=${pRes.rowCount} incident=${incident.id} num="${trackingNum}"`);
+      console.log(`[track:6d] participant left_at+talk_seconds UPDATE rowCount=${pRes.rowCount} incident=${incident.id} num="${trackingNum}"`);
 
       const rRes = await query(
         `UPDATE ers_incident_responders

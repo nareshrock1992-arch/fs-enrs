@@ -229,7 +229,7 @@ router.get('/ers', asyncHandler(async (req, res) => {
        o.name AS org_name, o.id AS organization_id,
        COUNT(DISTINCT r.id)::INT AS responder_count,
        COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('JOINED','REJOINED'))::INT AS answered_count,
-       COUNT(DISTINCT r.id) FILTER (WHERE r.status NOT IN ('JOINED','REJOINED'))::INT AS no_answer_count,
+       COUNT(DISTINCT r.id) FILTER (WHERE r.status NOT IN ('JOINED','REJOINED','OBSERVER'))::INT AS no_answer_count,
        COUNT(DISTINCT p.id)::INT AS participant_count,
        COUNT(DISTINCT p.id) FILTER (WHERE p.role = 'initiator')::INT AS initiator_count,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds

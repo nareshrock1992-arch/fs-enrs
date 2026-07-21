@@ -370,6 +370,19 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
       [updated[0].id]
     ).catch(() => {});
 
+    // Close any participant rows that never received a del-member ESL event
+    // (backend restart during call, missed events, abnormal hangup).
+    // Sets left_at = ended_at of the incident and computes total_talk_seconds.
+    await tq(
+      `UPDATE ers_incident_participants
+       SET left_at = now(),
+           total_talk_seconds = GREATEST(0,
+             EXTRACT(EPOCH FROM (now() - joined_at))::INT
+           )
+       WHERE incident_id = $1 AND left_at IS NULL`,
+      [updated[0].id]
+    ).catch(() => {});
+
     // Promote next queued entry — lock the row first to prevent races
     const { rows: [queueEntry] } = await tq(
       `SELECT q.id, q.incident_id FROM ers_queues q
@@ -851,6 +864,7 @@ export const RingAllSchema = z.object({
   tier:             z.enum(['primary', 'secondary']),
   caller_number:    z.string().min(7).max(32),
   caller_name:      z.string().max(128).optional().nullable(),
+  emergency_number: z.string().max(32).optional().nullable(),
 });
 
 export const ersRingAll = asyncHandler(async (req, res) => {
@@ -925,12 +939,12 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     const room = resolveConferenceRoom(cfg, slot);
     const { rows: [inc] } = await tq(
       `INSERT INTO ers_incidents
-         (incident_uuid, ers_configuration_id, tier_group_id, status,
-          caller_number, caller_name, conference_room, group_type, started_at)
-       VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $6, $7, now())
+         (incident_uuid, ers_configuration_id, tier_group_id, tenant_id, status,
+          caller_number, caller_name, emergency_call_number, conference_room, group_type, started_at)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $6, $7, $8, $9, now())
        RETURNING id, incident_uuid, conference_room`,
-      [incidentUuid, d.configuration_id, tierGroup?.id ?? null,
-       d.caller_number, d.caller_name ?? null, room, d.tier]
+      [incidentUuid, d.configuration_id, tierGroup?.id ?? null, cfg.tenant_id ?? null,
+       d.caller_number, d.caller_name ?? null, d.emergency_number ?? null, room, d.tier]
     );
     await tq(
       `INSERT INTO ers_incident_participants (incident_id, raw_number, role, joined_at)
