@@ -1072,6 +1072,7 @@ async function persistIncidentEvent(confName, memberId, rawNumber, eventType) {
 //   fall back to callerNum (which IS the initiator's own number for inbound joins).
 async function trackParticipant(confName, callerNum, destNum, event, memberId, channelUuid = '') {
   if (!confName || (!callerNum && !destNum)) return;
+  console.log(`[track] ${event.toUpperCase()} conf="${confName}" callerNum="${callerNum}" destNum="${destNum}" memberId="${memberId}" uuid="${channelUuid}"`);
   try {
     const { rows: [incident] } = await query(
       `SELECT id FROM ers_incidents
@@ -1080,11 +1081,10 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       [confName]
     );
     if (!incident) {
-      // Not an ERS room — benign for IVR/ENS conferences.
-      // Log at debug level so conference_room mismatches are visible during troubleshooting.
-      console.debug(`[esl] trackParticipant: no active ERS incident for conference_room="${confName}" — skipping DB write`);
+      console.log(`[track] no ERS incident for conf="${confName}" — skipping (IVR/ENS room)`);
       return;
     }
+    console.log(`[track] incident id=${incident.id} matched conf="${confName}"`);
 
     // Phase 1: try to resolve the contact from Caller-Destination-Number (responder's extension).
     let contact     = null;
@@ -1103,6 +1103,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       if (destContact) {
         contact     = destContact;
         trackingNum = destNum;
+        console.log(`[track] resolved contact id=${destContact.id} via destNum="${destNum}"`);
 
         // Fix the in-memory conference registry so the monitoring page shows the
         // responder's actual name instead of "Outbound Call" / the initiator's CallerID.
@@ -1140,10 +1141,13 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       if (callerContact) {
         contact     = callerContact;
         trackingNum = callerNum;
+        console.log(`[track] resolved contact id=${callerContact.id} via callerNum="${callerNum}"`);
+      } else {
+        console.log(`[track] no contact found for callerNum="${callerNum}" — participant row will have contact_id=null`);
       }
     }
 
-    if (!trackingNum) return;
+    if (!trackingNum) { console.log('[track] no trackingNum — skipping write'); return; }
 
     // Fill incidentId into the channel map entry now that we know it.
     // The channel UUID was stored with incidentId=null during the registry patch above.
@@ -1178,12 +1182,27 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
         const resolvedName = contact
           ? `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
           : null;
-        await query(
-          `INSERT INTO ers_incident_participants
-             (incident_id, contact_id, raw_number, role, caller_name, joined_at)
-           VALUES ($1, $2, $3, 'responder', $4, now())`,
-          [incident.id, contact?.id ?? null, trackingNum, resolvedName]
-        );
+        // Try with migration-031 column (caller_name) first; fall back to base columns
+        // so the insert always succeeds even if migration 031 has not been applied yet.
+        try {
+          await query(
+            `INSERT INTO ers_incident_participants
+               (incident_id, contact_id, raw_number, role, caller_name, joined_at)
+             VALUES ($1, $2, $3, 'responder', $4, now())`,
+            [incident.id, contact?.id ?? null, trackingNum, resolvedName]
+          );
+          console.log(`[track] INSERT participant incident=${incident.id} num="${trackingNum}" name="${resolvedName}" (with caller_name)`);
+        } catch (insertErr) {
+          // Migration 031 not applied — caller_name column absent; retry without it.
+          console.warn(`[track] participant INSERT with caller_name failed (${insertErr.message}), retrying without`);
+          await query(
+            `INSERT INTO ers_incident_participants
+               (incident_id, contact_id, raw_number, role, joined_at)
+             VALUES ($1, $2, $3, 'responder', now())`,
+            [incident.id, contact?.id ?? null, trackingNum]
+          );
+          console.log(`[track] INSERT participant incident=${incident.id} num="${trackingNum}" (base columns)`);
+        }
         if (contact?.id) {
           await query(
             `INSERT INTO ers_incident_responders
@@ -1196,14 +1215,14 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
                join_time            = COALESCE(ers_incident_responders.join_time, now()),
                emergency_contact_id = EXCLUDED.emergency_contact_id`,
             [incident.id, contact.id, trackingNum]
-          ).catch(err => {
-            // Likely cause: migration 031 not run — UNIQUE constraint
-            // ers_incident_responders_incident_mobile_key is missing.
-            // Run: node src/db/migrate.js  to apply migration 031.
+          ).then(() => {
+            console.log(`[track] UPSERT responder incident=${incident.id} contact=${contact.id} num="${trackingNum}" → JOINED`);
+          }).catch(err => {
+            // Most likely cause: migration 031 not run — UNIQUE constraint absent.
+            // Run: cd backend && npm run migrate
             console.error(
-              `[esl] trackParticipant: responder upsert FAILED for incident ${incident.id} ` +
-              `mobile=${trackingNum} — ${err.message}. ` +
-              'Check migration 031 has been applied (ensure UNIQUE constraint exists).'
+              `[track] responder upsert FAILED incident=${incident.id} num="${trackingNum}": ${err.message}. ` +
+              'Run npm run migrate to apply migration 031.'
             );
           });
         }
@@ -1217,6 +1236,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
          WHERE incident_id = $1 AND (raw_number = $2 OR contact_id = $3) AND left_at IS NULL`,
         [incident.id, trackingNum, contact?.id ?? null]
       );
+      console.log(`[track] UPDATE participant left_at incident=${incident.id} num="${trackingNum}"`);
       await query(
         `UPDATE ers_incident_responders
          SET leave_time = now()
@@ -1226,7 +1246,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
     }
   } catch (err) {
     // Never let audit tracking break live call event handling.
-    console.error('[esl] trackParticipant failed:', err.message);
+    console.error(`[track] FATAL trackParticipant error: ${err.message}`, err.stack?.split('\n')[1]);
   }
 }
 
