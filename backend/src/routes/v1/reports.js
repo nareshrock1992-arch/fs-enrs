@@ -229,10 +229,9 @@ router.get('/ers', asyncHandler(async (req, res) => {
        o.name AS org_name, o.id AS organization_id,
        COUNT(DISTINCT r.id)::INT AS responder_count,
        COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('JOINED','REJOINED'))::INT AS answered_count,
-       COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('INVITED','BUSY','NO_ANSWER','FAILED','REJECTED','TIMEOUT','MISSED'))::INT AS no_answer_count,
+       COUNT(DISTINCT r.id) FILTER (WHERE r.status NOT IN ('JOINED','REJOINED'))::INT AS no_answer_count,
        COUNT(DISTINCT p.id)::INT AS participant_count,
        COUNT(DISTINCT p.id) FILTER (WHERE p.role = 'initiator')::INT AS initiator_count,
-       COALESCE(SUM(r.dial_attempts), 0)::INT AS total_dial_attempts,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
@@ -271,6 +270,7 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
 
   const [{ rows: participants }, { rows: responders }, { rows: [recording] }, { rows: events }] = await Promise.all([
     // Participants: every leg that entered the conference (initiator + responders)
+    // Tries migration-031 columns first; falls back to base columns if not yet applied.
     query(
       `SELECT p.id, p.raw_number, p.role, p.caller_name,
          p.joined_at, p.left_at, p.rejoined_at,
@@ -282,8 +282,21 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
        WHERE p.incident_id = $1
        ORDER BY p.joined_at`,
       [incident.id]
+    ).catch(() =>
+      query(
+        `SELECT p.id, p.raw_number, p.role,
+           p.joined_at, p.left_at, p.rejoined_at,
+           c.first_name, c.last_name, c.extension_number, c.mobile_number,
+           c.role AS contact_role
+         FROM ers_incident_participants p
+         LEFT JOIN emergency_contacts c ON c.id = p.contact_id
+         WHERE p.incident_id = $1
+         ORDER BY p.joined_at`,
+        [incident.id]
+      )
     ),
     // Responders: all contacts that were dialled (INVITED includes no-answers)
+    // Tries migration-031 columns first; falls back to base columns if not yet applied.
     query(
       `SELECT r.id, r.status, r.joined_via, r.rejoin_count,
          r.join_time, r.leave_time, r.call_uuid,
@@ -299,6 +312,19 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
        WHERE r.ers_incident_id = $1
        ORDER BY r.join_time NULLS LAST, r.id`,
       [incident.id]
+    ).catch(() =>
+      query(
+        `SELECT r.id, r.status, r.joined_via, r.rejoin_count,
+           r.join_time, r.leave_time, r.call_uuid,
+           r.mobile_number AS responder_mobile,
+           c.first_name, c.last_name, c.mobile_number, c.extension_number,
+           c.role AS contact_role
+         FROM ers_incident_responders r
+         LEFT JOIN emergency_contacts c ON c.id = r.emergency_contact_id
+         WHERE r.ers_incident_id = $1
+         ORDER BY r.join_time NULLS LAST, r.id`,
+        [incident.id]
+      )
     ),
     // Recording for this incident
     query(
