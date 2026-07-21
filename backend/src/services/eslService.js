@@ -31,6 +31,12 @@ let reconnectCount  = 0;
 const conferenceRegistry    = new Map();
 const recordingStartTimers  = new Map(); // confName → timeout ID, cleared by start-recording ESL event
 
+// Maps channelUuid → { incidentId, trackingNum } for ERS ring-all originated legs.
+// Populated in trackParticipant when a responder is identified via destNum.
+// Consumed by CHANNEL_HANGUP handler to update hangup_cause and final status.
+// Entries cleared on hangup or after 2 hours (runaway-guard).
+const ersChannelMap = new Map();
+
 function registryGetOrCreate(confName) {
   if (!conferenceRegistry.has(confName)) {
     conferenceRegistry.set(confName, {
@@ -616,7 +622,13 @@ async function handleEvent(evt) {
     const confName   = evt.getHeader('Conference-Name');
     const memberId   = evt.getHeader('Member-ID');
     const callerNum   = evt.getHeader('Caller-Caller-ID-Number')    || '';
-    const callerName  = evt.getHeader('Caller-Caller-ID-Name')     || '';
+    // FreeSWITCH percent-encodes spaces in the CallerID name header (e.g. "Outbound%20Call").
+    // Decode here so monitoring UI and DB always receive the human-readable string.
+    const callerNameRaw = evt.getHeader('Caller-Caller-ID-Name') || '';
+    const callerName = (() => {
+      try { return decodeURIComponent(callerNameRaw.replace(/\+/g, ' ')); }
+      catch { return callerNameRaw; }
+    })();
     const channelUuid = evt.getHeader('Caller-Unique-ID')          || '';
     // For ring-all originated legs, Caller-Caller-ID-Number = initiator's number
     // (set by origination_caller_id_number so the responder's phone shows the right caller).
@@ -714,11 +726,13 @@ async function handleEvent(evt) {
       const conf = conferenceRegistry.get(confName);
       if (conf?.members.has(memberId)) conf.members.get(memberId).muted = true;
       emit('conference.member.muted', { confName, member: memberId, callerNum, muted: true });
+      persistIncidentEvent(confName, memberId, callerNum, 'mute');
 
     } else if (action === 'unmute-member') {
       const conf = conferenceRegistry.get(confName);
       if (conf?.members.has(memberId)) conf.members.get(memberId).muted = false;
       emit('conference.member.muted', { confName, member: memberId, callerNum, muted: false });
+      persistIncidentEvent(confName, memberId, callerNum, 'unmute');
 
     } else if (action === 'deaf-member') {
       const conf = conferenceRegistry.get(confName);
@@ -747,7 +761,12 @@ async function handleEvent(evt) {
       const conf = conferenceRegistry.get(confName);
       if (conf) {
         conf.floorHolder = newFloor;
-        for (const [mid, m] of conf.members) m.floor = (mid === newFloor);
+        for (const [mid, m] of conf.members) {
+          const hadFloor = m.floor;
+          m.floor = (mid === newFloor);
+          if (!hadFloor && m.floor) persistIncidentEvent(confName, mid, m.callerNum, 'floor_gained');
+          else if (hadFloor && !m.floor) persistIncidentEvent(confName, mid, m.callerNum, 'floor_lost');
+        }
       }
       emit('conference.floor.changed', { confName, member: newFloor });
 
@@ -868,6 +887,23 @@ async function handleEvent(evt) {
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
     emit('channel.hangup', { uuid, cause, callerNum });
     eslEvents.emit('CHANNEL_HANGUP', { uuid, cause, callerNum });
+
+    // Update ERS responder status for originated legs that never joined.
+    // Legs that DID join are already JOINED; we only touch INVITED rows here.
+    if (uuid && ersChannelMap.has(uuid)) {
+      const { incidentId, trackingNum } = ersChannelMap.get(uuid);
+      ersChannelMap.delete(uuid);
+      if (incidentId && trackingNum && cause) {
+        const finalStatus = mapHangupCauseToStatus(cause);
+        query(
+          `UPDATE ers_incident_responders
+           SET hangup_cause = $3,
+               status = CASE WHEN status = 'INVITED' THEN $4::VARCHAR ELSE status END
+           WHERE ers_incident_id = $1 AND mobile_number = $2`,
+          [incidentId, trackingNum, cause, finalStatus]
+        ).catch(err => console.warn(`[esl] hangup status update failed: ${err.message}`));
+      }
+    }
     return;
   }
 
@@ -983,6 +1019,39 @@ async function reconcileOrphanedIncident(confName) {
 // One row per person per incident, with join/leave/rejoin timestamps —
 // the detail level the ERS incident report needs ("all participants,
 // join/leave/rejoin") that a single status column can't represent for
+// Map FreeSWITCH hangup causes to ERS responder status values.
+function mapHangupCauseToStatus(cause) {
+  if (!cause) return 'MISSED';
+  const c = String(cause).toUpperCase();
+  if (c === 'USER_BUSY' || c === 'BUSY_EVERYWHERE')            return 'BUSY';
+  if (c === 'NO_ANSWER' || c === 'NO_USER_RESPONSE')           return 'NO_ANSWER';
+  if (c === 'CALL_REJECTED' || c === 'REJECTED')               return 'REJECTED';
+  if (c === 'ORIGINATOR_CANCEL' || c === 'LOSE_RACE')          return 'TIMEOUT';
+  if (c === 'NORMAL_CLEARING' || c === 'SUCCESS')              return 'MISSED'; // answered then left
+  return 'FAILED';
+}
+
+// Persist a conference event (mute, floor, etc.) to ers_incident_events.
+// Non-fatal fire-and-forget — never throws or blocks the event handler.
+async function persistIncidentEvent(confName, memberId, rawNumber, eventType) {
+  try {
+    const { rows: [incident] } = await query(
+      `SELECT id FROM ers_incidents
+       WHERE conference_room = $1 AND deleted_at IS NULL
+       ORDER BY started_at DESC LIMIT 1`,
+      [confName]
+    );
+    if (!incident) return;
+    await query(
+      `INSERT INTO ers_incident_events (incident_id, member_id, raw_number, event_type)
+       VALUES ($1, $2, $3, $4)`,
+      [incident.id, String(memberId || ''), rawNumber || '', eventType]
+    );
+  } catch (err) {
+    console.debug(`[esl] persistIncidentEvent failed (non-fatal): ${err.message}`);
+  }
+}
+
 // someone who dropped and came back. Driven by mod_conference's own
 // add-member/del-member events so it's accurate regardless of WHICH path
 // put the leg in the room (ring-all originate, caller's own Lua bridge,
@@ -1010,7 +1079,12 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId) {
        ORDER BY started_at DESC LIMIT 1`,
       [confName]
     );
-    if (!incident) return; // not an ERS room
+    if (!incident) {
+      // Not an ERS room — benign for IVR/ENS conferences.
+      // Log at debug level so conference_room mismatches are visible during troubleshooting.
+      console.debug(`[esl] trackParticipant: no active ERS incident for conference_room="${confName}" — skipping DB write`);
+      return;
+    }
 
     // Phase 1: try to resolve the contact from Caller-Destination-Number (responder's extension).
     let contact     = null;
@@ -1041,6 +1115,12 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId) {
             m.callerName  = resolvedName;
             m.displayName = resolvedName;
             m.extension   = destNum;
+            // Register UUID → incident for CHANNEL_HANGUP correlation.
+            if (m._uuid) {
+              ersChannelMap.set(m._uuid, { incidentId: null /* filled below */, trackingNum: destNum });
+              // Clean up after 2 hours — guards against leaked entries if hangup is never received.
+              setTimeout(() => ersChannelMap.delete(m._uuid), 2 * 60 * 60 * 1000);
+            }
           }
         }
       }
@@ -1064,6 +1144,12 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId) {
     }
 
     if (!trackingNum) return;
+
+    // Fill incidentId into the channel map entry now that we know it.
+    // The channel UUID was stored with incidentId=null during the registry patch above.
+    if (event === 'join' && channelUuid && ersChannelMap.has(channelUuid)) {
+      ersChannelMap.get(channelUuid).incidentId = incident.id;
+    }
 
     if (event === 'join') {
       const { rows: [existing] } = await query(
@@ -1089,10 +1175,14 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId) {
           ).catch(() => {});
         }
       } else if (!existing) {
+        const resolvedName = contact
+          ? `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
+          : null;
         await query(
-          `INSERT INTO ers_incident_participants (incident_id, contact_id, raw_number, role, joined_at)
-           VALUES ($1, $2, $3, 'responder', now())`,
-          [incident.id, contact?.id ?? null, trackingNum]
+          `INSERT INTO ers_incident_participants
+             (incident_id, contact_id, raw_number, role, caller_name, joined_at)
+           VALUES ($1, $2, $3, 'responder', $4, now())`,
+          [incident.id, contact?.id ?? null, trackingNum, resolvedName]
         );
         if (contact?.id) {
           await query(
@@ -1106,7 +1196,16 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId) {
                join_time            = COALESCE(ers_incident_responders.join_time, now()),
                emergency_contact_id = EXCLUDED.emergency_contact_id`,
             [incident.id, contact.id, trackingNum]
-          ).catch(err => console.warn('[esl] trackParticipant: responder upsert failed:', err.message));
+          ).catch(err => {
+            // Likely cause: migration 031 not run — UNIQUE constraint
+            // ers_incident_responders_incident_mobile_key is missing.
+            // Run: node src/db/migrate.js  to apply migration 031.
+            console.error(
+              `[esl] trackParticipant: responder upsert FAILED for incident ${incident.id} ` +
+              `mobile=${trackingNum} — ${err.message}. ` +
+              'Check migration 031 has been applied (ensure UNIQUE constraint exists).'
+            );
+          });
         }
       }
       // else: existing with left_at=NULL — same person already counted, no action.

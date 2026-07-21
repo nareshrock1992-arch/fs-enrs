@@ -936,7 +936,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
       `INSERT INTO ers_incident_participants (incident_id, raw_number, role, joined_at)
        VALUES ($1, $2, 'initiator', now())`,
       [inc.id, d.caller_number]
-    ).catch(() => {});
+    ).catch(err => console.error(`[ers-internal] initiator participant insert failed incident=${inc.id}: ${err.message}`));
     return { live: null, incident: inc };
   }));
 

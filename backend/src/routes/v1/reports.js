@@ -229,7 +229,10 @@ router.get('/ers', asyncHandler(async (req, res) => {
        o.name AS org_name, o.id AS organization_id,
        COUNT(DISTINCT r.id)::INT AS responder_count,
        COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('JOINED','REJOINED'))::INT AS answered_count,
-       COUNT(DISTINCT p.id) FILTER (WHERE p.role = 'responder')::INT AS participant_count,
+       COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('INVITED','BUSY','NO_ANSWER','FAILED','REJECTED','TIMEOUT','MISSED'))::INT AS no_answer_count,
+       COUNT(DISTINCT p.id)::INT AS participant_count,
+       COUNT(DISTINCT p.id) FILTER (WHERE p.role = 'initiator')::INT AS initiator_count,
+       COALESCE(SUM(r.dial_attempts), 0)::INT AS total_dial_attempts,
        EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
@@ -266,26 +269,38 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
-  const [{ rows: participants }, { rows: responders }, { rows: [recording] }] = await Promise.all([
+  const [{ rows: participants }, { rows: responders }, { rows: [recording] }, { rows: events }] = await Promise.all([
+    // Participants: every leg that entered the conference (initiator + responders)
     query(
-      `SELECT p.raw_number, p.role, p.joined_at, p.left_at, p.rejoined_at,
-         c.first_name, c.last_name, c.extension_number, c.mobile_number
+      `SELECT p.id, p.raw_number, p.role, p.caller_name,
+         p.joined_at, p.left_at, p.rejoined_at,
+         p.disconnect_cause, p.total_talk_seconds,
+         c.first_name, c.last_name, c.extension_number, c.mobile_number,
+         c.role AS contact_role
        FROM ers_incident_participants p
        LEFT JOIN emergency_contacts c ON c.id = p.contact_id
        WHERE p.incident_id = $1
        ORDER BY p.joined_at`,
       [incident.id]
     ),
+    // Responders: all contacts that were dialled (INVITED includes no-answers)
     query(
-      `SELECT r.status, r.joined_via, r.rejoin_count,
-         r.join_time, r.leave_time, r.call_uuid, r.mobile_number AS responder_mobile,
-         c.first_name, c.last_name, c.mobile_number, c.extension_number, c.role AS contact_role
+      `SELECT r.id, r.status, r.joined_via, r.rejoin_count,
+         r.join_time, r.leave_time, r.call_uuid,
+         r.mobile_number AS responder_mobile,
+         r.ring_start_time, r.dial_attempts, r.hangup_cause, r.tier, r.wave_number,
+         c.first_name, c.last_name, c.mobile_number, c.extension_number,
+         c.role AS contact_role,
+         rg.name AS group_name
        FROM ers_incident_responders r
-       LEFT JOIN emergency_contacts c ON c.id = r.emergency_contact_id
+       LEFT JOIN emergency_contacts c   ON c.id = r.emergency_contact_id
+       LEFT JOIN responder_group_members rgm ON rgm.emergency_contact_id = c.id
+       LEFT JOIN responder_groups rg    ON rg.id = rgm.responder_group_id AND rg.deleted_at IS NULL
        WHERE r.ers_incident_id = $1
-       ORDER BY r.join_time`,
+       ORDER BY r.join_time NULLS LAST, r.id`,
       [incident.id]
     ),
+    // Recording for this incident
     query(
       `SELECT id, recording_path, status, duration_sec, file_size_bytes, started_at, ended_at
        FROM recordings
@@ -293,31 +308,93 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
        LIMIT 1`,
       [incident.recording_path, incident.conference_room]
     ),
+    // Mute/floor event history
+    query(
+      `SELECT e.member_id, e.raw_number, e.event_type, e.occurred_at
+       FROM ers_incident_events e
+       WHERE e.incident_id = $1
+       ORDER BY e.occurred_at`,
+      [incident.id]
+    ).catch(() => ({ rows: [] })),
   ]);
+
+  // Compute total_talk_seconds for each participant if not already stored
+  // (left_at - joined_at, using rejoined_at for multi-leg participants)
+  const enrichedParticipants = participants.map(p => {
+    const name = p.first_name
+      ? `${p.first_name} ${p.last_name}`.trim()
+      : (p.caller_name || p.raw_number || 'Unknown');
+    const number = p.extension_number || p.mobile_number || p.raw_number;
+    const talkSec = p.total_talk_seconds ??
+      (p.joined_at && p.left_at
+        ? Math.round((new Date(p.left_at) - new Date(p.joined_at)) / 1000)
+        : null);
+    return {
+      participant_id:     p.id,
+      name,
+      contact_name:       name,
+      contact_number:     number,
+      number,
+      role:               p.role,
+      joined_at:          p.joined_at,
+      join_conference_time: p.joined_at,
+      left_at:            p.left_at,
+      leave_conference_time: p.left_at,
+      rejoined_at:        p.rejoined_at,
+      total_talk_seconds: talkSec,
+      disconnect_cause:   p.disconnect_cause,
+    };
+  });
+
+  const enrichedResponders = responders.map(r => {
+    const name = r.first_name
+      ? `${r.first_name} ${r.last_name}`.trim()
+      : (r.mobile_number || r.responder_mobile || 'Unknown');
+    const number = r.extension_number || r.mobile_number || r.responder_mobile;
+    // Compute answer_time as the elapsed seconds from ring_start to join_time
+    const answerTimeSec = (r.ring_start_time && r.join_time)
+      ? Math.round((new Date(r.join_time) - new Date(r.ring_start_time)) / 1000)
+      : null;
+    // Map status to the enterprise response_status enum
+    const responseStatus = r.status;
+    return {
+      responder_id:       r.id,
+      name,
+      contact_name:       name,
+      contact_number:     number,
+      number,
+      contact_role:       r.contact_role,
+      group:              r.group_name || null,
+      escalation_level:   r.tier || null,        // primary | secondary
+      tier:               r.tier || null,
+      // Disposition
+      response_status:    responseStatus,
+      status:             responseStatus,
+      // Timing
+      ring_start:         r.ring_start_time,
+      answer_time:        r.join_time,
+      answer_time_seconds: answerTimeSec,
+      join_conference_time: r.join_time,
+      leave_conference_time: r.leave_time,
+      // Detail
+      dial_attempts:      r.dial_attempts,
+      wave_number:        r.wave_number,
+      hangup_cause:       r.hangup_cause,
+      disconnect_cause:   r.hangup_cause,
+      joined_via:         r.joined_via,
+      rejoin_count:       r.rejoin_count,
+      call_uuid:          r.call_uuid,
+    };
+  });
 
   res.json({
     incident: {
       ...incident,
-      participants: participants.map(p => ({
-        name:        p.first_name ? `${p.first_name} ${p.last_name}`.trim() : (p.raw_number || 'Unknown'),
-        number:      p.extension_number || p.mobile_number || p.raw_number,
-        role:        p.role,
-        joined_at:   p.joined_at,
-        left_at:     p.left_at,
-        rejoined_at: p.rejoined_at,
-      })),
-      responders: responders.map(r => ({
-        name:         r.first_name ? `${r.first_name} ${r.last_name}`.trim() : (r.mobile_number || r.responder_mobile || 'Unknown'),
-        number:       r.extension_number || r.mobile_number || r.responder_mobile,
-        contact_role: r.contact_role,
-        status:       r.status,
-        joined_via:   r.joined_via,
-        rejoin_count: r.rejoin_count,
-        join_time:    r.join_time,
-        leave_time:   r.leave_time,
-        call_uuid:    r.call_uuid,
-      })),
-      recording: recording || null,
+      conference_duration_seconds: incident.duration_seconds,
+      participants: enrichedParticipants,
+      responders:   enrichedResponders,
+      event_history: events,
+      recording:    recording || null,
     },
   });
 }));

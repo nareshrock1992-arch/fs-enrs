@@ -134,16 +134,25 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
 
       // Pre-populate ers_incident_responders with INVITED status so reports show
       // all responders that were rung, even those who never answered.
+      // Tier comes from the startRingAll caller (primary/secondary).
       for (const contact of responders) {
         const invitedNum = contact.extension_number || contact.mobile_number;
         if (contact.id && invitedNum) {
           await query(
             `INSERT INTO ers_incident_responders
-               (ers_incident_id, emergency_contact_id, mobile_number, status)
-             VALUES ($1, $2, $3, 'INVITED')
+               (ers_incident_id, emergency_contact_id, mobile_number, status, tier, ring_start_time)
+             VALUES ($1, $2, $3, 'INVITED', $4, now())
              ON CONFLICT (ers_incident_id, mobile_number) DO NOTHING`,
-            [incidentId, contact.id, invitedNum]
-          ).catch(() => {});
+            [incidentId, contact.id, invitedNum, tier || null]
+          ).catch(err => {
+            // This catch is INTENTIONALLY non-silent. A failure here means the
+            // UNIQUE constraint on (ers_incident_id, mobile_number) is missing
+            // (migration 031 was not run), or the DB is unreachable.
+            console.error(
+              `[ers-ring] INVITED pre-insert failed for contact ${contact.id} ` +
+              `(${invitedNum}) incident ${incidentId}: ${err.message}`
+            );
+          });
         }
       }
 
@@ -189,8 +198,19 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
         console.log(`[ers-ring] wave ${wave} — ringing ${responders.length} responder(s) into ${room}`);
         for (const contact of responders) {
           if (controller.stopped) break;
+          const invitedNum = contact.extension_number || contact.mobile_number;
           try {
             await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity });
+            // Increment dial_attempts counter so reports show how many ring waves
+            // each responder received (dial_attempts = number of originate commands sent).
+            if (invitedNum) {
+              await query(
+                `UPDATE ers_incident_responders
+                 SET dial_attempts = dial_attempts + 1, wave_number = $3
+                 WHERE ers_incident_id = $1 AND mobile_number = $2`,
+                [incidentId, invitedNum, wave]
+              ).catch(err => console.warn(`[ers-ring] dial_attempts update failed: ${err.message}`));
+            }
           } catch (err) {
             console.error(`[ers-ring] originate failed for contact ${contact.id}:`, err.message);
           }
