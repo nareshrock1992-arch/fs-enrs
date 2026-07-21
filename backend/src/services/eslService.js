@@ -706,7 +706,7 @@ async function handleEvent(evt) {
       }
       emit('conference.member.joined', { confName, member: memberId, callerNum, callerName, memberData: member });
       persistEvent('conference.member.joined', { confName, member: memberId, callerNum });
-      trackParticipant(confName, callerNum, destNum, 'join', memberId);
+      trackParticipant(confName, callerNum, destNum, 'join', memberId, channelUuid);
       // Schedule a quick xml_list 600ms after join to correct the initial muted/deaf
       // state, since parseMemberFlags inference can be wrong. The member is already
       // in the UI by then; syncConferenceFromXml emits a correction event if needed.
@@ -720,7 +720,7 @@ async function handleEvent(evt) {
       const conf = conferenceRegistry.get(confName);
       if (conf) conf.members.delete(memberId);
       emit('conference.member.left', { confName, member: memberId, callerNum });
-      trackParticipant(confName, callerNum, destNum, 'leave', null);
+      trackParticipant(confName, callerNum, destNum, 'leave', null, channelUuid);
 
     } else if (action === 'mute-member') {
       const conf = conferenceRegistry.get(confName);
@@ -1070,7 +1070,7 @@ async function persistIncidentEvent(confName, memberId, rawNumber, eventType) {
 //   If destNum is empty or doesn't match a contact (e.g. the initiator's inbound join
 //   where destNum = the ERS number, which lives in emergency_numbers not emergency_contacts),
 //   fall back to callerNum (which IS the initiator's own number for inbound joins).
-async function trackParticipant(confName, callerNum, destNum, event, memberId) {
+async function trackParticipant(confName, callerNum, destNum, event, memberId, channelUuid = '') {
   if (!confName || (!callerNum && !destNum)) return;
   try {
     const { rows: [incident] } = await query(
