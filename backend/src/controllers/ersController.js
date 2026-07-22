@@ -615,16 +615,6 @@ export const completeIncident = asyncHandler(async (req, res) => {
   res.json({ ...result.incident, dequeued: result.dequeued });
 });
 
-export const addResponder = asyncHandler(async (req, res) => {
-  const { emergency_contact_id, status = 'INVITED' } = req.body;
-  const { rows } = await query(
-    `INSERT INTO ers_incident_responders (ers_incident_id, emergency_contact_id, status)
-     VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *`,
-    [req.params.id, emergency_contact_id, status]
-  );
-  res.status(201).json(rows[0] || { ok: true });
-});
-
 export const listResponders = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT r.*, c.first_name, c.last_name, c.mobile_number, c.role

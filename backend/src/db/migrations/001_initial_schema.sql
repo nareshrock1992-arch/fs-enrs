@@ -314,46 +314,106 @@ CREATE TABLE IF NOT EXISTS ens_notification_deliveries (
 CREATE INDEX IF NOT EXISTS idx_delivery_notif ON ens_notification_deliveries (ens_notification_id);
 
 -- ── 17. ENS Campaigns ────────────────────────────────────────────────────────
--- (added in migration 008 — included here for completeness on fresh installs)
+-- Definition must match migration 008 exactly (UUID PK) so that the manual
+-- psql path and the automated migrate.js path produce the same schema.
 CREATE TABLE IF NOT EXISTS ens_campaigns (
-  id                   BIGSERIAL    PRIMARY KEY,
-  ens_configuration_id INT          NOT NULL REFERENCES ens_configurations(id) ON DELETE CASCADE,
-  campaign_uuid        UUID         NOT NULL DEFAULT gen_random_uuid() UNIQUE,
-  status               VARCHAR(16)  NOT NULL DEFAULT 'queued'
-                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
-  triggered_via        VARCHAR(16)  NOT NULL DEFAULT 'PHONE'
-                         CHECK (triggered_via IN ('PHONE','UI','API')),
-  triggered_by         INT          REFERENCES users(id) ON DELETE SET NULL,
-  trigger_number       VARCHAR(32),
-  recording_file       VARCHAR(512),
-  message_text         TEXT,
-  total_destinations   INT          NOT NULL DEFAULT 0,
-  total_answered       INT          NOT NULL DEFAULT 0,
-  total_failed         INT          NOT NULL DEFAULT 0,
-  started_at           TIMESTAMPTZ,
-  completed_at         TIMESTAMPTZ,
-  created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  deleted_at           TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS idx_ens_campaign_cfg    ON ens_campaigns (ens_configuration_id);
-CREATE INDEX IF NOT EXISTS idx_ens_campaign_status ON ens_campaigns (status) WHERE deleted_at IS NULL;
+  id                  UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+  ens_configuration_id INT          NOT NULL REFERENCES ens_configurations(id),
+  organization_id     INT          REFERENCES organizations(id) ON DELETE SET NULL,
+  triggered_by        INT          REFERENCES users(id) ON DELETE SET NULL,
+  triggered_via       VARCHAR(20)  NOT NULL DEFAULT 'PHONE'
+                        CHECK (triggered_via IN ('PHONE','UI','API','SCHEDULE')),
+  trigger_number      VARCHAR(30),
 
--- ── 18. ENS Campaign Deliveries ───────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS ens_campaign_deliveries (
-  id              BIGSERIAL    PRIMARY KEY,
-  campaign_id     BIGINT       NOT NULL REFERENCES ens_campaigns(id) ON DELETE CASCADE,
-  contact_number  VARCHAR(32)  NOT NULL,
-  status          VARCHAR(16)  NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending','dialling','answered','no_answer','failed','cancelled')),
-  attempt         INT          NOT NULL DEFAULT 1,
-  call_uuid       VARCHAR(64),
-  hangup_cause    VARCHAR(64),
-  answered_at     TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  UNIQUE (campaign_id, contact_number)
+  status              VARCHAR(20)  NOT NULL DEFAULT 'queued'
+                        CHECK (status IN
+                          ('queued','running','paused','completed','cancelled','failed')),
+
+  recording_file      TEXT,
+  message_audio_url   TEXT,
+  message_text        TEXT,
+
+  max_concurrent      INT          NOT NULL DEFAULT 30,
+  calls_per_second    NUMERIC(5,2) NOT NULL DEFAULT 2.0,
+  retry_count         INT          NOT NULL DEFAULT 3,
+  retry_interval_sec  INT          NOT NULL DEFAULT 300,
+  max_attempts        INT          NOT NULL DEFAULT 4,
+  retry_failed_only   BOOLEAN      NOT NULL DEFAULT true,
+  adaptive_throttling BOOLEAN      NOT NULL DEFAULT true,
+  campaign_priority   INT          NOT NULL DEFAULT 5,
+  campaign_timeout_min INT         NOT NULL DEFAULT 60,
+  sip_gateway         VARCHAR(100),
+  sip_caller_id       VARCHAR(50),
+
+  scheduled_at        TIMESTAMPTZ,
+  started_at          TIMESTAMPTZ,
+  completed_at        TIMESTAMPTZ,
+  paused_at           TIMESTAMPTZ,
+  cancelled_at        TIMESTAMPTZ,
+
+  total_destinations  INT          NOT NULL DEFAULT 0,
+  queued_count        INT          NOT NULL DEFAULT 0,
+  dialing_count       INT          NOT NULL DEFAULT 0,
+  answered_count      INT          NOT NULL DEFAULT 0,
+  busy_count          INT          NOT NULL DEFAULT 0,
+  no_answer_count     INT          NOT NULL DEFAULT 0,
+  failed_count        INT          NOT NULL DEFAULT 0,
+  retried_count       INT          NOT NULL DEFAULT 0,
+  completed_count     INT          NOT NULL DEFAULT 0,
+  expired_count       INT          NOT NULL DEFAULT 0,
+  skipped_count       INT          NOT NULL DEFAULT 0,
+  peak_concurrent     INT          NOT NULL DEFAULT 0,
+  campaign_duration_sec INT,
+  avg_answer_time_ms  INT,
+
+  created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_ens_campaigns_status
+  ON ens_campaigns (status, campaign_priority DESC, created_at)
+  WHERE status IN ('queued','running');
+CREATE INDEX IF NOT EXISTS idx_ens_campaigns_config
+  ON ens_campaigns (ens_configuration_id, created_at DESC);
+
+-- ── 18. ENS Campaign Destinations ───────────────────────────────────────────
+-- Replaces the old ens_campaign_deliveries table; matches migration 008.
+CREATE TABLE IF NOT EXISTS ens_campaign_destinations (
+  id              BIGSERIAL    PRIMARY KEY,
+  campaign_id     UUID         NOT NULL REFERENCES ens_campaigns(id) ON DELETE CASCADE,
+  contact_id      INT          REFERENCES emergency_contacts(id) ON DELETE SET NULL,
+  phone_number    VARCHAR(50)  NOT NULL,
+  contact_name    VARCHAR(200),
+
+  status          VARCHAR(20)  NOT NULL DEFAULT 'queued'
+                    CHECK (status IN
+                      ('queued','dialing','answered','busy','no_answer',
+                       'failed','completed','expired','skipped')),
+  attempt_count   INT          NOT NULL DEFAULT 0,
+  max_attempts    INT          NOT NULL DEFAULT 4,
+
+  queued_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  next_attempt_at TIMESTAMPTZ,
+  last_attempt_at TIMESTAMPTZ,
+  answered_at     TIMESTAMPTZ,
+  completed_at    TIMESTAMPTZ,
+
+  call_uuid       VARCHAR(100),
+  answer_time_ms  INT,
+  call_duration_sec INT,
+  hangup_cause    VARCHAR(50),
+  error_message   TEXT,
+
+  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_camp_dest_campaign_status
+  ON ens_campaign_destinations (campaign_id, status);
+CREATE INDEX IF NOT EXISTS idx_camp_dest_next_attempt
+  ON ens_campaign_destinations (campaign_id, next_attempt_at)
+  WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS idx_camp_dest_call_uuid
+  ON ens_campaign_destinations (call_uuid)
+  WHERE call_uuid IS NOT NULL;
 
 -- ── 19. ERS Configurations ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ers_configurations (

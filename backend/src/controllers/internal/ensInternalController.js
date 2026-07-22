@@ -280,18 +280,31 @@ export const ensQueueStatus = asyncHandler(async (req, res) => {
   const configId = parseInt(req.query.configuration_id, 10);
   if (!configId) return res.status(400).json({ error: 'configuration_id required' });
 
-  const { rows } = await query(
+  // Check legacy ens_notifications path (Lua direct-write or UI PENDING).
+  const { rows: legacyRows } = await query(
     `SELECT notification_uuid FROM ens_notifications
      WHERE ens_configuration_id = $1
-       AND status = 'IN_PROGRESS'
+       AND status IN ('IN_PROGRESS', 'PENDING')
        AND deleted_at IS NULL
      ORDER BY created_at DESC LIMIT 1`,
     [configId]
   );
-
-  if (rows[0]) {
-    return res.json({ can_proceed: false, active_uuid: rows[0].notification_uuid });
+  if (legacyRows[0]) {
+    return res.json({ can_proceed: false, active_uuid: legacyRows[0].notification_uuid });
   }
+
+  // Check modern ens_campaigns path (campaign engine).
+  const { rows: campaignRows } = await query(
+    `SELECT id::TEXT AS active_uuid FROM ens_campaigns
+     WHERE ens_configuration_id = $1
+       AND status IN ('queued', 'running')
+     ORDER BY created_at DESC LIMIT 1`,
+    [configId]
+  );
+  if (campaignRows[0]) {
+    return res.json({ can_proceed: false, active_uuid: campaignRows[0].active_uuid });
+  }
+
   res.json({ can_proceed: true, active_uuid: null });
 });
 

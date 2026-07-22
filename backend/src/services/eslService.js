@@ -1055,7 +1055,7 @@ function mapHangupCauseToStatus(cause) {
   if (c === 'NO_ANSWER' || c === 'NO_USER_RESPONSE')           return 'NO_ANSWER';
   if (c === 'CALL_REJECTED' || c === 'REJECTED')               return 'REJECTED';
   if (c === 'ORIGINATOR_CANCEL' || c === 'LOSE_RACE')          return 'TIMEOUT';
-  if (c === 'NORMAL_CLEARING' || c === 'SUCCESS')              return 'MISSED'; // answered then left
+  if (c === 'NORMAL_CLEARING' || c === 'SUCCESS')              return 'JOINED';
   return 'FAILED';
 }
 
@@ -1454,7 +1454,7 @@ export async function originateCall({
   const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
 
   const app = action === 'conference'
-    ? `&conference(${target}@default)`
+    ? `&conference(${target})`   // target must be "room@profile" from getConferenceString()
     : `&playback(${target})`;
 
   const cmd = `originate {${varStr}}${dialString} ${app}`;
@@ -2060,18 +2060,33 @@ export async function reconcileAllActiveIncidents() {
       }
     }
 
-    // Expire QUEUED rows (and their incidents) abandoned for over 2 hours.
-    // These accumulate when a queued caller hangs up before the Lua loop
-    // can call /overflow/cancel (e.g. network drop, FS crash).
+    // Expire QUEUED rows abandoned for over 2 hours (caller hung up before
+    // Lua could call /overflow/cancel, e.g. network drop or FS crash).
     await query(
       `UPDATE ers_queues SET status = 'EXPIRED', updated_at = now()
        WHERE status = 'QUEUED' AND created_at < now() - interval '2 hours'`
     );
-    await query(
-      `UPDATE ers_incidents SET status = 'COMPLETED', ended_at = now()
+
+    // Complete QUEUED incidents that no longer have a live QUEUED ers_queues
+    // row (their queue entry just expired above, or was never written).
+    // Must go through completeIncidentCore — never raw SQL — so that queue
+    // promotion and socket events fire correctly.
+    const { rows: orphanedQueued } = await query(
+      `SELECT incident_uuid FROM ers_incidents
        WHERE status = 'QUEUED' AND deleted_at IS NULL
          AND id NOT IN (SELECT incident_id FROM ers_queues WHERE status = 'QUEUED')`
     );
+    if (orphanedQueued.length > 0) {
+      const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
+      for (const { incident_uuid } of orphanedQueued) {
+        try {
+          await completeIncidentCore(incident_uuid, null);
+          console.log(`[esl] reconcile: completed orphaned QUEUED incident ${incident_uuid}`);
+        } catch (err) {
+          console.error(`[esl] reconcile: error completing QUEUED incident ${incident_uuid}:`, err.message);
+        }
+      }
+    }
   } catch (err) {
     console.error('[esl] reconcileAllActiveIncidents failed:', err.message);
   }
