@@ -69,6 +69,21 @@ function parseConfFlags(rawFlags) {
   };
 }
 
+// Resolve a human-readable display name for a conference participant.
+// Priority: DB-resolved full name (set on callerName by trackParticipant) > decoded
+// caller ID name > extension/number > "Unknown Participant".
+// Filters FreeSWITCH's internal default "Outbound Call" so operators never see it.
+// Returns "Full Name (ext)" when both a resolved name and extension are available.
+function resolveDisplayName(callerName, callerNum) {
+  const raw = callerName || '';
+  let name = raw;
+  try { name = raw ? decodeURIComponent(raw.replace(/\+/g, ' ')) : ''; } catch { /* keep raw */ }
+  const ext = callerNum || '';
+  const valid = name && name !== 'Outbound Call' && name !== ext && !/^\+?\d+$/.test(name);
+  if (valid) return ext ? `${name} (${ext})` : name;
+  return ext || 'Unknown Participant';
+}
+
 // Parse raw FreeSWITCH member flags string ("hear|speak|floor|moderator|talking") into
 // clean booleans — never expose the raw string to the frontend.
 function parseMemberFlags(rawFlags) {
@@ -565,11 +580,7 @@ export function getConferenceSnapshot() {
       isModerated:    parsedFlags.moderated,
       members: Array.from(c.members.values()).map(m => ({
         id:         m.id,
-        // Display name: prefer callerName if it's meaningful (not a raw number),
-        // fall back to callerNum, then the member ID.
-        displayName: (m.callerName && m.callerName !== m.callerNum && !/^\+?\d+$/.test(m.callerName))
-          ? m.callerName
-          : (m.callerNum || `Member #${m.id}`),
+        displayName: resolveDisplayName(m.callerName, m.callerNum),
         extension:   m.callerNum  || '',
         callerName:  m.callerName || '',
         callerNum:   m.callerNum  || '',
@@ -776,9 +787,7 @@ async function handleEvent(evt) {
         id:         memberId,
         callerNum,
         callerName,
-        displayName: (callerName && callerName !== callerNum && !/^\+?\d+$/.test(callerName))
-          ? callerName
-          : (callerNum || `Member #${memberId}`),
+        displayName: resolveDisplayName(callerName, callerNum),
         extension:  callerNum || '',
         role:       pf.moderator ? 'moderator' : 'participant',
         muted:      pf.muted,
@@ -1322,6 +1331,19 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
         contact     = callerRows[0];
         trackingNum = callerNum;
         console.log(`[${new Date().toISOString()}][track:3b] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}" ext="${contact.extension_number}" mobile="${contact.mobile_number}"`);
+        // Stage 3b resolved a real contact — update the in-memory registry member so
+        // that getConferenceSnapshot() and any subsequent API call returns the full name
+        // rather than the FreeSWITCH-default "Outbound Call" CallerID name.
+        if (memberId && event === 'join') {
+          const conf3b = conferenceRegistry.get(confName);
+          if (conf3b?.members.has(memberId)) {
+            const m3b = conf3b.members.get(memberId);
+            const resolved3b = `${contact.first_name || ''} ${contact.last_name || ''}`.trim() || callerNum;
+            m3b.callerName  = resolved3b;
+            m3b.displayName = resolveDisplayName(resolved3b, m3b.callerNum);
+            console.log(`[${new Date().toISOString()}][track:3b] registry updated member ${memberId} callerName="${resolved3b}" displayName="${m3b.displayName}"`);
+          }
+        }
       } else {
         console.log(`[${new Date().toISOString()}][track:3b] MISS — no contact for callerNum="${callerNum}" — participant will have contact_id=null, no responder row`);
       }
@@ -1975,8 +1997,14 @@ function parseMemberXml(mxml, confName) {
   const deaf    = rawCanHear   === null ? false : !rawCanHear;
   const talking = rawTalking   ?? false;
 
-  const callerName = xmlText(mxml, 'caller_id_name')   || '';
   const callerNum  = xmlText(mxml, 'caller_id_number') || '';
+  // FreeSWITCH xml_list can deliver URL-encoded names (e.g. "Outbound%20Call").
+  // Decode here so the rest of the pipeline always sees plain strings.
+  const callerName = (() => {
+    const raw = xmlText(mxml, 'caller_id_name') || '';
+    try { return raw ? decodeURIComponent(raw.replace(/\+/g, ' ')) : ''; }
+    catch { return raw; }
+  })();
   const uuid       = xmlText(mxml, 'uuid')             || '';
 
   console.log(
@@ -1991,8 +2019,7 @@ function parseMemberXml(mxml, confName) {
     _uuid:      uuid,
     callerName,
     callerNum,
-    displayName: (callerName && callerName !== callerNum && !/^\+?\d+$/.test(callerName))
-      ? callerName : (callerNum || `Member #${id}`),
+    displayName: resolveDisplayName(callerName, callerNum),
     canSpeak:   rawCanSpeak  ?? true,
     canHear:    rawCanHear   ?? true,
     muted,
