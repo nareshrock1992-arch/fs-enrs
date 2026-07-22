@@ -904,11 +904,18 @@ async function handleEvent(evt) {
       ersChannelMap.delete(uuid);
       if (incidentId && trackingNum && cause) {
         const finalStatus = mapHangupCauseToStatus(cause);
-        // Update responder row: hangup_cause + promote INVITED → final status
+        // Update responder row: hangup_cause + promote INVITED/MISSED → final status.
+        // MISSED is included so a racing completeIncidentCore that stamped MISSED
+        // before this CHANNEL_HANGUP arrived can be overridden when the call
+        // actually completed normally (NORMAL_CLEARING → 'JOINED').
         query(
           `UPDATE ers_incident_responders
            SET hangup_cause = $3,
-               status = CASE WHEN status = 'INVITED' THEN $4::VARCHAR ELSE status END
+               status = CASE
+                 WHEN status = 'INVITED'                    THEN $4::VARCHAR
+                 WHEN status = 'MISSED' AND $4 = 'JOINED'  THEN 'JOINED'
+                 ELSE status
+               END
            WHERE ers_incident_id = $1 AND mobile_number = $2`,
           [incidentId, trackingNum, cause, finalStatus]
         ).catch(err => console.warn(`[esl] hangup status update failed: ${err.message}`));
@@ -1258,7 +1265,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
                (ers_incident_id, emergency_contact_id, mobile_number, status, join_time)
              VALUES ($1, $2, $3, 'JOINED', now())
              ON CONFLICT (ers_incident_id, mobile_number) DO UPDATE SET
-               status               = CASE WHEN ers_incident_responders.status = 'INVITED'
+               status               = CASE WHEN ers_incident_responders.status IN ('INVITED', 'MISSED')
                                            THEN 'JOINED'
                                            ELSE ers_incident_responders.status END,
                join_time            = COALESCE(ers_incident_responders.join_time, now()),
