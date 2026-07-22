@@ -346,6 +346,7 @@ export const ersCreateIncident = asyncHandler(async (req, res) => {
 // not duplicate the queue-promotion logic anywhere else — always go
 // through this function.
 export async function completeIncidentCore(incidentUuid, recordingFile) {
+  console.log(`[${new Date().toISOString()}][ers] completeIncidentCore START uuid="${incidentUuid}"`);
   const result = await withTransaction(async (tq) => {
     const { rows: updated } = await tq(
       `UPDATE ers_incidents
@@ -361,14 +362,27 @@ export async function completeIncidentCore(incidentUuid, recordingFile) {
       [incidentUuid, recordingFile]
     );
 
-    if (!updated[0]) return null;
+    if (!updated[0]) {
+      console.log(`[${new Date().toISOString()}][ers] completeIncidentCore uuid="${incidentUuid}" — incident already COMPLETED or not found, skipping`);
+      return null;
+    }
+    console.log(`[${new Date().toISOString()}][ers] completeIncidentCore incident_id=${updated[0].id} marked COMPLETED`);
+
+    // Log responder states BEFORE marking INVITED → MISSED
+    const { rows: preResponders } = await tq(
+      `SELECT id, status, mobile_number FROM ers_incident_responders WHERE ers_incident_id = $1`,
+      [updated[0].id]
+    );
+    console.log(`[${new Date().toISOString()}][ers] completeIncidentCore pre-MISSED-stamp responders: ${JSON.stringify(preResponders)}`);
 
     // Mark any responders still INVITED (never answered) as MISSED
-    await tq(
+    const missedRes = await tq(
       `UPDATE ers_incident_responders SET status = 'MISSED'
-       WHERE ers_incident_id = $1 AND status = 'INVITED'`,
+       WHERE ers_incident_id = $1 AND status = 'INVITED'
+       RETURNING id, mobile_number`,
       [updated[0].id]
-    ).catch(() => {});
+    ).catch((err) => { console.warn('[ers] MISSED stamp failed:', err.message); return { rows: [], rowCount: 0 }; });
+    console.log(`[${new Date().toISOString()}][ers] completeIncidentCore MISSED-stamp rowCount=${missedRes?.rowCount ?? '?'} affected=${JSON.stringify(missedRes?.rows ?? [])}`);
 
     // Close any participant rows that never received a del-member ESL event
     // (backend restart during call, missed events, abnormal hangup).

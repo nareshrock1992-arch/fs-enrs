@@ -105,10 +105,19 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
     `originate_timeout=${LEG_TIMEOUT_S}`,
   ].join(',');
 
+  const cmd = `bgapi originate {${vars}}${dialString} &conference(${room}@${conferenceProfile})`;
+  console.log(
+    `[${new Date().toISOString()}][ers-ring] ORIGINATE contact_id=${contact.id}` +
+    ` ext="${contact.extension_number ?? 'null'}" mobile="${contact.mobile_number ?? 'null'}"` +
+    ` callerIdentity.number="${callerIdentity.number}" dialString="${dialString}"` +
+    ` room="${room}" profile="${conferenceProfile}"`
+  );
   // conferenceProfile comes from ERS config (validated by getConferenceProfile —
   // guaranteed to be a FreeSWITCH profile name, never a SIP domain/IP).
   // This ensures responders always land in the same conference as the caller.
-  return eslCommand(`bgapi originate {${vars}}${dialString} &conference(${room}@${conferenceProfile})`);
+  const result = await eslCommand(cmd);
+  console.log(`[${new Date().toISOString()}][ers-ring] ORIGINATE result: "${result?.trim?.() ?? result}"`);
+  return result;
 }
 
 /**

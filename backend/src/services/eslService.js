@@ -668,9 +668,11 @@ async function handleEvent(evt) {
       }
 
       conferenceRegistry.delete(confName);
+      console.log(`[${new Date().toISOString()}][esl] conference-destroy conf="${confName}" — calling reconcileOrphanedIncident`);
       // Reconcile DB BEFORE emitting to socket — so any REST reseed triggered
       // by the socket event sees the incident already marked COMPLETED, not ACTIVE.
       await reconcileOrphanedIncident(confName);
+      console.log(`[${new Date().toISOString()}][esl] conference-destroy conf="${confName}" — reconcileOrphanedIncident DONE`);
       emit('conference.ended', { confName });
 
     } else if (action === 'add-member') {
@@ -680,7 +682,7 @@ async function handleEvent(evt) {
       // parseMemberFlags uses text-flag inference — it is unreliable for muted state
       // on some FreeSWITCH versions. Log the raw flags so any inference error is visible.
       console.log(
-        `[esl] add-member: conf="${confName}" id=${memberId} num=${callerNum}` +
+        `[${new Date().toISOString()}][esl] add-member: conf="${confName}" id=${memberId} callerNum="${callerNum}" destNum="${destNum}" uuid="${channelUuid}"` +
         ` | raw flags="${rawMF}" → muted=${pf.muted} moderator=${pf.moderator} deaf=${pf.deaf}`
       );
       const member = {
@@ -729,6 +731,7 @@ async function handleEvent(evt) {
     } else if (action === 'del-member') {
       const conf = conferenceRegistry.get(confName);
       if (conf) conf.members.delete(memberId);
+      console.log(`[${new Date().toISOString()}][esl] del-member: conf="${confName}" id=${memberId} callerNum="${callerNum}" destNum="${destNum}" uuid="${channelUuid}"`);
       emit('conference.member.left', { confName, member: memberId, callerNum });
       trackParticipant(confName, callerNum, destNum, 'leave', null, channelUuid);
 
@@ -904,21 +907,34 @@ async function handleEvent(evt) {
       ersChannelMap.delete(uuid);
       if (incidentId && trackingNum && cause) {
         const finalStatus = mapHangupCauseToStatus(cause);
+        console.log(`[${new Date().toISOString()}][esl] CHANNEL_HANGUP: uuid="${uuid}" cause="${cause}" finalStatus="${finalStatus}" incidentId=${incidentId} trackingNum="${trackingNum}"`);
         // Update responder row: hangup_cause + promote INVITED/MISSED → final status.
         // MISSED is included so a racing completeIncidentCore that stamped MISSED
         // before this CHANNEL_HANGUP arrived can be overridden when the call
         // actually completed normally (NORMAL_CLEARING → 'JOINED').
-        query(
-          `UPDATE ers_incident_responders
-           SET hangup_cause = $3,
-               status = CASE
-                 WHEN status = 'INVITED'                    THEN $4::VARCHAR
-                 WHEN status = 'MISSED' AND $4 = 'JOINED'  THEN 'JOINED'
-                 ELSE status
-               END
-           WHERE ers_incident_id = $1 AND mobile_number = $2`,
-          [incidentId, trackingNum, cause, finalStatus]
-        ).catch(err => console.warn(`[esl] hangup status update failed: ${err.message}`));
+        // Wrapped in async IIFE for diagnostic pre/post state logging — does NOT
+        // change the fire-and-forget behaviour (caller does not await this).
+        (async () => {
+          const { rows: preRows } = await query(
+            `SELECT id, status FROM ers_incident_responders
+             WHERE ers_incident_id = $1 AND mobile_number = $2`,
+            [incidentId, trackingNum]
+          );
+          console.log(`[${new Date().toISOString()}][esl] CHANNEL_HANGUP pre-state: incidentId=${incidentId} trackingNum="${trackingNum}" rows=${JSON.stringify(preRows)}`);
+          const { rows: updRows, rowCount } = await query(
+            `UPDATE ers_incident_responders
+             SET hangup_cause = $3,
+                 status = CASE
+                   WHEN status = 'INVITED'                    THEN $4::VARCHAR
+                   WHEN status = 'MISSED' AND $4 = 'JOINED'  THEN 'JOINED'
+                   ELSE status
+                 END
+             WHERE ers_incident_id = $1 AND mobile_number = $2
+             RETURNING id, status AS new_status`,
+            [incidentId, trackingNum, cause, finalStatus]
+          );
+          console.log(`[${new Date().toISOString()}][esl] CHANNEL_HANGUP post-state: rowCount=${rowCount} rows=${JSON.stringify(updRows)}`);
+        })().catch(err => console.warn(`[esl] hangup status update failed: ${err.message}`));
         // Update participant row: disconnect_cause + total_talk_seconds for legs that joined
         query(
           `UPDATE ers_incident_participants
@@ -1033,17 +1049,32 @@ async function handleEvent(evt) {
 async function reconcileOrphanedIncident(confName) {
   if (!confName) return;
   try {
+    console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident START conf="${confName}"`);
     const { rows } = await query(
-      `SELECT incident_uuid FROM ers_incidents
+      `SELECT incident_uuid, id FROM ers_incidents
        WHERE conference_room = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
       [confName]
     );
-    for (const { incident_uuid } of rows) {
+    console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident found ${rows.length} ACTIVE incident(s): ${JSON.stringify(rows)}`);
+    for (const { incident_uuid, id: incidentId } of rows) {
+      // Log the current responder states BEFORE calling completeIncidentCore
+      const { rows: rBefore } = await query(
+        `SELECT id, status, mobile_number FROM ers_incident_responders WHERE ers_incident_id = $1`,
+        [incidentId]
+      );
+      console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident pre-complete responders: ${JSON.stringify(rBefore)}`);
       // Local import to avoid a circular import at module load time
       // (controllers import eslService, not the reverse).
       const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
       await completeIncidentCore(incident_uuid, null);
+      // Log responder states AFTER
+      const { rows: rAfter } = await query(
+        `SELECT id, status, mobile_number FROM ers_incident_responders WHERE ers_incident_id = $1`,
+        [incidentId]
+      );
+      console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident post-complete responders: ${JSON.stringify(rAfter)}`);
     }
+    console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident DONE conf="${confName}"`);
   } catch (err) {
     console.error('[esl] reconcileOrphanedIncident failed for', confName, err.message);
   }
@@ -1110,7 +1141,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
 
   // ── Stage 1: entry ──────────────────────────────────────────────────────────
   console.log(
-    `[track:1] EVENT=${event.toUpperCase()} conf="${confName}"` +
+    `[${new Date().toISOString()}][track:1] EVENT=${event.toUpperCase()} conf="${confName}"` +
     ` callerNum="${callerNum}" destNum="${destNum}"` +
     ` memberId="${memberId}" uuid="${channelUuid}"`
   );
@@ -1125,15 +1156,15 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
     );
     const incident = incRows[0];
     if (!incident) {
-      console.log(`[track:2] SKIP — no ERS incident with conference_room="${confName}" (IVR/ENS room or room not yet written)`);
+      console.log(`[${new Date().toISOString()}][track:2] SKIP — no ERS incident with conference_room="${confName}" (IVR/ENS room or room not yet written)`);
       // Show any incidents that DO exist so we can spot a name mismatch
       const { rows: allRooms } = await query(
         `SELECT id, conference_room, status FROM ers_incidents WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT 5`
       );
-      console.log(`[track:2] recent ERS incidents:`, JSON.stringify(allRooms));
+      console.log(`[${new Date().toISOString()}][track:2] recent ERS incidents:`, JSON.stringify(allRooms));
       return;
     }
-    console.log(`[track:2] MATCHED incident id=${incident.id} status="${incident.status}" room="${incident.conference_room}"`);
+    console.log(`[${new Date().toISOString()}][track:2] MATCHED incident id=${incident.id} status="${incident.status}" room="${incident.conference_room}"`);
 
     // ── Stage 3: contact resolution — destNum first ──────────────────────────
     let contact     = null;
@@ -1141,7 +1172,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
 
     if (destNum) {
       const lastD9 = String(destNum).replace(/\D/g, '').slice(-9);
-      console.log(`[track:3a] looking up destNum="${destNum}" (last9="${lastD9}")`);
+      console.log(`[${new Date().toISOString()}][track:3a] looking up destNum="${destNum}" (last9="${lastD9}")`);
       const { rows: destRows } = await query(
         `SELECT id, first_name, last_name, extension_number, mobile_number
          FROM emergency_contacts
@@ -1154,7 +1185,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       if (destRows.length > 0) {
         contact     = destRows[0];
         trackingNum = destNum;
-        console.log(`[track:3a] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}" ext="${contact.extension_number}" mobile="${contact.mobile_number}"`);
+        console.log(`[${new Date().toISOString()}][track:3a] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}" ext="${contact.extension_number}" mobile="${contact.mobile_number}"`);
 
         if (memberId && event === 'join') {
           const conf = conferenceRegistry.get(confName);
@@ -1170,14 +1201,14 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
           }
         }
       } else {
-        console.log(`[track:3a] no contact found for destNum="${destNum}" — trying callerNum`);
+        console.log(`[${new Date().toISOString()}][track:3a] MISS — no contact found for destNum="${destNum}" last9="${lastD9}" — falling back to callerNum`);
       }
     }
 
     // ── Stage 4: fallback — callerNum ────────────────────────────────────────
     if (!contact && callerNum) {
       const last9 = String(callerNum).replace(/\D/g, '').slice(-9);
-      console.log(`[track:3b] looking up callerNum="${callerNum}" (last9="${last9}")`);
+      console.log(`[${new Date().toISOString()}][track:3b] looking up callerNum="${callerNum}" (last9="${last9}")`);
       const { rows: callerRows } = await query(
         `SELECT id, first_name, last_name, extension_number, mobile_number
          FROM emergency_contacts
@@ -1190,17 +1221,17 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       if (callerRows.length > 0) {
         contact     = callerRows[0];
         trackingNum = callerNum;
-        console.log(`[track:3b] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}"`);
+        console.log(`[${new Date().toISOString()}][track:3b] FOUND contact id=${contact.id} name="${contact.first_name} ${contact.last_name}" ext="${contact.extension_number}" mobile="${contact.mobile_number}"`);
       } else {
-        console.log(`[track:3b] no contact for callerNum="${callerNum}" — participant will have contact_id=null, no responder row`);
+        console.log(`[${new Date().toISOString()}][track:3b] MISS — no contact for callerNum="${callerNum}" — participant will have contact_id=null, no responder row`);
       }
     }
 
     if (!trackingNum) {
-      console.log('[track:4] SKIP — trackingNum is empty');
+      console.log(`[${new Date().toISOString()}][track:4] SKIP — trackingNum is empty`);
       return;
     }
-    console.log(`[track:4] trackingNum="${trackingNum}" contact_id=${contact?.id ?? 'null'}`);
+    console.log(`[${new Date().toISOString()}][track:4] trackingNum="${trackingNum}" contact_id=${contact?.id ?? 'null'}`);
 
     if (event === 'join' && channelUuid && ersChannelMap.has(channelUuid)) {
       ersChannelMap.get(channelUuid).incidentId = incident.id;
@@ -1215,7 +1246,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
         [incident.id, trackingNum, contact?.id ?? null]
       );
       const existing = existRows[0];
-      console.log(`[track:5] existing participant check — found=${!!existing} left_at=${existing?.left_at ?? 'n/a'} role=${existing?.role ?? 'n/a'}`);
+      console.log(`[${new Date().toISOString()}][track:5] existing participant check — found=${!!existing} id=${existing?.id ?? 'n/a'} left_at=${existing?.left_at ?? 'n/a'} role=${existing?.role ?? 'n/a'}`);
 
       if (existing && existing.left_at) {
         // ── Stage 6a: rejoin path ───────────────────────────────────────────
@@ -1258,7 +1289,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
              WHERE ers_incident_id = $1 AND (mobile_number = $2 OR emergency_contact_id = $3)`,
             [incident.id, trackingNum, contact.id]
           );
-          console.log(`[track:7] pre-upsert responder rows: ${JSON.stringify(preRows)}`);
+          console.log(`[${new Date().toISOString()}][track:7] pre-upsert responder rows: ${JSON.stringify(preRows)}`);
 
           const rRes = await query(
             `INSERT INTO ers_incident_responders
@@ -1274,14 +1305,22 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
             [incident.id, contact.id, trackingNum]
           );
           const rRow = rRes.rows[0];
-          console.log(`[track:7] responder UPSERT → id=${rRow?.id} status="${rRow?.status}" inserted=${rRow?.inserted} rowCount=${rRes.rowCount}`);
+          console.log(`[${new Date().toISOString()}][track:7] responder UPSERT → id=${rRow?.id} status="${rRow?.status}" inserted=${rRow?.inserted} rowCount=${rRes.rowCount}`);
         } else {
           console.log(`[track:7] SKIP responder upsert — contact_id is null (unrecognised number)`);
         }
 
       } else {
         // ── Stage 6c: already counted, no action ────────────────────────────
-        console.log(`[track:6c] SKIP — participant id=${existing.id} role="${existing.role}" already present (left_at=null)`);
+        // *** IF this fires for a RESPONDER add-member, it means Stage 3a failed
+        // *** to resolve destNum and Stage 3b fell back to callerNum (the initiator's
+        // *** number), finding the initiator's participant row instead. This is the
+        // *** "phantom skip" that leaves the responder untracked.
+        console.log(
+          `[${new Date().toISOString()}][track:6c] SKIP — found existing participant id=${existing.id} role="${existing.role}" ` +
+          `raw_number_queried="${trackingNum}" contact_id_queried=${contact?.id ?? 'null'} ` +
+          `callerNum="${callerNum}" destNum="${destNum}" uuid="${channelUuid}"`
+        );
         // Capture the initiator's FreeSWITCH channel UUID on first ESL join
         // (the HTTP incident-create path can't know it yet).
         if (existing.role === 'initiator' && channelUuid) {
@@ -1313,7 +1352,7 @@ async function trackParticipant(confName, callerNum, destNum, event, memberId, c
       console.log(`[track:6d] responder leave_time UPDATE rowCount=${rRes.rowCount}`);
     }
 
-    console.log(`[track:END] ${event.toUpperCase()} conf="${confName}" num="${trackingNum}" complete`);
+    console.log(`[${new Date().toISOString()}][track:END] ${event.toUpperCase()} conf="${confName}" num="${trackingNum}" complete`);
 
   } catch (err) {
     console.error(`[track:ERR] EXCEPTION in trackParticipant: ${err.message}`);
