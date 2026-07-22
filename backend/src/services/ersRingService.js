@@ -18,7 +18,7 @@
  */
 
 import { query } from '../db/pool.js';
-import { eslCommand, getConferenceMemberCount } from './eslService.js';
+import { eslCommand, getConferenceMemberCount, seedConferenceRegistry } from './eslService.js';
 import { resolveDialString } from './dialResolver.js';
 import { emitInternal } from './socketService.js';
 import { fsPathService } from './freeSwitchPathService.js';
@@ -180,6 +180,11 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
 
         // members > 1 means the caller plus at least one responder — answered.
         if (members > 1) {
+          // Trigger an immediate conference seed so reporting tables are updated within
+          // seconds of answer rather than waiting up to 30 s for the background poll.
+          // This is the partner to the seed-side trackParticipant call: together they
+          // ensure a missed add-member ESL event never leaves the responder as MISSED.
+          seedConferenceRegistry().catch(() => {});
           if (!recordingStarted) {
             recordingStarted = true;
             const { rows: [cfg] } = await query(

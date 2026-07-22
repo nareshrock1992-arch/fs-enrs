@@ -479,6 +479,11 @@ export async function seedConferenceRegistry() {
           callerName: member.callerName || '',
           memberData: rec,
         });
+        // Resilience: if the add-member ESL event was missed (backend restart, FreeSWITCH
+        // same-room-name event-delivery gap), reconcile reporting tables now.
+        // trackParticipant is idempotent: Stage 5 skips rows that already exist.
+        // destNum is unavailable from xml_list, so pass '' — Stage 3b falls back to callerNum.
+        trackParticipant(conf.name, member.callerNum || '', '', 'join', member.id, member._uuid || '');
       } else {
         // Member already in registry — NEVER overwrite event-driven state.
         //
