@@ -703,6 +703,70 @@ async function handleEvent(evt) {
         `[${new Date().toISOString()}][esl] add-member: conf="${confName}" id=${memberId} callerNum="${callerNum}" destNum="${destNum}" uuid="${channelUuid}"` +
         ` | raw flags="${rawMF}" → muted=${pf.muted} moderator=${pf.moderator} deaf=${pf.deaf}`
       );
+
+      // ── FORENSIC: complete header dump for every add-member ─────────────────
+      // Dump every header the FreeSWITCH event carries so we can see the exact
+      // values of Caller-Destination-Number, variable_sip_req_user, and all
+      // variable_* channel variables for this specific leg.
+      {
+        // Priority headers the forensic trace requires
+        const forensicHeaders = [
+          'Conference-Name',
+          'Unique-ID',
+          'Caller-Unique-ID',
+          'Channel-Call-UUID',
+          'Member-ID',
+          'Caller-Caller-ID-Number',
+          'Caller-Caller-ID-Name',
+          'Caller-Destination-Number',
+          'Caller-Callee-ID-Number',
+          'Caller-Callee-ID-Name',
+          'Caller-Logical-Direction',
+          'Caller-Network-Addr',
+          'Caller-ANI',
+          'Caller-RDNIS',
+          'Caller-Source',
+          'Caller-Context',
+          'Caller-Channel-Name',
+          'variable_sip_to_user',
+          'variable_sip_req_user',
+          'variable_sip_from_user',
+          'variable_sip_contact_user',
+          'variable_origination_caller_id_number',
+          'variable_origination_caller_id_name',
+          'variable_effective_caller_id_number',
+          'variable_effective_caller_id_name',
+          'variable_originate_disposition',
+          'variable_endpoint_disposition',
+          'variable_sip_term_status',
+          'variable_sip_term_cause',
+          'variable_hangup_cause',
+          'Conference-Member-Flags',
+          'Conference-Unique-ID',
+        ];
+        const specific = forensicHeaders
+          .map(h => `  ${h}: "${evt.getHeader(h) ?? '(missing)'}"`)
+          .join('\n');
+        console.log(
+          `[${new Date().toISOString()}][esl] HEADER_DUMP add-member conf="${confName}" memberId=${memberId}:\n` +
+          `  ── Specific headers ──\n${specific}`
+        );
+
+        // Full serialized event — every header FreeSWITCH sent
+        try {
+          const serialized = typeof evt.serialize === 'function' ? evt.serialize() : null;
+          if (serialized) {
+            console.log(
+              `[${new Date().toISOString()}][esl] FULL_SERIALIZE add-member conf="${confName}" memberId=${memberId}:\n${serialized}`
+            );
+          } else {
+            console.log(`[${new Date().toISOString()}][esl] FULL_SERIALIZE not available (evt.serialize is not a function)`);
+          }
+        } catch (serErr) {
+          console.log(`[${new Date().toISOString()}][esl] FULL_SERIALIZE error: ${serErr.message}`);
+        }
+      }
+      // ── END FORENSIC ────────────────────────────────────────────────────────
       const member = {
         id:         memberId,
         callerNum,
