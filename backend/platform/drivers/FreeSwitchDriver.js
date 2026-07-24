@@ -146,4 +146,13 @@ export class FreeSwitchDriver extends PlatformDriver {
       return { loaded: false };
     }
   }
+
+  async getFreeSwitchVersion() {
+    try {
+      const output = await this.#eslService.eslCommand('version');
+      return typeof output === 'string' ? output.trim() : null;
+    } catch {
+      return null;
+    }
+  }
 }

@@ -37,6 +37,19 @@ export class VarsProvider extends ConfigurationProvider {
 
   get deploymentStrategy() { return DeploymentStrategies.RELOAD_XML; }
 
+  get deploymentMeta() {
+    return {
+      action:               'reloadxml',
+      actionLabel:          'Reload XML Configuration',
+      description:          'Reloads all FreeSWITCH XML configuration files. Active calls are not interrupted.',
+      affectedServices:     ['FreeSWITCH XML Parser', 'Global Variables'],
+      restartRequired:      false,
+      estimatedDowntime:    'None',
+      riskLevel:            'low',
+      requiresConfirmation: false,
+    };
+  }
+
   get catalog() { return varsCatalog; }
 
   // ── Path ──────────────────────────────────────────────────────────────────────

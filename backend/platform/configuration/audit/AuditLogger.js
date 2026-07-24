@@ -71,33 +71,34 @@ export class AuditLogger {
   }
 
   /**
-   * Paginated audit log for a single provider.
+   * Paginated audit log for a single provider, scoped to tenant.
    */
-  async getProviderLog(providerId, { limit = 50, offset = 0 } = {}) {
+  async getProviderLog(providerId, { limit = 50, offset = 0, tenantId = null } = {}) {
     const { rows } = await query(
       `SELECT al.*, u.full_name AS user_name, u.email AS user_email
        FROM config_audit_log al
        LEFT JOIN users u ON u.id = al.user_id
        WHERE al.provider_id = $1
+         AND al.tenant_id IS NOT DISTINCT FROM $2
        ORDER BY al.performed_at DESC
-       LIMIT $2 OFFSET $3`,
-      [providerId, limit, offset]
+       LIMIT $3 OFFSET $4`,
+      [providerId, tenantId, limit, offset]
     );
     return rows;
   }
 
   /**
-   * Paginated audit log across all providers (admin-level view).
+   * Paginated audit log across all providers (admin-level view), scoped to tenant.
    */
-  async getGlobalLog({ tenantId, limit = 100, offset = 0 } = {}) {
+  async getGlobalLog({ tenantId = null, limit = 100, offset = 0 } = {}) {
     const { rows } = await query(
       `SELECT al.*, u.full_name AS user_name, u.email AS user_email
        FROM config_audit_log al
        LEFT JOIN users u ON u.id = al.user_id
-       ${tenantId ? 'WHERE al.tenant_id = $3' : ''}
+       WHERE al.tenant_id IS NOT DISTINCT FROM $1
        ORDER BY al.performed_at DESC
-       LIMIT $1 OFFSET $2`,
-      tenantId ? [limit, offset, tenantId] : [limit, offset]
+       LIMIT $2 OFFSET $3`,
+      [tenantId, limit, offset]
     );
     return rows;
   }

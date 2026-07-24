@@ -18,30 +18,44 @@ import { FreeSwitchDriver }     from '../../../platform/drivers/FreeSwitchDriver
 import { ProviderRegistry }     from '../../../platform/configuration/ProviderRegistry.js';
 import { ConfigurationManager } from '../../../platform/configuration/ConfigurationManager.js';
 import { VarsProvider }         from '../../../platform/configuration/providers/VarsProvider.js';
+import { PlatformHealthChecker } from '../../../platform/health/PlatformHealthChecker.js';
 
 // ── Lazy service imports (already singletons loaded at boot) ──────────────────
 // Use dynamic import to guarantee services are fully initialized before we
 // build the driver. The router module is imported after server boot completes.
-let _manager = null;
+let _manager     = null;
+let _driver      = null;
+let _pathService = null;
 
-async function getManager() {
-  if (_manager) return _manager;
+async function bootstrap() {
+  if (_manager) return;
 
   const [eslMod, pathMod] = await Promise.all([
     import('../../services/eslService.js'),
     import('../../services/freeSwitchPathService.js'),
   ]);
 
-  const driver   = new FreeSwitchDriver(eslMod, pathMod.fsPathService);
+  _driver      = new FreeSwitchDriver(eslMod, pathMod.fsPathService);
+  _pathService = pathMod.fsPathService;
+
   const registry = new ProviderRegistry();
 
   // ── Register providers (Phase 7.1) ─────────────────────────────────────────
-  registry.register(new VarsProvider(driver));
-  // Phase 7.2+: registry.register(new SwitchProvider(driver));
-  // Phase 7.2+: registry.register(new EventSocketProvider(driver));
+  registry.register(new VarsProvider(_driver));
+  // Phase 7.2+: registry.register(new SwitchProvider(_driver));
+  // Phase 7.2+: registry.register(new EventSocketProvider(_driver));
 
   _manager = new ConfigurationManager(registry);
+}
+
+async function getManager() {
+  await bootstrap();
   return _manager;
+}
+
+async function getHealthChecker() {
+  await bootstrap();
+  return new PlatformHealthChecker(_driver, _pathService);
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -63,6 +77,29 @@ router.get('/audit', ...auth, asyncHandler(async (req, res) => {
   const offset = Number(req.query.offset) || 0;
   const rows   = await mgr.getAuditLog(null, { tenantId: req.user.tenantId, limit, offset });
   res.json({ audit: rows, limit, offset });
+}));
+
+// GET /platform/config/status — platform health check (always HTTP 200)
+// MUST be registered before router.param('providerId') to avoid "status" being
+// treated as a providerId.
+router.get('/status', ...auth, asyncHandler(async (req, res) => {
+  const checker = await getHealthChecker();
+  const [health, fsVersion] = await Promise.all([
+    checker.check(),
+    _driver.getFreeSwitchVersion(),
+  ]);
+  res.json({ ...health, freeSwitchVersion: fsVersion });
+}));
+
+// GET /platform/config/summary — dashboard aggregate (always HTTP 200)
+// MUST be registered before router.param('providerId').
+router.get('/summary', ...auth, asyncHandler(async (req, res) => {
+  const mgr = await getManager();
+  const [summary, validation] = await Promise.all([
+    mgr.getSummary(req.user.tenantId),
+    mgr.getValidationSummary(req.user.tenantId),
+  ]);
+  res.json({ ...summary, validation });
 }));
 
 // ── Provider-specific routes ──────────────────────────────────────────────────
@@ -157,7 +194,10 @@ router.get('/:providerId/history/:v1/diff/:v2', ...auth, asyncHandler(async (req
 router.get('/:providerId/audit', ...auth, asyncHandler(async (req, res) => {
   const limit  = Math.min(Number(req.query.limit)  || 50, 500);
   const offset = Number(req.query.offset) || 0;
-  const rows   = await req._configMgr.getAuditLog(req.params.providerId, { limit, offset });
+  const rows   = await req._configMgr.getAuditLog(
+    req.params.providerId,
+    { limit, offset, tenantId: req.user.tenantId }
+  );
   res.json({ audit: rows, limit, offset });
 }));
 

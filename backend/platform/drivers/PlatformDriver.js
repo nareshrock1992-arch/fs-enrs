@@ -98,6 +98,12 @@ export class PlatformDriver {
    */
   async verifyExtension(extensionName) { return this._abstract('verifyExtension'); }
 
+  /** Return the switch version string (e.g. "FreeSWITCH Version 1.10.9").
+   *  Implementations should never throw — return null on failure.
+   *  @returns {Promise<string|null>}
+   */
+  async getFreeSwitchVersion() { return this._abstract('getFreeSwitchVersion'); }
+
   // ── Internal ──────────────────────────────────────────────────────────────────
 
   _abstract(name) {

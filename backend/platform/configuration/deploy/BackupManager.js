@@ -70,6 +70,47 @@ export class BackupManager {
     const { atomicWriter } = await import('./AtomicWriter.js');
     await atomicWriter.write(targetPath, content);
   }
+
+  /**
+   * Count backup files across all providers (or a specific provider).
+   * Returns 0 if the backup directory does not exist yet.
+   *
+   * @param {string} [providerId] — optional; counts only this provider's backups
+   * @returns {Promise<number>}
+   */
+  async countBackups(providerId) {
+    const dir = providerId
+      ? path.join(this.#baseDir, providerId)
+      : this.#baseDir;
+    try {
+      const entries = await fs.readdir(dir, { recursive: !providerId });
+      return entries.filter(e => typeof e === 'string' && !e.endsWith('/')).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Return metadata about the most recent backup for a provider.
+   * Returns null if no backups exist.
+   *
+   * @param {string} providerId
+   * @returns {Promise<{path:string, createdAt:Date}|null>}
+   */
+  async getLatestBackup(providerId) {
+    const dir = path.join(this.#baseDir, providerId);
+    try {
+      const names = await fs.readdir(dir);
+      if (names.length === 0) return null;
+      // Filenames are timestamp-prefixed — lexicographic sort gives chronological order.
+      const latest = names.sort().at(-1);
+      const fullPath = path.join(dir, latest);
+      const stat = await fs.stat(fullPath);
+      return { path: fullPath, createdAt: stat.mtime };
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const backupManager = new BackupManager();

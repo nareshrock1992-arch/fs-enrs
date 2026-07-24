@@ -103,6 +103,40 @@ export class ConfigurationProvider {
     return lines.slice(0, 200).join('\n');
   }
 
+  // ── Deployment metadata ───────────────────────────────────────────────────────
+
+  /**
+   * Structured description of what deploying this provider does to the system.
+   * Consumed by the DeployModal and ConfigDashboard in the UI.
+   *
+   * Providers should override this getter with concrete metadata.
+   * The default derives sensible values from the deploymentStrategy.
+   *
+   * @returns {{
+   *   action: string,
+   *   actionLabel: string,
+   *   description: string,
+   *   affectedServices: string[],
+   *   restartRequired: boolean,
+   *   estimatedDowntime: string,
+   *   riskLevel: 'low'|'medium'|'high',
+   *   requiresConfirmation: boolean,
+   * }}
+   */
+  get deploymentMeta() {
+    const s = this.deploymentStrategy;
+    return {
+      action:               s.id,
+      actionLabel:          s.label,
+      description:          s.description ?? 'Applies configuration changes to the platform.',
+      affectedServices:     ['FreeSWITCH Configuration'],
+      restartRequired:      s.riskLevel === 'high',
+      estimatedDowntime:    'None',
+      riskLevel:            s.riskLevel ?? 'medium',
+      requiresConfirmation: s.requiresConfirmation ?? false,
+    };
+  }
+
   // ── Optional hooks ────────────────────────────────────────────────────────────
 
   /** Called by DeploymentManager before writing the file. Override to add checks. */

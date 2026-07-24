@@ -1,7 +1,8 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import {
   Settings2, Variable, Server, Network, Shield,
-  Phone, Radio, Layers, BookOpen, LogOut, History, ShieldCheck
+  Phone, Radio, Layers, BookOpen, LogOut, History,
+  ShieldCheck, LayoutDashboard
 } from 'lucide-react';
 
 /**
@@ -10,9 +11,18 @@ import {
  * Renders a two-column layout:
  *  Left  — module navigation (similar to VMware vCenter / Cisco CUCM)
  *  Right — <Outlet /> for the selected module page
+ *
+ * The landing route (/config) renders ConfigDashboard — the enterprise
+ * configuration overview page.
  */
 
 const NAV_SECTIONS = [
+  {
+    label: 'Overview',
+    items: [
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/config', exact: true, active: true },
+    ],
+  },
   {
     label: 'Core System',
     items: [
@@ -67,6 +77,7 @@ function NavItem({ item }) {
   return (
     <NavLink
       to={item.to}
+      end={item.exact}
       className={({ isActive }) =>
         `${base} ${isActive
           ? 'bg-brand/10 text-brand'

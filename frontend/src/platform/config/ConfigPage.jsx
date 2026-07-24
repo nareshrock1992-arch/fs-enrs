@@ -1,14 +1,16 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useMemo, useCallback } from 'react';
 import {
-  Search, RotateCcw, History, ShieldCheck,
-  ChevronDown, ChevronRight, Loader2, AlertCircle
+  Search, History, ShieldCheck, Loader2, AlertCircle
 } from 'lucide-react';
+import { useState } from 'react';
 import { useConfigProvider } from './hooks/useConfigProvider.js';
 import { useDeployment } from './hooks/useDeployment.js';
+import { useConfigChangesStore } from './stores/configChangesStore.js';
 import ConfigCard from './ConfigCard.jsx';
 import ConfigHistory from './ConfigHistory.jsx';
 import ConfigAudit from './ConfigAudit.jsx';
 import DeployModal from './DeployModal.jsx';
+import ChangesBar from './ChangesBar.jsx';
 
 /**
  * ConfigPage — shared template for all configuration provider pages.
@@ -20,7 +22,7 @@ import DeployModal from './DeployModal.jsx';
  *     subtitle="vars.xml — Global FreeSWITCH variables"
  *   />
  *
- * Handles: read, search, category filter, change tracking,
+ * Handles: read, search, category filter, change tracking (via Zustand store),
  * dirty indicator, preview, deploy, history, audit, rollback.
  */
 export default function ConfigPage({ providerId, title, subtitle }) {
@@ -28,39 +30,31 @@ export default function ConfigPage({ providerId, title, subtitle }) {
   const { preview, previewing, deploying, result, error: deployError,
           fetchPreview, deploy, clearResult } = useDeployment(providerId);
 
-  // ── Local change tracking ───────────────────────────────────────────────────
-  // Map<key → change object> for O(1) dirty check and change building.
-  const [pending, setPending]     = useState(new Map());
-  const [search,  setSearch]      = useState('');
-  const [category, setCategory]   = useState('All');
-  const [panel,   setPanel]       = useState(null); // 'history' | 'audit' | null
+  const { getChanges, setChange, revertKey, clearProvider } = useConfigChangesStore();
+  const pending = getChanges(providerId);
+
+  const [search,     setSearch]     = useState('');
+  const [category,   setCategory]   = useState('All');
+  const [panel,      setPanel]      = useState(null); // 'history' | 'audit' | null
   const [showDeploy, setShowDeploy] = useState(false);
 
   useEffect(() => { load(); }, [load]);
 
   // Reset pending changes when we reload from server (e.g. after rollback).
   const reload = useCallback(async () => {
-    setPending(new Map());
+    clearProvider(providerId);
     clearResult();
     await load();
-  }, [load, clearResult]);
+  }, [load, clearResult, clearProvider, providerId]);
 
   // ── Change handler ──────────────────────────────────────────────────────────
   const handleChange = useCallback((change) => {
-    setPending(prev => {
-      const next = new Map(prev);
-      next.set(change.key, change);
-      return next;
-    });
-  }, []);
+    setChange(providerId, change);
+  }, [setChange, providerId]);
 
-  const revertKey = useCallback((key) => {
-    setPending(prev => {
-      const next = new Map(prev);
-      next.delete(key);
-      return next;
-    });
-  }, []);
+  const handleRevertKey = useCallback((key) => {
+    revertKey(providerId, key);
+  }, [revertKey, providerId]);
 
   // ── Derived ─────────────────────────────────────────────────────────────────
   const categories = useMemo(() => {
@@ -127,6 +121,15 @@ export default function ConfigPage({ providerId, title, subtitle }) {
   return (
     <div className="space-y-4">
 
+      {/* Sticky changes bar */}
+      <ChangesBar
+        count={changes.length}
+        previewing={previewing}
+        deploying={deploying}
+        onDeploy={handlePreviewDeploy}
+        onDiscard={() => clearProvider(providerId)}
+      />
+
       {/* Page header */}
       <div className="flex flex-col sm:flex-row sm:items-start gap-3">
         <div className="flex-1 min-w-0">
@@ -140,16 +143,6 @@ export default function ConfigPage({ providerId, title, subtitle }) {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Unsaved indicator */}
-          {isDirty && (
-            <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400
-                           bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800
-                           rounded-lg px-3 py-1.5 font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-              {changes.length} unsaved {changes.length === 1 ? 'change' : 'changes'}
-            </div>
-          )}
-
           <button onClick={() => setPanel(p => p === 'audit' ? null : 'audit')}
             className={`btn-ghost flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg
               ${panel === 'audit' ? 'bg-surface-border' : ''}`}>
@@ -162,16 +155,6 @@ export default function ConfigPage({ providerId, title, subtitle }) {
               ${panel === 'history' ? 'bg-surface-border' : ''}`}>
             <History size={14} />
             History
-          </button>
-
-          <button
-            onClick={handlePreviewDeploy}
-            disabled={!isDirty || previewing || deploying}
-            className="bg-brand text-white text-sm font-semibold px-4 py-1.5 rounded-lg
-                       hover:bg-brand/90 transition-colors disabled:opacity-40
-                       disabled:cursor-not-allowed flex items-center gap-2">
-            {previewing && <Loader2 size={13} className="animate-spin" />}
-            Deploy
           </button>
         </div>
       </div>
@@ -238,14 +221,6 @@ export default function ConfigPage({ providerId, title, subtitle }) {
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
-
-        {isDirty && (
-          <button onClick={() => setPending(new Map())}
-            className="btn-ghost flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg text-red-600 dark:text-red-400">
-            <RotateCcw size={13} />
-            Discard
-          </button>
-        )}
       </div>
 
       {/* Variable list */}
@@ -267,7 +242,7 @@ export default function ConfigPage({ providerId, title, subtitle }) {
                 />
                 {pendingChange && (
                   <button
-                    onClick={() => revertKey(entry.key)}
+                    onClick={() => handleRevertKey(entry.key)}
                     className="absolute right-2 top-2 hidden group-hover:block
                                text-text-muted hover:text-text-primary text-xs px-1">
                     ↩ revert

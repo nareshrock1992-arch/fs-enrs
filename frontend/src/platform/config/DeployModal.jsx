@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { CheckCircle2, XCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import ConfigDiff from './ConfigDiff.jsx';
+import DeploymentImpact from './DeploymentImpact.jsx';
 
 /**
  * DeployModal — step-by-step deploy progress dialog.
@@ -41,11 +42,16 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
           )}
         </div>
 
-        <div className="px-5 py-4 space-y-4">
+        <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
 
           {/* Confirm phase */}
           {phase === 'confirm' && (
             <>
+              {/* Deployment impact — sourced from provider.deploymentMeta */}
+              {preview?.deploymentMeta && (
+                <DeploymentImpact meta={preview.deploymentMeta} />
+              )}
+
               <div>
                 <p className="text-xs font-medium text-text-muted mb-2 uppercase tracking-wide">
                   Changes ({preview?.changesApplied ?? 0})

@@ -2,6 +2,8 @@ import { promises as fs } from 'fs';
 import { deploymentManager } from './deploy/DeploymentManager.js';
 import { versionManager } from './history/VersionManager.js';
 import { auditLogger } from './audit/AuditLogger.js';
+import { backupManager } from './deploy/BackupManager.js';
+import { query } from '../../src/db/pool.js';
 
 /**
  * ConfigurationManager — top-level orchestrator for all configuration operations.
@@ -84,6 +86,7 @@ export class ConfigurationManager {
 
   /**
    * Preview the effect of changes without writing anything.
+   * Augments DeploymentManager result with provider deploymentMeta.
    * @param {string} providerId
    * @param {Array}  changes
    * @param {object} context
@@ -91,7 +94,8 @@ export class ConfigurationManager {
    */
   async preview(providerId, changes, context = {}) {
     const provider = this.#registry.get(providerId);
-    return deploymentManager.preview(provider, changes, context);
+    const result   = await deploymentManager.preview(provider, changes, context);
+    return { ...result, deploymentMeta: provider.deploymentMeta };
   }
 
   // ── Deploy ────────────────────────────────────────────────────────────────────
@@ -165,5 +169,115 @@ export class ConfigurationManager {
     return providerId
       ? auditLogger.getProviderLog(providerId, opts)
       : auditLogger.getGlobalLog(opts);
+  }
+
+  // ── Summary (dashboard) ───────────────────────────────────────────────────────
+
+  /**
+   * Aggregate status summary for all registered providers.
+   * Used by the ConfigDashboard landing page.
+   *
+   * @param {number|null} tenantId
+   * @returns {Promise<object>}
+   */
+  async getSummary(tenantId) {
+    const providers = this.#registry.list();
+
+    const providerSummaries = await Promise.all(
+      providers.map(async (p) => {
+        const provider = this.#registry.get(p.id);
+
+        const [activeVersion, latestBackup] = await Promise.allSettled([
+          versionManager.getActiveVersion(p.id, tenantId),
+          backupManager.getLatestBackup(p.id),
+        ]);
+
+        return {
+          id:             p.id,
+          name:           p.name,
+          description:    p.description,
+          deploymentMeta: provider.deploymentMeta,
+          activeVersion:  activeVersion.status === 'fulfilled' ? activeVersion.value : null,
+          latestBackup:   latestBackup.status  === 'fulfilled' ? latestBackup.value  : null,
+        };
+      })
+    );
+
+    // DB schema version — latest applied migration.
+    let dbSchemaVersion = null;
+    try {
+      const { rows } = await query('SELECT MAX(version) AS v FROM schema_migrations');
+      dbSchemaVersion = rows[0]?.v ?? null;
+    } catch {
+      /* non-fatal */
+    }
+
+    // Platform version from package.json (read once at startup is fine).
+    let platformVersion = null;
+    try {
+      const { createRequire } = await import('module');
+      const req = createRequire(import.meta.url);
+      platformVersion = req('../../../package.json').version;
+    } catch {
+      /* non-fatal */
+    }
+
+    const buildEnvironment = process.env.NODE_ENV ?? 'development';
+
+    return {
+      providers:      providerSummaries,
+      platformInfo: {
+        platformVersion,
+        dbSchemaVersion,
+        buildEnvironment,
+      },
+    };
+  }
+
+  /**
+   * Read and validate every registered provider's current config file.
+   * Returns per-provider validation results without writing anything.
+   *
+   * @param {number|null} tenantId
+   * @returns {Promise<object>}
+   */
+  async getValidationSummary(tenantId) {
+    const providers = this.#registry.list();
+
+    const results = await Promise.all(
+      providers.map(async (p) => {
+        const provider = this.#registry.get(p.id);
+        try {
+          const filePath   = provider.getFilePath();
+          const rawContent = await fs.readFile(filePath, 'utf8');
+          const parsed     = provider.parse(rawContent);
+          const validation = provider.validate(parsed);
+          return {
+            id:   p.id,
+            name: p.name,
+            ...validation,
+            filePath,
+          };
+        } catch (err) {
+          return {
+            id:     p.id,
+            name:   p.name,
+            valid:  false,
+            errors: [`Could not validate: ${err.message}`],
+            warnings: [],
+          };
+        }
+      })
+    );
+
+    const totalErrors   = results.reduce((n, r) => n + r.errors.length,   0);
+    const totalWarnings = results.reduce((n, r) => n + r.warnings.length, 0);
+
+    return {
+      providers:     results,
+      totalErrors,
+      totalWarnings,
+      allValid:      totalErrors === 0,
+    };
   }
 }
