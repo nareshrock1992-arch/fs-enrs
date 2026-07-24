@@ -1,25 +1,42 @@
 import { useState } from 'react';
 import { CheckCircle2, XCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
-import ConfigDiff from './ConfigDiff.jsx';
-import DeploymentImpact from './DeploymentImpact.jsx';
+import ConfigDiff        from './ConfigDiff.jsx';
+import DeploymentImpact  from './DeploymentImpact.jsx';
+import ChangeSummary     from './ChangeSummary.jsx';
 
 /**
  * DeployModal — step-by-step deploy progress dialog.
  *
  * Phases:
- *  1. 'confirm'  — show diff + reason input, waiting for user approval
- *  2. 'running'  — deploy in progress, shows live step statuses
+ *  1. 'confirm'  — show change summary + diff + reason input
+ *  2. 'running'  — deploy in progress
  *  3. 'success'  — deploy completed
  *  4. 'error'    — deploy failed
+ *
+ * New in Phase 7.3B:
+ *  - changeDescriptions prop: passed to ChangeSummary (pre-deploy change table)
+ *  - High-risk confirmation checkbox: required when any change has riskLevel='high'
  */
-export default function DeployModal({ preview, deploying, result, error, onConfirm, onClose }) {
-  const [reason, setReason] = useState('');
-  const [showSteps, setShowSteps] = useState(false);
+export default function DeployModal({
+  preview,
+  deploying,
+  result,
+  error,
+  changeDescriptions,
+  onConfirm,
+  onClose,
+}) {
+  const [reason,          setReason]          = useState('');
+  const [showSteps,       setShowSteps]       = useState(false);
+  const [riskConfirmed,   setRiskConfirmed]   = useState(false);
 
-  const phase = result   ? 'success'
-              : error    ? 'error'
+  const phase = result    ? 'success'
+              : error     ? 'error'
               : deploying ? 'running'
               : 'confirm';
+
+  const hasHighRisk = changeDescriptions?.some(c => c.riskLevel === 'high') ?? false;
+  const canDeploy   = !hasHighRisk || riskConfirmed;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -30,12 +47,13 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
           <h2 className="font-semibold text-text-primary text-sm">
             {phase === 'success' ? 'Deployment Complete' :
-             phase === 'error'   ? 'Deployment Failed' :
-             phase === 'running' ? 'Deploying…' :
+             phase === 'error'   ? 'Deployment Failed'  :
+             phase === 'running' ? 'Deploying…'         :
              'Review & Deploy'}
           </h2>
           {phase !== 'running' && (
-            <button onClick={onClose}
+            <button
+              onClick={onClose}
               className="text-text-muted hover:text-text-primary transition-colors text-lg leading-none">
               ×
             </button>
@@ -44,21 +62,35 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
 
         <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
 
-          {/* Confirm phase */}
+          {/* ── Confirm phase ─────────────────────────────────────────────────── */}
           {phase === 'confirm' && (
             <>
+              {/* Change summary with riskLevel + restartRequired indicators */}
+              {changeDescriptions?.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-text-muted mb-2 uppercase tracking-wide">
+                    Pending Changes ({changeDescriptions.length})
+                  </p>
+                  <ChangeSummary changeDescriptions={changeDescriptions} />
+                </div>
+              )}
+
               {/* Deployment impact — sourced from provider.deploymentMeta */}
               {preview?.deploymentMeta && (
                 <DeploymentImpact meta={preview.deploymentMeta} />
               )}
 
-              <div>
-                <p className="text-xs font-medium text-text-muted mb-2 uppercase tracking-wide">
-                  Changes ({preview?.changesApplied ?? 0})
-                </p>
-                <ConfigDiff diff={preview?.diffSummary} />
-              </div>
+              {/* Server diff summary */}
+              {preview?.diffSummary && (
+                <div>
+                  <p className="text-xs font-medium text-text-muted mb-2 uppercase tracking-wide">
+                    File Diff
+                  </p>
+                  <ConfigDiff diff={preview.diffSummary} />
+                </div>
+              )}
 
+              {/* Validation warnings from preview */}
               {preview?.validation?.warnings?.length > 0 && (
                 <div className="rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200
                                dark:border-amber-800 px-3 py-2">
@@ -68,6 +100,23 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
                 </div>
               )}
 
+              {/* High-risk confirmation checkbox */}
+              {hasHighRisk && (
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={riskConfirmed}
+                    onChange={e => setRiskConfirmed(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-surface-border accent-brand"
+                  />
+                  <span className="text-xs text-text-secondary leading-relaxed">
+                    I understand this change is high risk and may affect service stability.
+                    I have reviewed the impact and am ready to proceed.
+                  </span>
+                </label>
+              )}
+
+              {/* Reason input */}
               <div>
                 <label className="text-xs font-medium text-text-muted block mb-1">
                   Reason (optional)
@@ -85,12 +134,12 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
 
               <p className="text-xs text-text-muted">
                 The current file will be backed up before any changes are written.
-                Reload will apply immediately.
+                The reload will apply immediately.
               </p>
             </>
           )}
 
-          {/* Running phase */}
+          {/* ── Running phase ─────────────────────────────────────────────────── */}
           {phase === 'running' && (
             <div className="flex flex-col items-center py-6 gap-3">
               <Loader2 size={32} className="text-brand animate-spin" />
@@ -98,7 +147,7 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
             </div>
           )}
 
-          {/* Success phase */}
+          {/* ── Success phase ─────────────────────────────────────────────────── */}
           {phase === 'success' && (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
@@ -135,7 +184,7 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
                     <div key={i} className="flex items-center gap-2 text-xs">
                       {s.status === 'ok'
                         ? <CheckCircle2 size={12} className="text-emerald-500" />
-                        : <XCircle size={12} className="text-red-500" />}
+                        : <XCircle     size={12} className="text-red-500" />}
                       <span className="text-text-muted">{s.name}</span>
                       {s.durationMs && (
                         <span className="ml-auto text-text-muted">{s.durationMs}ms</span>
@@ -147,7 +196,7 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
             </div>
           )}
 
-          {/* Error phase */}
+          {/* ── Error phase ───────────────────────────────────────────────────── */}
           {phase === 'error' && (
             <div className="rounded-lg bg-red-50 dark:bg-red-950 border border-red-200
                            dark:border-red-800 px-4 py-3">
@@ -168,14 +217,18 @@ export default function DeployModal({ preview, deploying, result, error, onConfi
               </button>
               <button
                 onClick={() => onConfirm(reason)}
+                disabled={!canDeploy}
+                title={!canDeploy ? 'Confirm the high-risk warning above to proceed' : undefined}
                 className="bg-brand text-white text-sm font-semibold px-4 py-2 rounded-lg
-                           hover:bg-brand/90 transition-colors">
+                           hover:bg-brand/90 transition-colors disabled:opacity-40
+                           disabled:cursor-not-allowed">
                 Deploy Now
               </button>
             </>
           )}
           {(phase === 'success' || phase === 'error') && (
-            <button onClick={onClose}
+            <button
+              onClick={onClose}
               className="bg-brand text-white text-sm font-semibold px-4 py-2 rounded-lg
                          hover:bg-brand/90 transition-colors">
               Close

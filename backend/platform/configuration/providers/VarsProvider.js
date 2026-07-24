@@ -10,6 +10,7 @@ import {
   diffEntries,
 } from '../parsers/VarsParser.js';
 import { varsCatalog, lookupVar } from '../catalogs/varsCatalog.js';
+import { checkXmlAttributeValue }  from '../xml/XmlAttributeUtil.js';
 
 /**
  * VarsProvider — manages FreeSWITCH vars.xml (System Variables).
@@ -112,13 +113,17 @@ export class VarsProvider extends ConfigurationProvider {
         errors.push('Found a variable with an empty or invalid key.');
         continue;
       }
-      // Key must not contain characters that would break the XML attribute.
-      if (/["'<>&]/.test(entry.key)) {
-        errors.push(`Variable key '${entry.key}' contains invalid XML characters.`);
+
+      const keyCheck = checkXmlAttributeValue(entry.key);
+      if (!keyCheck.valid) {
+        errors.push(`Variable key '${entry.key}' ${keyCheck.reason}.`);
       }
-      // Value must not contain unescaped XML characters.
-      if (entry.value && /["<>&]/.test(entry.value)) {
-        errors.push(`Variable '${entry.key}' value contains unescaped XML characters (", <, >, &).`);
+
+      if (entry.value) {
+        const valCheck = checkXmlAttributeValue(entry.value);
+        if (!valCheck.valid) {
+          errors.push(`Variable '${entry.key}' value ${valCheck.reason}.`);
+        }
       }
     }
 

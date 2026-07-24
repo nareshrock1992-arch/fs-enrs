@@ -1,0 +1,388 @@
+<configuration name="switch.conf" description="Core Configuration">
+
+  <cli-keybindings>
+    <key name="1" value="help"/>
+    <key name="2" value="status"/>
+    <key name="3" value="show channels"/>
+    <key name="4" value="show calls"/>
+    <key name="5" value="sofia status"/>
+    <key name="6" value="reloadxml"/>
+    <key name="7" value="console loglevel 0"/>
+    <key name="8" value="console loglevel 7"/>
+    <key name="9" value="sofia status profile internal"/>
+    <key name="10" value="sofia profile internal siptrace on"/>
+    <key name="11" value="sofia profile internal siptrace off"/>
+    <key name="12" value="version"/>
+  </cli-keybindings>
+
+  <default-ptimes>
+    <!-- Set this to override the 20ms assumption of various codecs in the sdp with no ptime defined -->
+    <!-- <codec name="G729" ptime="40"/> -->
+  </default-ptimes>
+
+  <settings>
+    <!-- Colorize the Console -->
+    <param name="colorize-console" value="true"/>
+
+    <!--Include full timestamps in dialplan logs -->
+    <param name="dialplan-timestamps" value="false"/>
+
+    <!-- Run the timer at 20ms by default and drop down as needed unless you set 1m-timer=true which was previous default -->
+    <!-- <param name="1ms-timer" value="true"/> -->
+
+    <!--
+        Set the Switch Name for HA environments.
+        When setting the switch name, it will override the system hostname for all DB and CURL requests
+        allowing cluster environments such as RHCS to have identical FreeSWITCH configurations but run
+        as different hostnames.
+    -->
+    <!-- <param name="switchname" value="freeswitch"/> -->
+    <!-- <param name="cpu-idle-smoothing-depth" value="30"/> -->
+
+
+    <!-- Maximum number of simultaneous DB handles open -->
+    <param name="max-db-handles" value="50"/>
+    <!-- Maximum number of seconds to wait for a new DB handle before failing -->
+    <param name="db-handle-timeout" value="10"/>
+
+    <!-- Minimum idle CPU before refusing calls -->
+    <!-- <param name="min-idle-cpu" value="25"/> -->
+
+    <!-- Interval between heartbeat events -->
+    <!-- <param name="event-heartbeat-interval" value="20"/> -->
+
+    <!--
+        Max number of sessions to allow at any given time.
+
+        NOTICE: If you're driving 28 T1's in a single box you should set this to 644*2 or 1288
+        this will ensure you're able to use the entire DS3 without a problem.  Otherwise you'll
+        be 144 channels short of always filling that DS3 up which can translate into waste.
+    -->
+    <param name="max-sessions" value="1000"/>
+    <!--Most channels to create per second -->
+    <param name="sessions-per-second" value="30"/>
+    <!-- Default Global Log Level - value is one of debug,info,notice,warning,err,crit,alert -->
+    <param name="loglevel" value="debug"/>
+
+    <!-- UUID version to use, 4 or 7 -->
+    <!-- <param name="uuid-version" value="7"/> -->
+
+    <!-- Set the core DEBUG level (0-10) -->
+    <!-- <param name="debug-level" value="10"/> -->
+
+    <!-- SQL Buffer length within rage of 32k to 10m -->
+    <!-- <param name="sql-buffer-len" value="1m"/> -->
+    <!-- Maximum SQL Buffer length must be greater than sql-buffer-len -->
+    <!-- <param name="max-sql-buffer-len" value="2m"/> -->
+
+    <!--
+         The min-dtmf-duration specifies the minimum DTMF duration to use on
+         outgoing events. Events shorter than this will be increased in duration
+         to match min_dtmf_duration. You cannot configure a dtmf duration on a
+         profile that is less than this setting. You may increase this value,
+         but cannot set it lower than 400. This value cannot exceed
+         max-dtmf-duration. -->
+    <!-- <param name="min-dtmf-duration" value="400"/> -->
+
+    <!--
+         The max-dtmf-duration caps the playout of a DTMF event at the specified
+         duration. Events exceeding this duration will be truncated to this
+         duration. You cannot configure a duration on a profile that exceeds
+         this setting. This setting can be lowered, but cannot exceed 192000.
+         This setting cannot be set lower than min_dtmf_duration. -->
+    <!-- <param name="max-dtmf-duration" value="192000"/> -->
+
+    <!--
+         The default_dtmf_duration specifies the DTMF duration to use on
+         originated DTMF events or on events that are received without a
+         duration specified. This value can be increased or lowered. This
+         value is lower-bounded by min_dtmf_duration and upper-bounded by
+         max-dtmf-duration\. -->
+    <!-- <param name="default-dtmf-duration" value="2000"/> -->
+
+    <!--
+        If you want to send out voicemail notifications via Windows you'll need to change the mailer-app
+        variable to the setting below:
+
+        <param name="mailer-app" value="msmtp"/>
+
+        Do not change mailer-app-args.
+        You will also need to download a sendmail clone for Windows (msmtp). This version works without issue:
+        http://msmtp.sourceforge.net/index.html. Download and copy the .exe to %winddir%\system32.
+        You'll need to create a small config file for smtp credentials (host name, authentication, tls, etc.) in
+        %USERPROFILE%\Application Data\ called "msmtprc.txt". Below is a sample copy of this file:
+
+        ###################################
+        # The SMTP server of the provider.
+        account provider
+        host smtp.myisp.com
+        from john@myisp.com
+        auth login
+        user johndoe
+        password mypassword
+
+        # Set a default account
+        account default : provider
+        ###################################
+
+    -->
+
+    <param name="mailer-app" value="sendmail"/>
+    <param name="mailer-app-args" value="-t"/>
+    <param name="dump-cores" value="yes"/>
+
+    <!-- Enable verbose channel events to include every detail about a channel on every event  -->
+    <!-- <param name="verbose-channel-events" value="no"/> -->
+
+    <!-- Enable clock nanosleep -->
+    <!-- <param name="enable-clock-nanosleep" value="true"/> -->
+
+    <!-- Enable monotonic timing -->
+    <!-- <param name="enable-monotonic-timing" value="true"/> -->
+
+    <!-- NEEDS DOCUMENTATION -->
+    <!-- <param name="enable-softtimer-timerfd" value="true"/> -->
+    <!-- <param name="enable-cond-yield" value="true"/> -->
+    <!-- <param name="enable-timer-matrix" value="true"/> -->
+    <!-- <param name="threaded-system-exec" value="true"/> -->
+    <!-- <param name="tipping-point" value="0"/> -->
+    <!-- <param name="timer-affinity" value="disabled"/> -->
+    <!-- NEEDS DOCUMENTATION -->
+
+    <!-- RTP port range -->
+    <!-- <param name="rtp-start-port" value="16384"/> -->
+    <!-- <param name="rtp-end-port" value="32768"/> -->
+
+    <!-- Test each port to make sure it is not in use by some other process before allocating it to RTP -->
+    <!-- <param name="rtp-port-usage-robustness" value="true"/> -->
+
+    <!--
+         Store encryption keys for secure media in channel variables and call CDRs. Default: false.
+         WARNING: If true, anyone with CDR access can decrypt secure media!
+    -->
+    <!-- <param name="rtp-retain-crypto-keys" value="true"/> -->
+
+    <!--
+         Native PostgreSQL support was removed from the FreeSWITCH Core!
+         =================================
+         NOTICE: You MUST enable mod_pgsql
+         =================================
+         According to https://www.postgresql.org/docs/9.6/libpq-connect.html#LIBPQ-CONNSTRING
+         There are two accepted formats for connection strings supported by the libpq library:
+         * For plain keyword = value strings use pgsql://
+           pgsql://hostaddr=127.0.0.1 dbname=freeswitch user=freeswitch password='' options='-c client_min_messages=NOTICE'
+         * For RFC 3986 URIs use postgresql:// or postgres://
+           postgresql://
+           postgresql://localhost
+           postgresql://localhost:5433
+           postgresql://localhost/mydb
+           postgresql://user@localhost
+           postgresql://user:secret@localhost
+           postgresql://other@localhost/otherdb?connect_timeout=10&application_name=myapp
+           postgresql:///mydb?host=localhost&port=5433
+    -->
+    <!-- <param name="core-db-dsn" value="pgsql://hostaddr=127.0.0.1 dbname=freeswitch user=freeswitch password='' options='-c client_min_messages=NOTICE'" /> -->
+    <!-- <param name="core-db-dsn" value="postgresql://freeswitch:@127.0.0.1/freeswitch?options=-c%20client_min_messages%3DNOTICE" /> -->
+    <!-- <param name="core-db-dsn" value="mariadb://Server=localhost;Database=freeswitch;Uid=freeswitch;Pwd=pass;" /> -->
+    <!-- <param name="core-db-dsn" value="dsn:username:password" /> -->
+
+    <!-- <param name="odbc-skip-autocommit-flip" value="true" /> -->
+
+    <!--
+         Allow to specify the sqlite db at a different location (In this example, move it to ramdrive for
+         better performance on most linux distro (note, you loose the data if you reboot))
+    -->
+    <!-- <param name="core-db-name" value="/dev/shm/core.db" /> -->
+
+    <!-- The system will create all the db schemas automatically, set this to false to avoid this behaviour -->
+    <!-- <param name="auto-create-schemas" value="true"/> -->
+    <!-- <param name="auto-clear-sql" value="true"/> -->
+    <!-- <param name="enable-early-hangup" value="true"/> -->
+
+    <!-- <param name="core-dbtype" value="MSSQL"/> -->
+
+    <!-- Allow multiple registrations to the same account in the central registration table -->
+    <!-- <param name="multiple-registrations" value="true"/> -->
+
+    <!-- <param name="max-audio-channels" value="2"/> -->
+
+  </settings>
+
+</configuration>
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# find /opt/freeswitch/etc/freeswitch/autoload_configs -name "modules.conf.xml"
+/opt/freeswitch/etc/freeswitch/autoload_configs/modules.conf.xml
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# cat /opt/freeswitch/etc/freeswitch/autoload_configs/modules.conf.xml
+<configuration name="modules.conf" description="Modules">
+  <modules>
+    <!-- Loggers (I'd load these first) -->
+    <load module="mod_console"/>
+    <!-- <load module="mod_graylog2"/> -->
+    <load module="mod_logfile"/>
+    <!-- <load module="mod_syslog"/> -->
+
+    <!-- Multi-Faceted -->
+    <!-- mod_enum is a dialplan interface, an application interface and an api command interface -->
+    <load module="mod_enum"/>
+
+    <!-- XML Interfaces -->
+    <!-- <load module="mod_xml_rpc"/> -->
+    <!-- <load module="mod_xml_curl"/> -->
+    <!-- <load module="mod_xml_cdr"/> -->
+    <!-- <load module="mod_xml_scgi"/> -->
+
+    <!-- Event Handlers -->
+    <!-- <load module="mod_amqp"/> -->
+    <load module="mod_cdr_csv"/>
+    <!-- <load module="mod_cdr_sqlite"/> -->
+    <!-- <load module="mod_event_multicast"/> -->
+    <load module="mod_event_socket"/>
+    <!-- <load module="mod_zeroconf"/> -->
+    <!-- <load module="mod_erlang_event"/> -->
+    <!-- <load module="mod_smpp"/> -->
+    <!-- <load module="mod_snmp"/> -->
+
+    <!-- Directory Interfaces -->
+    <!-- <load module="mod_ldap"/> -->
+
+    <!-- Endpoints -->
+    <!-- <load module="mod_dingaling"/> -->
+    <!-- <load module="mod_alsa"/> -->
+    <load module="mod_sofia"/>
+    <load module="mod_loopback"/>
+    <!-- <load module="mod_woomera"/> -->
+    <!-- <load module="mod_freetdm"/> -->
+    <!-- <load module="mod_skinny"/> -->
+    <load module="mod_rtc"/>
+    <!-- <load module="mod_rtmp"/>   -->
+    <load module="mod_verto"/>
+
+    <!-- Applications -->
+    <load module="mod_signalwire"/>
+    <load module="mod_commands"/>
+    <load module="mod_conference"/>
+    <!-- <load module="mod_curl"/> -->
+    <load module="mod_db"/>
+    <load module="mod_dptools"/>
+    <load module="mod_expr"/>
+    <load module="mod_fifo"/>
+    <load module="mod_hash"/>
+    <!--<load module="mod_mongo"/> -->
+    <load module="mod_voicemail"/>
+    <!--<load module="mod_directory"/>-->
+    <!--<load module="mod_distributor"/>-->
+    <!--<load module="mod_lcr"/>-->
+    <!--<load module="mod_easyroute"/>-->
+    <load module="mod_esf"/>
+    <load module="mod_fsv"/>
+    <!--<load module="mod_cluechoo"/>-->
+    <load module="mod_valet_parking"/>
+    <!--<load module="mod_fsk"/>-->
+    <!--<load module="mod_spy"/>-->
+    <!--<load module="mod_sms"/>-->
+    <!--<load module="mod_smpp"/>-->
+    <!--<load module="mod_random"/>-->
+    <load module="mod_httapi"/>
+    <!--<load module="mod_translate"/>-->
+
+    <!-- Dialplan Interfaces -->
+    <!-- <load module="mod_dialplan_directory"/> -->
+    <load module="mod_dialplan_xml"/>
+    <load module="mod_dialplan_asterisk"/>
+
+    <!-- Codec Interfaces -->
+    <load module="mod_spandsp"/>
+    <load module="mod_g723_1"/>
+    <load module="mod_g729"/>
+    <load module="mod_amr"/>
+    <!--<load module="mod_ilbc"/>-->
+    <load module="mod_b64"/>
+    <!--<load module="mod_siren"/>-->
+    <load module="mod_opus"/>
+
+    <!-- File Format Interfaces -->
+    <load module="mod_av"/>
+    <load module="mod_sndfile"/>
+    <load module="mod_native_file"/>
+    <!--<load module="mod_opusfile"/>-->
+    <load module="mod_png"/>
+    <!-- <load module="mod_shell_stream"/> -->
+    <!--For icecast/mp3 streams/files-->
+    <!--<load module="mod_shout"/>-->
+    <!--For local streams (play all the files in a directory)-->
+    <load module="mod_local_stream"/>
+    <load module="mod_tone_stream"/>
+
+    <!-- Timers -->
+    <!-- <load module="mod_timerfd"/> -->
+    <!-- <load module="mod_posix_timer"/> -->
+
+    <!-- Languages -->
+    <!-- <load module="mod_v8"/> -->
+    <!-- <load module="mod_perl"/> -->
+    <!-- <load module="mod_python3"/> -->
+    <!-- <load module="mod_java"/> -->
+    <load module="mod_lua"/>
+
+    <!-- ASR /TTS -->
+    <!-- <load module="mod_flite"/> -->
+    <!-- <load module="mod_pocketsphinx"/> -->
+    <!-- <load module="mod_tts_commandline"/> -->
+
+    <!-- Say -->
+    <load module="mod_say_en"/>
+    <!-- <load module="mod_say_ru"/> -->
+    <!-- <load module="mod_say_zh"/> -->
+    <!-- <load module="mod_say_sv"/> -->
+
+    <!-- Third party modules -->
+    <!--<load module="mod_nibblebill"/>-->
+    <load module="mod_callcenter"/>
+
+  </modules>
+</configuration>
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# find /opt/freeswitch/etc/freeswitch/autoload_configs -name "event_socket.conf.xml"
+/opt/freeswitch/etc/freeswitch/autoload_configs/event_socket.conf.xml
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# cat /opt/freeswitch/etc/freeswitch/autoload_configs/event_socket.conf.xml
+<configuration name="event_socket.conf" description="Socket Client">
+  <settings>
+    <param name="nat-map" value="false"/>
+    <param name="listen-ip" value="::"/>
+    <param name="listen-port" value="8021"/>
+    <param name="password" value="ClueCon"/>
+<param name="apply-inbound-acl" value="lan"/>
+<!--<param name="apply-inbound-acl" value="loopback.auto"/>-->
+    <!--<param name="stop-on-bind-error" value="true"/>-->
+  </settings>
+</configuration>
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# find /opt/freeswitch/etc/freeswitch/autoload_configs -name "sofia.conf.xml"
+/opt/freeswitch/etc/freeswitch/autoload_configs/sofia.conf.xml
+root@freeswitch:/opt/freeswitch-ui/fs-enrs# cat /opt/freeswitch/etc/freeswitch/autoload_configs/sofia.conf.xml
+<configuration name="sofia.conf" description="sofia Endpoint">
+
+  <global_settings>
+    <param name="log-level" value="0"/>
+    <!-- <param name="abort-on-empty-external-ip" value="true"/> -->
+    <!-- <param name="auto-restart" value="false"/> -->
+    <param name="debug-presence" value="0"/>
+    <!-- <param name="capture-server" value="udp:homer.domain.com:5060"/> -->
+
+    <!--
+        the new format for HEPv2/v3 and capture ID
+
+        protocol:host:port;hep=2;capture_id=200;
+
+    -->
+
+    <!-- <param name="capture-server" value="udp:homer.domain.com:5060;hep=3;capture_id=100"/> -->
+  </global_settings>
+
+  <!--
+      The rabbit hole goes deep.  This includes all the
+      profiles in the sip_profiles directory that is up
+      one level from this directory.
+  -->
+  <profiles>
+    <X-PRE-PROCESS cmd="include" data="../sip_profiles/*.xml"/>
+  </profiles>
+
+</configuration>
