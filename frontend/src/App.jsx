@@ -27,6 +27,8 @@ import ErsReport           from './pages/reports/ErsReport.jsx';
 import EnsReport           from './pages/reports/EnsReport.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
+import SysVarsPage         from './pages/settings/SysVarsPage.jsx';
+import ConfigCenter        from './platform/config/ConfigCenter.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
 import MediaLibrary        from './pages/media/MediaLibrary.jsx';
 import Recordings          from './pages/recordings/Recordings.jsx';
@@ -107,6 +109,12 @@ export default function App() {
         <Route path="users"    element={<RequireAdmin><UserList /></RequireAdmin>} />
         <Route path="settings" element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
         <Route path="settings/gateways" element={<RequireAdmin><TelephonyGateways /></RequireAdmin>} />
+
+        {/* Platform Configuration Center (Phase 7) */}
+        <Route path="config" element={<RequireAdmin><ConfigCenter /></RequireAdmin>}>
+          <Route index element={<Navigate to="/config/vars" replace />} />
+          <Route path="vars" element={<SysVarsPage />} />
+        </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

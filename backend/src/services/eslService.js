@@ -1152,24 +1152,44 @@ async function reconcileOrphanedIncident(confName) {
       [confName]
     );
     console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident found ${rows.length} ACTIVE incident(s): ${JSON.stringify(rows)}`);
+    const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
     for (const { incident_uuid, id: incidentId } of rows) {
-      // Log the current responder states BEFORE calling completeIncidentCore
       const { rows: rBefore } = await query(
         `SELECT id, status, mobile_number FROM ers_incident_responders WHERE ers_incident_id = $1`,
         [incidentId]
       );
       console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident pre-complete responders: ${JSON.stringify(rBefore)}`);
-      // Local import to avoid a circular import at module load time
-      // (controllers import eslService, not the reverse).
-      const { completeIncidentCore } = await import('../controllers/internal/ersInternalController.js');
       await completeIncidentCore(incident_uuid, null);
-      // Log responder states AFTER
       const { rows: rAfter } = await query(
         `SELECT id, status, mobile_number FROM ers_incident_responders WHERE ers_incident_id = $1`,
         [incidentId]
       );
       console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident post-complete responders: ${JSON.stringify(rAfter)}`);
     }
+
+    // After completing incidents, queue promotion may have set new incidents to
+    // ACTIVE in the same room for callers who were waiting. If the room is still
+    // empty (the promoted caller also disconnected or never joined), complete those
+    // immediately rather than waiting for the next periodic sweep.
+    if (rows.length > 0) {
+      const liveMembers = await getConferenceMemberCount(confName);
+      if (liveMembers === 0) {
+        const { rows: promoted } = await query(
+          `SELECT incident_uuid FROM ers_incidents
+           WHERE conference_room = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+          [confName]
+        );
+        if (promoted.length > 0) {
+          console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident: ${promoted.length} promoted incident(s) in empty room — completing immediately`);
+          for (const { incident_uuid } of promoted) {
+            await completeIncidentCore(incident_uuid, null).catch(err =>
+              console.error(`[esl] reconcileOrphanedIncident: cascade complete failed for ${incident_uuid}:`, err.message)
+            );
+          }
+        }
+      }
+    }
+
     console.log(`[${new Date().toISOString()}][esl] reconcileOrphanedIncident DONE conf="${confName}"`);
   } catch (err) {
     console.error('[esl] reconcileOrphanedIncident failed for', confName, err.message);
@@ -2344,12 +2364,12 @@ export function startBackgroundJobs() {
     );
   }, 30_000);
 
-  // 60-second safety sweep — catches anything the conference-destroy event
+  // 30-second safety sweep — catches anything the conference-destroy event
   // missed (e.g. ESL was disconnected when the room emptied).
   setInterval(() => {
     if (!isConn) return;
     reconcileAllActiveIncidents().catch(() => {});
-  }, 60_000);
+  }, 30_000);
 
   // 2-minute recording scan — heals recordings whose stop-recording event was
   // missed (ESL disconnect during call) and registers any file the start-recording

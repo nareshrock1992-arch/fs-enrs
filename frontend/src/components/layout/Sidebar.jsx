@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Bell, ShieldAlert, Building2,
   MapPin, Layers, Contact, Group, FileBarChart2,
   Settings, ChevronDown, ChevronRight, Radio, Workflow,
-  Library, Rocket, PhoneCall, Headphones
+  Library, Rocket, PhoneCall, Headphones, SlidersHorizontal
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -55,6 +55,11 @@ const NAV = [
     label: 'Settings', icon: Settings, adminOnly: true, children: [
       { label: 'General',            to: '/settings' },
       { label: 'Telephony Gateways', to: '/settings/gateways' },
+    ]
+  },
+  {
+    label: 'Config Center', icon: SlidersHorizontal, adminOnly: true, children: [
+      { label: 'System Variables', to: '/config/vars' },
     ]
   },
 ];

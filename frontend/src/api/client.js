@@ -320,4 +320,17 @@ export const api = {
     transfer: (room, id, extension) => request('POST', `/monitoring/conferences/${room}/members/${id}/transfer`, { extension }),
     promote:  (room, id) => request('POST',   `/monitoring/conferences/${room}/members/${id}/moderator`),
   },
+
+  // ── Platform Configuration Framework (Phase 7) ───────────────────────────────
+  platformConfig: {
+    providers:  ()                       => request('GET',  '/platform/config/providers'),
+    read:       (id)                     => request('GET',  `/platform/config/${id}`),
+    preview:    (id, changes)            => request('POST', `/platform/config/${id}/preview`, { changes }),
+    deploy:     (id, changes, reason)    => request('POST', `/platform/config/${id}/deploy`, { changes, reason }),
+    rollback:   (id, versionId, reason)  => request('POST', `/platform/config/${id}/rollback/${versionId}`, { reason }),
+    history:    (id, params)             => request('GET',  `/platform/config/${id}/history?${new URLSearchParams(params ?? {})}`),
+    diff:       (id, v1, v2)             => request('GET',  `/platform/config/${id}/history/${v1}/diff/${v2}`),
+    audit:      (id)                     => request('GET',  `/platform/config/${id}/audit`),
+    auditGlobal: (params)                => request('GET',  `/platform/config/audit?${new URLSearchParams(params ?? {})}`),
+  },
 };

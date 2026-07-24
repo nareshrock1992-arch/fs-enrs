@@ -277,6 +277,13 @@ export default function Dashboard() {
   useSocketEvent('conference.ended',          reseed);
   useSocketEvent('conference.member.joined',  reseed);
 
+  // Periodic reseed — catches stale incidents when socket events are missed
+  // (e.g. conference-destroy fires but enrs::ers_incident_ended is dropped)
+  useEffect(() => {
+    const id = setInterval(() => seed(), 30_000);
+    return () => clearInterval(id);
+  }, [seed]);
+
   // ── Derived values ──────────────────────────────────────────────────────────
   const { metrics, activeBlasts, activeIncidents, queue } = state;
   const hasBlasts    = Object.keys(activeBlasts).length > 0;
