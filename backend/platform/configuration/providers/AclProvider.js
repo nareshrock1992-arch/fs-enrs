@@ -9,8 +9,13 @@ import {
   toEntries,
   diffEntries,
   isListKey,
+  listNameFromKey,
+  nodePartsFromKey,
 } from '../parsers/AclParser.js';
 import { lookupAclEntry } from '../catalogs/aclCatalog.js';
+
+// Matches the closing tag for a <list> element (for orphan cleanup).
+const RE_LIST_CLOSE_LINE = /^\s*<\/list\s*>/;
 
 /**
  * AclProvider — manages FreeSWITCH acl.conf.xml.
@@ -98,9 +103,92 @@ export class AclProvider extends ConfigurationProvider {
    * @returns {{ segments, index, entries, checksum: null }}
    */
   applyChanges(doc, changes) {
-    const newSegments = aclApplyChanges(doc.segments, doc.index, changes);
-    const newIndex    = buildIndex(newSegments);
-    const newEntries  = this._buildEntries(newSegments);
+    // ── Step 1: expand list-delete changes ─────────────────────────────────────
+    // Deleting a list must also delete all its child nodes. Without expansion,
+    // only the list-header segment is removed and child nodes + </list> are left
+    // orphaned, producing invalid XML.
+    const expandedChanges = [];
+    const listNamesToDelete = new Set();
+
+    for (const change of changes) {
+      expandedChanges.push(change);
+      if (change.op === 'delete' && isListKey(change.key)) {
+        const listName = listNameFromKey(change.key);
+        listNamesToDelete.add(listName);
+        // Queue deletes for every child node belonging to this list.
+        for (const seg of doc.segments) {
+          if (seg.type === 'entry' && seg._listName === listName && seg._aclType === 'node') {
+            expandedChanges.push({ op: 'delete', key: seg.key });
+          }
+        }
+      }
+    }
+
+    // ── Step 2: record orphan </list> indices before mutation ──────────────────
+    // SegmentUtils.applyChanges returns an array of the same length (deletes set
+    // type:'deleted', never splice-removes). We can safely use pre-mutation indices
+    // for delete-only operations.
+    const orphanCloseTagIndices = new Set();
+    if (listNamesToDelete.size > 0) {
+      let trackingList = null;
+      doc.segments.forEach((seg, i) => {
+        if (seg.type === 'entry' && seg._aclType === 'list') {
+          trackingList = listNamesToDelete.has(seg._listName) ? seg._listName : null;
+        }
+        if (trackingList !== null &&
+            seg.type === 'other' &&
+            RE_LIST_CLOSE_LINE.test(seg.content)) {
+          orphanCloseTagIndices.add(i);
+          trackingList = null;
+        }
+      });
+    }
+
+    // ── Step 3: apply changes via SegmentUtils ──────────────────────────────────
+    let newSegments = aclApplyChanges(doc.segments, doc.index, expandedChanges);
+
+    // ── Step 4: remove orphaned </list> close-tags ──────────────────────────────
+    if (orphanCloseTagIndices.size > 0) {
+      newSegments = newSegments.map((seg, i) =>
+        orphanCloseTagIndices.has(i) ? { type: 'deleted' } : seg
+      );
+    }
+
+    // ── Step 5: inject ACL fields onto new segments ─────────────────────────────
+    // SegmentUtils creates new segments as bare { type:'entry', key, value, enabled,
+    // indent, original:null, modified:false } objects. Without _aclType/_listName/
+    // _nodeAttr/_address, AclParser.serialize would silently drop them.
+    // Infer the required fields from the key and any hints on the change object.
+    const newKeyHints = new Map();
+    for (const change of changes) {
+      if (change.op === 'set' && !doc.index.has(change.key)) {
+        if (isListKey(change.key)) {
+          newKeyHints.set(change.key, {
+            _aclType:  'list',
+            _listName: listNameFromKey(change.key),
+          });
+        } else {
+          const [listName, address] = nodePartsFromKey(change.key);
+          newKeyHints.set(change.key, {
+            _aclType:  'node',
+            _listName: listName,
+            _nodeAttr: change.nodeAttr ?? 'cidr',
+            _address:  address,
+          });
+        }
+      }
+    }
+
+    if (newKeyHints.size > 0) {
+      newSegments = newSegments.map(seg =>
+        seg.type === 'entry' && newKeyHints.has(seg.key)
+          ? { ...seg, ...newKeyHints.get(seg.key) }
+          : seg
+      );
+    }
+
+    const newIndex   = buildIndex(newSegments);
+    const newEntries = this._buildEntries(newSegments);
     return { segments: newSegments, index: newIndex, entries: newEntries, checksum: null };
   }
 

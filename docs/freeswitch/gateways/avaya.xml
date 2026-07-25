@@ -1,0 +1,22 @@
+<include>
+  <gateway name="avaya">
+    <param name="proxy" value="10.128.14.37:5060"/>
+    <param name="register" value="false"/>
+    <param name="realm" value="10.128.14.37"/>
+    <param name="from-domain" value="yerp.com"/>
+    <param name="register-transport" value="udp"/>
+
+    <!-- Identity handling -->
+    <param name="sip_cid_type" value="pai"/>
+    <param name="caller-id-in-from" value="false"/>
+
+    <!-- Keepalive / timers -->
+    <param name="ping" value="25"/>
+    <param name="expire-seconds" value="3600"/>
+    <param name="retry-seconds" value="30"/>
+
+    <!-- Contact handling -->
+    <param name="extension-in-contact" value="true"/>
+    <param name="contact-params" value="transport=udp"/>
+  </gateway>
+</include>

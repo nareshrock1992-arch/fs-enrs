@@ -232,7 +232,9 @@ describe('AclParser — applyChanges', () => {
       ]);
     const out = serialize(after);
     expect(out).toContain('<node type="allow" cidr="192.168.0.0/24"/>');
-    expect(out).not.toContain('<!--');
+    // The formerly-disabled node must no longer appear commented out.
+    expect(out).not.toContain('<!-- <node type="allow" cidr="192.168.0.0/24"/>');
+    expect(out).not.toContain('<!--<node type="allow" cidr="192.168.0.0/24"/>');
   });
 
   it('disables an active node (uses canonical form)', () => {
@@ -438,6 +440,67 @@ describe('AclProvider — validate: CIDR format', () => {
     const doc    = provider.parse(MINIMAL);
     const result = provider.validate(doc);
     expect(result.errors.some(e => e.includes('10.0.0.0/8'))).toBe(false);
+  });
+});
+
+// ── provider.applyChanges: list deletion ──────────────────────────────────────
+
+describe('AclProvider — applyChanges: list deletion', () => {
+  it('deleting a list removes its header, all child nodes, and the </list> tag', () => {
+    const doc  = provider.parse(STANDARD);
+    const doc2 = provider.applyChanges(doc, [{ op: 'delete', key: '_list___lan' }]);
+    const out  = provider.serialize(doc2);
+    // List header gone
+    expect(out).not.toContain('<list name="lan"');
+    // Child nodes gone
+    expect(out).not.toContain('192.168.42.0/24');
+    expect(out).not.toContain('192.168.42.42/32');
+    // No orphaned </list> tag for the deleted list
+    // (the domains </list> is still present — count only one remaining </list>)
+    const closeTagCount = (out.match(/<\/list>/g) ?? []).length;
+    expect(closeTagCount).toBe(1); // only "domains" list close tag remains
+  });
+
+  it('deleting one list leaves other lists intact', () => {
+    const doc  = provider.parse(STANDARD);
+    const doc2 = provider.applyChanges(doc, [{ op: 'delete', key: '_list___lan' }]);
+    const out  = provider.serialize(doc2);
+    expect(out).toContain('<list name="domains"');
+    expect(out).toContain('example.com');
+  });
+
+  it('serialized output after list deletion is valid XML (no orphaned children)', () => {
+    const doc  = provider.parse(STANDARD);
+    const doc2 = provider.applyChanges(doc, [{ op: 'delete', key: '_list___lan' }]);
+    const out  = provider.serialize(doc2);
+    // Basic structural check: </list> count equals remaining <list count
+    const openCount  = (out.match(/<list /g) ?? []).length;
+    const closeCount = (out.match(/<\/list>/g) ?? []).length;
+    expect(openCount).toBe(closeCount);
+  });
+});
+
+// ── provider.applyChanges: new entry injection ────────────────────────────────
+
+describe('AclProvider — applyChanges: new node injection', () => {
+  it('newly added cidr node appears in serialized output', () => {
+    const doc  = provider.parse(MINIMAL);
+    const doc2 = provider.applyChanges(doc, [
+      { op: 'set', key: 'mynet___172.16.0.0/12', value: 'deny', nodeAttr: 'cidr' },
+    ]);
+    const out = provider.serialize(doc2);
+    expect(out).toContain('<node type="deny" cidr="172.16.0.0/12"/>');
+  });
+
+  it('newly added node has correct catalog metadata', () => {
+    const doc  = provider.parse(MINIMAL);
+    const doc2 = provider.applyChanges(doc, [
+      { op: 'set', key: 'mynet___172.16.0.0/12', value: 'deny', nodeAttr: 'cidr' },
+    ]);
+    const node = doc2.entries.find(e => e.key === 'mynet___172.16.0.0/12');
+    expect(node).toBeDefined();
+    expect(node._aclType).toBe('node');
+    expect(node._address).toBe('172.16.0.0/12');
   });
 });
 

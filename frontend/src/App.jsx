@@ -31,6 +31,7 @@ import SysVarsPage         from './pages/settings/SysVarsPage.jsx';
 import SwitchCorePage      from './pages/settings/SwitchCorePage.jsx';
 import EventSocketPage     from './pages/settings/EventSocketPage.jsx';
 import AclPage             from './pages/settings/AclPage.jsx';
+import SipProfilesPage    from './pages/settings/SipProfilesPage.jsx';
 import ConfigCenter        from './platform/config/ConfigCenter.jsx';
 import ConfigDashboard     from './platform/config/ConfigDashboard.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
@@ -120,7 +121,8 @@ export default function App() {
           <Route path="vars"         element={<SysVarsPage />} />
           <Route path="switch"       element={<SwitchCorePage />} />
           <Route path="event-socket" element={<EventSocketPage />} />
-          <Route path="acl"         element={<AclPage />} />
+          <Route path="acl"          element={<AclPage />} />
+          <Route path="sip-profiles" element={<SipProfilesPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
