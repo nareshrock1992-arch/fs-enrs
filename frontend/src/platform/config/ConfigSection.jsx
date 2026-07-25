@@ -1,8 +1,7 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { groupByHierarchy, UNGROUPED } from './utils/metadataUtils.js';
 import ConfigCard from './ConfigCard.jsx';
-import { diagL3Grouped, diagL4Toggle, diagL5Summary, diagL6DomAndCss } from './__configDiag.js';
 
 /**
  * ConfigSection — grouped accordion list of configuration entries.
@@ -33,27 +32,13 @@ export default function ConfigSection({
 }) {
   const grouped    = useMemo(() => groupByHierarchy(entries), [entries]);
   const categories = Object.keys(grouped);
-  // DIAG L3
-  diagL3Grouped(grouped, categories);
 
-  // All sections start collapsed. Click to expand (standard accordion UX).
-  // Previously used collapsed={} where !collapsed[cat]=!undefined=true (always
-  // open), which meant clicking a ChevronDown header closed sections — exactly
-  // the opposite of what users expect.
   const [expanded, setExpanded] = useState(new Set());
-
-  // DIAG L5 + L6: after every expand/collapse, report card count and inspect DOM
-  useEffect(() => {
-    diagL5Summary();
-    if (expanded.size > 0) diagL6DomAndCss();
-  }, [expanded]);
 
   const toggleCategory = (cat) => {
     setExpanded(prev => {
       const next = new Set(prev);
       if (next.has(cat)) next.delete(cat); else next.add(cat);
-      // DIAG L4
-      diagL4Toggle(cat, [...next]);
       return next;
     });
   };

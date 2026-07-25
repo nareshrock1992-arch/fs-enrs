@@ -84,18 +84,37 @@
  */
 
 /**
+ * @typedef {object} AlternativeDefinition
+ * One non-primary definition of a configuration key found in the file.
+ *
+ * @property {string}  value        - The value from this definition.
+ * @property {boolean} enabled      - Always false for alternatives (primary is the active one).
+ * @property {number}  definitionId - 0-based occurrence index within this key's definitions.
+ * @property {string}  disabledHint - Display-only label describing how this definition is
+ *                                    disabled (e.g. 'XML comment', 'Z-tag convention').
+ *                                    Purely presentational — never branch on this value.
+ */
+
+/**
  * @typedef {object} ConfigurationObject
  * A parsed configuration parameter as returned by the read() API.
  * Produced by the Provider's parse() method after merging segments with catalog metadata.
  *
- * @property {string}  key      - Parameter name.
- * @property {string|null} value - Current value in the file. null if disabled and unset.
- * @property {boolean} enabled  - false = parameter is commented out in the file.
+ * @property {string}     key          - Parameter name.
+ * @property {string|null} value       - Primary definition's value.
+ * @property {boolean}    enabled      - Primary definition's active state.
+ * @property {number}     definitionId - 0-based occurrence index of the primary definition
+ *                                       among all definitions of this key (file order).
+ *                                       Echoed back by the frontend in `enable` changes to
+ *                                       target a specific definition for activation.
+ * @property {AlternativeDefinition[]} alternatives
+ *                                     - All non-primary definitions for this key.
+ *                                       Empty array when the key appears exactly once in the file.
  * @property {ConfigurationEntry} metadata - Full enriched metadata from the catalog.
  *
  * Note: All ConfigurationEntry fields are ALSO spread flat onto the object for
  * backward compatibility with existing UI code (entry.label, entry.type, etc.).
- * Phase 7.3B components should prefer entry.metadata.* for new code.
+ * Prefer entry.metadata.* for new code.
  *
  * The providerId and source (file path) are available at the snapshot level,
  * not per-entry, to avoid redundant data in large entry arrays.

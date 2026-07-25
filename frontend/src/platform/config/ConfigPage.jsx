@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback, useState, Component } from 'react';
+import { useEffect, useMemo, useCallback, useState } from 'react';
 import { History, ShieldCheck, Loader2, AlertCircle } from 'lucide-react';
 import { useConfigProvider }     from './hooks/useConfigProvider.js';
 import { useDeployment }         from './hooks/useDeployment.js';
@@ -16,25 +16,6 @@ import {
   getSearchText,
   describeChange,
 } from './utils/metadataUtils.js';
-import { diagL1Entries, diagL2Filtered, diagL8BoundaryCatch } from './__configDiag.js';
-
-/** DIAG: temporary error boundary around ConfigSection — remove with __configDiag.js */
-class ConfigDiagBoundary extends Component {
-  state = { caught: null };
-  componentDidCatch(error, info) { diagL8BoundaryCatch(error, info); this.setState({ caught: error }); }
-  render() {
-    if (this.state.caught) {
-      return (
-        <div style={{ padding: 16, background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8 }}>
-          <strong style={{ color: '#dc2626' }}>[DIAG L8] ConfigSection render error:</strong>
-          <pre style={{ color: '#dc2626', marginTop: 8, fontSize: 12 }}>{this.state.caught.message}</pre>
-          <small style={{ color: '#9ca3af' }}>Full details in browser console under [DIAG L8]</small>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 /**
  * ConfigPage — shared template for all configuration provider pages.
@@ -118,10 +99,6 @@ export default function ConfigPage({ providerId, title, subtitle }) {
     });
   }, [entries, visibilityLevel, category, search, currentValues]);
 
-  // DIAG L1 — after entries load from API
-  useEffect(() => { diagL1Entries(entries); }, [entries]);
-  // DIAG L2 — after filtered set changes (filter, visibility, search, category)
-  useEffect(() => { diagL2Filtered(filtered, visibilityLevel, category); }, [filtered, visibilityLevel, category]);
 
   const changes = useMemo(() => [...pending.values()], [pending]);
 
@@ -320,17 +297,15 @@ export default function ConfigPage({ providerId, title, subtitle }) {
             />
           </div>
 
-          <ConfigDiagBoundary>
-            <ConfigSection
-              entries={filtered}
-              pending={pending}
-              onChange={handleChange}
-              onRevert={handleRevertKey}
-              selectedKey={selectedKey}
-              onSelect={handleSelect}
-              disabled={deploying}
-            />
-          </ConfigDiagBoundary>
+          <ConfigSection
+            entries={filtered}
+            pending={pending}
+            onChange={handleChange}
+            onRevert={handleRevertKey}
+            selectedKey={selectedKey}
+            onSelect={handleSelect}
+            disabled={deploying}
+          />
         </div>
 
         {/* Right: detail panel — only when an entry is selected, xl+ only */}

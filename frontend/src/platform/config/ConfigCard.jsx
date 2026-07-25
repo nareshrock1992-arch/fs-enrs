@@ -1,6 +1,5 @@
 import { AlertTriangle, RefreshCw, GitBranch } from 'lucide-react';
 import RichInput from './RichInput.jsx';
-import { diagL5CardInvoked } from './__configDiag.js';
 
 /**
  * ConfigCard — renders a single variable row in the configuration provider page.
@@ -27,7 +26,6 @@ export default function ConfigCard({
   onSelect,
   isSelected = false,
 }) {
-  diagL5CardInvoked(entry.key); // DIAG L5
   const meta   = entry.metadata ?? entry;
   const isDirty = pendingChange !== undefined;
 

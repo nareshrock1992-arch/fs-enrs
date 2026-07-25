@@ -443,13 +443,14 @@ describe('VarsParser — groupByKey', () => {
     expect(group.alternatives[0].disabledForm).toBe('z-tag');
   });
 
-  it('alternatives carries the correct segmentIndex', () => {
+  it('alternatives carries the correct definitionId', () => {
     const { segments } = parse(MULTI_DEF_CONTENT);
     const groups = groupByKey(segments);
     const sp = groups.find(g => g.key === 'sound_prefix');
     const alt = sp.alternatives[0];
-    // segmentIndex must point to the correct segment
-    expect(segments[alt.segmentIndex].value).toContain('allison');
+    // definitionId 1 = second occurrence of sound_prefix in file order = allison
+    expect(alt.definitionId).toBe(1);
+    expect(alt.value).toContain('allison');
   });
 
   it('single-definition keys have empty alternatives', () => {
@@ -567,5 +568,121 @@ describe('VarsParser — applyChanges: enable with definitionId (alternative swi
     const domain = groups.find(g => g.key === 'domain_name');
     expect(domain.primary.definitionId).toBe(0);
     expect(domain.alternatives).toHaveLength(0);
+  });
+});
+
+// ── applyChanges: set ──────────────────────────────────────────────────────────
+
+const SIMPLE_CONTENT = `<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain_name=enrs.local"/>
+  <X-PRE-PROCESS cmd="set" data="max_sessions=1000"/>
+</include>`;
+
+describe('VarsParser — applyChanges: set on existing key', () => {
+  it('updates the value of an existing active variable', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'set', key: 'max_sessions', value: '2000' }]);
+    const out    = serialize(after);
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="max_sessions=2000"/>');
+    expect(out).not.toContain('max_sessions=1000');
+  });
+
+  it('enabling an existing key via set preserves its value', () => {
+    const { segments } = parse(SINGLE_LINE_DISABLED);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'set', key: 'external_sip_ip', value: '1.2.3.4', enabled: true }]);
+    const out    = serialize(after);
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="external_sip_ip=1.2.3.4"/>');
+  });
+
+  it('disabling an existing key via set produces a commented-out entry', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'set', key: 'max_sessions', value: '1000', enabled: false }]);
+    const out    = serialize(after);
+    expect(out).toContain('<!--<X-PRE-PROCESS cmd="set" data="max_sessions=1000"/>-->');
+    expect(out).not.toMatch(/<X-PRE-PROCESS[^!]*max_sessions/);
+  });
+
+  it('inserts a new variable before </include> when key is absent', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'set', key: 'new_var', value: 'hello' }]);
+    const out    = serialize(after);
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="new_var=hello"/>');
+    // New variable must appear before closing tag
+    const newPos   = out.indexOf('new_var=hello');
+    const closePos = out.indexOf('</include>');
+    expect(newPos).toBeGreaterThan(0);
+    expect(newPos).toBeLessThan(closePos);
+  });
+
+  it('last-write-wins: two set changes for the same key applies only the final one', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [
+      { op: 'set', key: 'max_sessions', value: '500' },
+      { op: 'set', key: 'max_sessions', value: '9999' },
+    ]);
+    const out    = serialize(after);
+    expect(out).toContain('max_sessions=9999');
+    expect(out).not.toContain('max_sessions=500');
+  });
+});
+
+describe('VarsParser — applyChanges: delete', () => {
+  it('removes a variable from the serialised output', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'delete', key: 'max_sessions' }]);
+    expect(serialize(after)).not.toContain('max_sessions');
+  });
+
+  it('removing a multi-definition key removes all its definitions', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'delete', key: 'sound_prefix' }]);
+    const out    = serialize(after);
+    expect(out).not.toContain('sound_prefix');
+  });
+
+  it('does not affect other variables when one is deleted', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'delete', key: 'max_sessions' }]);
+    expect(serialize(after)).toContain('domain_name=enrs.local');
+  });
+
+  it('deleting an unknown key is a no-op (does not throw)', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx   = buildIndex(segments);
+    expect(() => applyChanges(segments, idx, [{ op: 'delete', key: 'nonexistent' }])).not.toThrow();
+  });
+});
+
+describe('VarsParser — applyChanges: unknown op', () => {
+  it('throws for an unrecognised operation', () => {
+    const { segments } = parse(SIMPLE_CONTENT);
+    const idx = buildIndex(segments);
+    expect(() => applyChanges(segments, idx, [{ op: 'upsert', key: 'domain_name', value: 'x' }]))
+      .toThrow(/unknown op/);
+  });
+});
+
+describe('VarsParser — serialize: formatting preservation', () => {
+  it('preserves blank lines in the output', () => {
+    const content = `<?xml version="1.0"?>\n<include>\n\n  <X-PRE-PROCESS cmd="set" data="k=v"/>\n\n</include>`;
+    const { segments } = parse(content);
+    const out = serialize(segments);
+    expect(out).toBe(content);
+  });
+
+  it('preserves zero-indent entry without expanding it', () => {
+    const content = `<?xml version="1.0"?>\n<include>\n<X-PRE-PROCESS cmd="set" data="k=v"/>\n</include>`;
+    const { segments } = parse(content);
+    const out = serialize(segments);
+    expect(out).toContain('\n<X-PRE-PROCESS cmd="set" data="k=v"/>');
   });
 });
