@@ -44,17 +44,30 @@ const RE_DISABLED = /^(\s*)<!--\s*<param\s+name="([^"]+)"\s+value="([^"]*)"\s*\/
 export function parse(rawContent) {
   const lines    = rawContent.split('\n');
   const segments = [];
+  let   inBlock  = false; // true while inside a multi-line <!-- ... --> comment
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line    = lines[i];
+    const trimmed = line.trim();
 
-    // Multi-line comment block:
+    // ── Inside a multi-line block comment ────────────────────────────────────
+    // All content (including bare <param> lines used as examples in doc comments)
+    // must be treated as 'other' until the closing --> is seen.
+    // Example in switch.conf.xml:
     //   <!--
-    //     <param name="key" value="val"/>
+    //       <param name="mailer-app" value="msmtp"/>   ← must NOT become an entry
     //   -->
-    // Normalise to a single disabled entry on the next save.
+    if (inBlock) {
+      if (trimmed === '-->' || trimmed.endsWith('-->')) inBlock = false;
+      segments.push({ type: 'other', content: line });
+      continue;
+    }
+
+    // ── 3-line exact block: <!-- / <param.../> / --> ─────────────────────────
+    // Normalise to a single disabled entry so the UI can toggle it.
+    // Must be checked BEFORE the block-start detection below.
     if (
-      line.trim() === '<!--' &&
+      trimmed === '<!--' &&
       i + 2 < lines.length &&
       lines[i + 2].trim() === '-->'
     ) {
@@ -72,8 +85,21 @@ export function parse(rawContent) {
         i += 2;
         continue;
       }
+      // Inner line didn't match — fall through; the '<!--' line becomes 'other'.
+      segments.push({ type: 'other', content: line });
+      continue;
     }
 
+    // ── Multi-line block comment start ────────────────────────────────────────
+    // A line that starts with <!-- but does NOT close on the same line opens a
+    // block.  Everything until --> is an 'other' segment — no entry recognition.
+    if (trimmed.startsWith('<!--') && !trimmed.endsWith('-->')) {
+      inBlock = true;
+      segments.push({ type: 'other', content: line });
+      continue;
+    }
+
+    // ── Per-line entry recognition ─────────────────────────────────────────────
     const activeMatch   = RE_ACTIVE.exec(line);
     const disabledMatch = !activeMatch && RE_DISABLED.exec(line);
 

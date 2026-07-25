@@ -219,6 +219,14 @@ describe('EventSocketProvider — validate: listen-ip exposure', () => {
     const result = provider.validate(doc);
     expect(result.warnings.some(w => w.includes('0.0.0.0'))).toBe(false);
   });
+
+  it('warns when listen-ip is :: (IPv6 any-address)', () => {
+    const content = STANDARD.replace('value="127.0.0.1"', 'value="::"');
+    const doc    = provider.parse(content);
+    const result = provider.validate(doc);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.some(w => w.includes('::'))).toBe(true);
+  });
 });
 
 // ── validate: port range ──────────────────────────────────────────────────────

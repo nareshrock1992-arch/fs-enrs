@@ -25,7 +25,7 @@ export const eventSocketCatalog = {
     notes:       'Keep at 127.0.0.1 unless the ENRS backend runs on a separate host. If remote access is needed, restrict inbound connections using apply-inbound-acl instead of exposing ESL publicly. Changing this param requires a mod_event_socket restart to take effect.',
     type:        'ip',
     example:     '127.0.0.1',
-    defaultValue:     '127.0.0.1',
+    defaultValue:     '::',
     recommendedValue: '127.0.0.1',
     visibility:  'basic',
     riskLevel:   'high',

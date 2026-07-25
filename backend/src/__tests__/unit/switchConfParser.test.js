@@ -301,3 +301,53 @@ describe('SwitchConfParser — applyChanges: insert new param', () => {
     expect(out.indexOf('sip-trace')).toBeLessThan(out.indexOf('</settings>'));
   });
 });
+
+// ── Multi-line block comment: params inside must NOT become entries ─────────────
+// Regression test for the switch.conf.xml mailer-app scenario:
+//   <!--
+//       <param name="mailer-app" value="msmtp"/>   ← example only, not a real entry
+//   -->
+//   <param name="mailer-app" value="sendmail"/>    ← the real active value
+
+const WITH_BLOCK_COMMENT = `<?xml version="1.0"?>
+<configuration name="switch.conf" description="Core Switch Configuration">
+  <settings>
+    <!--
+        If you want to change this, set it to something else:
+        <param name="mailer-app" value="msmtp"/>
+        Do not change mailer-app-args.
+    -->
+    <param name="mailer-app" value="sendmail"/>
+    <param name="loglevel" value="WARNING"/>
+  </settings>
+</configuration>`;
+
+describe('SwitchConfParser — multi-line block comment isolation', () => {
+  it('does not parse <param> inside a long block comment as an entry', () => {
+    const { segments } = parse(WITH_BLOCK_COMMENT);
+    const entries = segments.filter(s => s.type === 'entry');
+    // Only the two real params should be entries, not the example inside the comment
+    expect(entries).toHaveLength(2);
+    expect(entries.every(e => e.type === 'entry')).toBe(true);
+  });
+
+  it('treats the example param as an other segment', () => {
+    const { segments } = parse(WITH_BLOCK_COMMENT);
+    const mailerEntries = segments.filter(s => s.type === 'entry' && s.key === 'mailer-app');
+    // Only ONE mailer-app entry — the real "sendmail", not the example "msmtp"
+    expect(mailerEntries).toHaveLength(1);
+    expect(mailerEntries[0].value).toBe('sendmail');
+    expect(mailerEntries[0].enabled).toBe(true);
+  });
+
+  it('shows the correct primary value (sendmail, not msmtp)', () => {
+    const { segments } = parse(WITH_BLOCK_COMMENT);
+    const idx = buildIndex(segments);
+    expect(idx.has('mailer-app')).toBe(true);
+    expect(segments[idx.get('mailer-app')].value).toBe('sendmail');
+  });
+
+  it('round-trips the content losslessly including the block comment', () => {
+    expect(serialize(parse(WITH_BLOCK_COMMENT).segments)).toBe(WITH_BLOCK_COMMENT);
+  });
+});

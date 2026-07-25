@@ -166,11 +166,11 @@ export class EventSocketProvider extends ConfigurationProvider {
     }
 
     const listenIp = doc.entries?.find(e => e.key === 'listen-ip' && e.enabled);
-    if (listenIp && listenIp.value === '0.0.0.0') {
+    if (listenIp && (listenIp.value === '0.0.0.0' || listenIp.value === '::')) {
       warnings.push(
-        "listen-ip is 0.0.0.0 — ESL is exposed on all network interfaces. " +
-        "Use 127.0.0.1 unless the ENRS backend runs on a separate host, and " +
-        "ensure apply-inbound-acl is configured to restrict access."
+        `listen-ip is '${listenIp.value}' — ESL is exposed on all network interfaces ` +
+        "(IPv4 and IPv6). Use 127.0.0.1 unless the ENRS backend runs on a separate host, " +
+        "and ensure apply-inbound-acl is configured to restrict access."
       );
     }
 

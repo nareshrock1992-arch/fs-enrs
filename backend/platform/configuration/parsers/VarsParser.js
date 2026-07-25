@@ -65,25 +65,27 @@ const RE_XX_TAG = /^(\s*)<XX-PRE-PROCESS\s+cmd="set"\s+data="([^"=]+)=([^"]*)"\s
 export function parse(rawContent) {
   const lines    = rawContent.split('\n');
   const segments = [];
+  let   inBlock  = false; // true while inside a multi-line <!-- ... --> comment
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line    = lines[i];
+    const trimmed = line.trim();
 
-    // ── Multi-line comment block detection ──────────────────────────────────
+    // ── Inside a multi-line block comment ────────────────────────────────────
+    // Prevents bare <X-PRE-PROCESS> example lines inside long doc comments
+    // from being mistakenly parsed as active entries.
+    if (inBlock) {
+      if (trimmed === '-->' || trimmed.endsWith('-->')) inBlock = false;
+      segments.push({ type: 'other', content: line });
+      continue;
+    }
+
+    // ── 3-line exact block: <!-- / <X-PRE-PROCESS.../> / --> ─────────────────
     // Handles the FreeSWITCH convention of wrapping a disabled variable in a
-    // standalone comment block:
-    //   <!--
-    //     <X-PRE-PROCESS cmd="set" data="key=value"/>
-    //   -->
-    //
-    // Without this, the inner <X-PRE-PROCESS> line matches RE_ACTIVE and the
-    // variable appears as ENABLED in the UI. We detect the exact 3-line
-    // pattern (comment opener / single directive / comment closer) and absorb
-    // it as one disabled entry, normalising to the single-line format on next
-    // save. Only the exact opener/closer pattern is matched to avoid eating
-    // multi-content block comments that contain other text.
+    // standalone 3-line comment block. Normalises to single-line disabled form.
+    // Must be checked BEFORE the block-start detection below.
     if (
-      line.trim() === '<!--' &&
+      trimmed === '<!--' &&
       i + 2 < lines.length &&
       lines[i + 2].trim() === '-->'
     ) {
@@ -101,6 +103,18 @@ export function parse(rawContent) {
         i += 2; // consume the inner line and the closing -->
         continue;
       }
+      // Inner line didn't match — fall through; '<!--' becomes 'other'.
+      segments.push({ type: 'other', content: line });
+      continue;
+    }
+
+    // ── Multi-line block comment start ────────────────────────────────────────
+    // A line that starts with <!-- but does NOT close on the same line opens a
+    // block comment. All content until --> is emitted as 'other'.
+    if (trimmed.startsWith('<!--') && !trimmed.endsWith('-->')) {
+      inBlock = true;
+      segments.push({ type: 'other', content: line });
+      continue;
     }
 
     const activeMatch   = RE_ACTIVE.exec(line);
