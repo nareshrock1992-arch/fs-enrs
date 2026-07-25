@@ -1,5 +1,21 @@
 import { useEffect, useMemo, useCallback, useState, Component } from 'react';
 import { History, ShieldCheck, Loader2, AlertCircle } from 'lucide-react';
+import { useConfigProvider }     from './hooks/useConfigProvider.js';
+import { useDeployment }         from './hooks/useDeployment.js';
+import { useConfigChangesStore } from './stores/configChangesStore.js';
+import ConfigSection  from './ConfigSection.jsx';
+import ConfigFilters  from './ConfigFilters.jsx';
+import DetailsPanel   from './DetailsPanel.jsx';
+import ConfigHistory  from './ConfigHistory.jsx';
+import ConfigAudit    from './ConfigAudit.jsx';
+import DeployModal    from './DeployModal.jsx';
+import ChangesBar     from './ChangesBar.jsx';
+import {
+  isVisible,
+  shouldShow,
+  getSearchText,
+  describeChange,
+} from './utils/metadataUtils.js';
 import { diagL1Entries, diagL2Filtered, diagL8BoundaryCatch } from './__configDiag.js';
 
 /** DIAG: temporary error boundary around ConfigSection — remove with __configDiag.js */
@@ -19,22 +35,6 @@ class ConfigDiagBoundary extends Component {
     return this.props.children;
   }
 }
-import { useConfigProvider }     from './hooks/useConfigProvider.js';
-import { useDeployment }         from './hooks/useDeployment.js';
-import { useConfigChangesStore } from './stores/configChangesStore.js';
-import ConfigSection  from './ConfigSection.jsx';
-import ConfigFilters  from './ConfigFilters.jsx';
-import DetailsPanel   from './DetailsPanel.jsx';
-import ConfigHistory  from './ConfigHistory.jsx';
-import ConfigAudit    from './ConfigAudit.jsx';
-import DeployModal    from './DeployModal.jsx';
-import ChangesBar     from './ChangesBar.jsx';
-import {
-  isVisible,
-  shouldShow,
-  getSearchText,
-  describeChange,
-} from './utils/metadataUtils.js';
 
 /**
  * ConfigPage — shared template for all configuration provider pages.
@@ -71,11 +71,6 @@ export default function ConfigPage({ providerId, title, subtitle }) {
   const [showDeploy,     setShowDeploy]     = useState(false);
 
   useEffect(() => { load(); }, [load]);
-
-  // DIAG L1 — fires each time entries change (i.e. after API load completes)
-  useEffect(() => { diagL1Entries(entries); }, [entries]);
-  // DIAG L2 — fires each time the visible set changes (filter, visibility, search)
-  useEffect(() => { diagL2Filtered(filtered, visibilityLevel, category); }, [filtered, visibilityLevel, category]);
 
   const reload = useCallback(async () => {
     clearProvider(providerId);
@@ -122,6 +117,11 @@ export default function ConfigPage({ providerId, title, subtitle }) {
       return true;
     });
   }, [entries, visibilityLevel, category, search, currentValues]);
+
+  // DIAG L1 — after entries load from API
+  useEffect(() => { diagL1Entries(entries); }, [entries]);
+  // DIAG L2 — after filtered set changes (filter, visibility, search, category)
+  useEffect(() => { diagL2Filtered(filtered, visibilityLevel, category); }, [filtered, visibilityLevel, category]);
 
   const changes = useMemo(() => [...pending.values()], [pending]);
 
