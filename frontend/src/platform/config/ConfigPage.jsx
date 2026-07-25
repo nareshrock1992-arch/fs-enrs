@@ -42,7 +42,10 @@ export default function ConfigPage({ providerId, title, subtitle }) {
   const pending = getChanges(providerId);
 
   const [search,         setSearch]         = useState('');
-  const [visibilityLevel, setVisibilityLevel] = useState('basic');
+  // Default 'advanced' matches the old flat-list behaviour where all variables
+  // were visible immediately. 'basic' hides the ~68 custom/ring-tone vars that
+  // have no catalog entry, which the user never sees without manually switching.
+  const [visibilityLevel, setVisibilityLevel] = useState('advanced');
   const [category,       setCategory]       = useState('All');
   const [selectedKey,    setSelectedKey]    = useState(null);
   const [panel,          setPanel]          = useState(null); // 'history' | 'audit' | null

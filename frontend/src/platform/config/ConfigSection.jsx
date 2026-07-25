@@ -33,11 +33,18 @@ export default function ConfigSection({
   const grouped    = useMemo(() => groupByHierarchy(entries), [entries]);
   const categories = Object.keys(grouped);
 
-  // Track collapsed state per category (all open by default)
-  const [collapsed, setCollapsed] = useState({});
+  // All sections start collapsed. Click to expand (standard accordion UX).
+  // Previously used collapsed={} where !collapsed[cat]=!undefined=true (always
+  // open), which meant clicking a ChevronDown header closed sections — exactly
+  // the opposite of what users expect.
+  const [expanded, setExpanded] = useState(new Set());
 
   const toggleCategory = (cat) => {
-    setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
   };
 
   if (entries.length === 0) {
@@ -78,7 +85,7 @@ export default function ConfigSection({
         const groups     = grouped[cat];
         const allEntries = Object.values(groups).flat();
         const dirtyCount = allEntries.filter(e => pending.has(e.key)).length;
-        const isOpen     = !collapsed[cat];
+        const isOpen     = expanded.has(cat);
 
         return (
           <div key={cat} className="rounded-xl border border-surface-border overflow-hidden">

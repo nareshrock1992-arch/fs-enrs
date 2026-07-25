@@ -7,6 +7,12 @@ import { create } from 'zustand';
  * The dashboard reads total pending counts without making an API call.
  * ConfigPage migrates from local useState to this store.
  */
+
+// Stable empty map — returned by getChanges when a provider has no pending changes.
+// Using a singleton avoids creating a new Map() on every render, which would
+// cause currentValues and filtered to recompute unnecessarily on each render pass.
+const EMPTY_MAP = new Map();
+
 export const useConfigChangesStore = create((set, get) => ({
 
   // Map<providerId → Map<key, change>>
@@ -14,7 +20,7 @@ export const useConfigChangesStore = create((set, get) => ({
 
   /** Return the Map<key, change> for a provider (never null). */
   getChanges(providerId) {
-    return get()._changes.get(providerId) ?? new Map();
+    return get()._changes.get(providerId) ?? EMPTY_MAP;
   },
 
   /** Upsert a single change for a provider key. */
