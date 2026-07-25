@@ -35,8 +35,9 @@ export default function DeployModal({
               : deploying ? 'running'
               : 'confirm';
 
-  const hasHighRisk = changeDescriptions?.some(c => c.riskLevel === 'high') ?? false;
-  const canDeploy   = !hasHighRisk || riskConfirmed;
+  const hasHighRisk    = changeDescriptions?.some(c => c.riskLevel === 'high') ?? false;
+  const previewInvalid = preview?.validation?.valid === false;
+  const canDeploy      = !previewInvalid && (!hasHighRisk || riskConfirmed);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -87,6 +88,19 @@ export default function DeployModal({
                     File Diff
                   </p>
                   <ConfigDiff diff={preview.diffSummary} />
+                </div>
+              )}
+
+              {/* Validation errors from preview — block Deploy when present */}
+              {preview?.validation?.errors?.length > 0 && (
+                <div className="rounded-lg bg-red-50 dark:bg-red-950 border border-red-200
+                               dark:border-red-800 px-3 py-2">
+                  <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-1">
+                    Validation errors — deployment blocked
+                  </p>
+                  {preview.validation.errors.map((e, i) => (
+                    <p key={i} className="text-xs text-red-700 dark:text-red-300">✕ {e}</p>
+                  ))}
                 </div>
               )}
 
@@ -218,7 +232,11 @@ export default function DeployModal({
               <button
                 onClick={() => onConfirm(reason)}
                 disabled={!canDeploy}
-                title={!canDeploy ? 'Confirm the high-risk warning above to proceed' : undefined}
+                title={
+                  previewInvalid  ? 'Resolve validation errors before deploying' :
+                  !canDeploy      ? 'Confirm the high-risk warning above to proceed' :
+                  undefined
+                }
                 className="bg-brand text-white text-sm font-semibold px-4 py-2 rounded-lg
                            hover:bg-brand/90 transition-colors disabled:opacity-40
                            disabled:cursor-not-allowed">

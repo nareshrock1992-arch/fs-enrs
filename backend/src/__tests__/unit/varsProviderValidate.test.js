@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { VarsProvider } from '../../../../platform/configuration/providers/VarsProvider.js';
+import { VarsProvider } from '../../../platform/configuration/providers/VarsProvider.js';
 
 // Regression guard for the bong-ring deployment false positive (Phase 7.3 hardening).
 //
@@ -10,8 +10,10 @@ import { VarsProvider } from '../../../../platform/configuration/providers/VarsP
 
 const BONG_RING_VALUE = 'v=-7;%(100,0,941.0,1477.0);v=-7;>=2;+=.1;%(1400,0,350,440)';
 
-// VarsProvider constructor requires a driver but validate() never calls this.driver.
-const provider = new VarsProvider(null);
+// VarsProvider constructor requires a truthy driver (ConfigurationProvider guards this).
+// validate() never calls this.driver, so a minimal stub satisfies the contract.
+const STUB_DRIVER = {};
+const provider = new VarsProvider(STUB_DRIVER);
 
 function makeDoc(entries) {
   return { entries };

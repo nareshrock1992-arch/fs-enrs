@@ -52,9 +52,8 @@ export default function ConfigPage({ providerId, title, subtitle }) {
 
   const reload = useCallback(async () => {
     clearProvider(providerId);
-    clearResult();
     await load();
-  }, [load, clearResult, clearProvider, providerId]);
+  }, [load, clearProvider, providerId]);
 
   const handleChange = useCallback((change) => {
     setChange(providerId, change);
@@ -128,7 +127,14 @@ export default function ConfigPage({ providerId, title, subtitle }) {
 
   const handleDeployConfirm = async (reason) => {
     const res = await deploy(changes, reason);
-    if (res?.success) await reload();
+    if (res?.success) {
+      // Refresh config and clear pending changes in the background so the
+      // success screen remains visible until the user clicks Close.
+      // clearResult() only runs in handleDeployClose to avoid flashing
+      // the modal back to 'confirm' before the user reads the success state.
+      clearProvider(providerId);
+      load(); // fire-and-forget — intentional
+    }
   };
 
   const handleDeployClose = () => {

@@ -247,6 +247,35 @@ export class DeploymentManager {
     } catch (err) {
       error = err.message;
 
+      // Auto-restore from backup when the file was written but a later step
+      // (typically reloadxml) failed. This prevents the filesystem and
+      // FreeSWITCH from diverging. Only attempted when backupPath is known.
+      if (backupPath) {
+        try {
+          await backupManager.restore(backupPath, filePath);
+          steps.push({
+            name:        'Auto-restore from backup',
+            status:      'ok',
+            startedAt:   new Date().toISOString(),
+            finishedAt:  new Date().toISOString(),
+            output:      `Restored from ${backupPath}`,
+            error:       null,
+            durationMs:  0,
+          });
+        } catch (restoreErr) {
+          console.error('[DeploymentManager] Auto-restore failed:', restoreErr.message);
+          steps.push({
+            name:        'Auto-restore from backup',
+            status:      'failed',
+            startedAt:   new Date().toISOString(),
+            finishedAt:  new Date().toISOString(),
+            output:      null,
+            error:       restoreErr.message,
+            durationMs:  0,
+          });
+        }
+      }
+
       await auditLogger.log({
         tenantId:   context.tenantId,
         userId:     context.userId,
@@ -258,6 +287,7 @@ export class DeploymentManager {
         error,
         durationMs: Date.now() - started,
         backupPath,
+        deployMeta: { steps },
       });
 
       throw err;

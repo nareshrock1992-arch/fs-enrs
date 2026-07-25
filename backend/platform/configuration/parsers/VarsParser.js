@@ -36,6 +36,39 @@ export function parse(rawContent) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
+    // ── Multi-line comment block detection ──────────────────────────────────
+    // Handles the FreeSWITCH convention of wrapping a disabled variable in a
+    // standalone comment block:
+    //   <!--
+    //     <X-PRE-PROCESS cmd="set" data="key=value"/>
+    //   -->
+    //
+    // Without this, the inner <X-PRE-PROCESS> line matches RE_ACTIVE and the
+    // variable appears as ENABLED in the UI. We detect the exact 3-line
+    // pattern (comment opener / single directive / comment closer) and absorb
+    // it as one disabled entry, normalising to the single-line format on next
+    // save. Only the exact opener/closer pattern is matched to avoid eating
+    // multi-content block comments that contain other text.
+    if (
+      line.trim() === '<!--' &&
+      i + 2 < lines.length &&
+      lines[i + 2].trim() === '-->'
+    ) {
+      const innerMatch = RE_ACTIVE.exec(lines[i + 1]);
+      if (innerMatch) {
+        segments.push({
+          type:     'entry',
+          key:      innerMatch[2].trim(),
+          value:    innerMatch[3],
+          enabled:  false,
+          indent:   innerMatch[1],
+          original: line + '\n' + lines[i + 1] + '\n' + lines[i + 2],
+        });
+        i += 2; // consume the inner line and the closing -->
+        continue;
+      }
+    }
+
     const activeMatch   = RE_ACTIVE.exec(line);
     const disabledMatch = !activeMatch && RE_DISABLED.exec(line);
 

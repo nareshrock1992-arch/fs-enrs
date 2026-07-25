@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkXmlAttributeValue } from '../../../../platform/configuration/xml/XmlAttributeUtil.js';
+import { checkXmlAttributeValue } from '../../../platform/configuration/xml/XmlAttributeUtil.js';
 
 // Regression guard for the bong-ring false positive (Phase 7.3 hardening).
 //

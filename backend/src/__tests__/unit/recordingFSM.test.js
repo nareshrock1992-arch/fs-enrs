@@ -161,7 +161,7 @@ describe('Media Library schema — migration completeness', () => {
     const { dirname, join } = await import('path');
 
     const dir = dirname(fileURLToPath(import.meta.url));
-    const migPath = join(dir, '../../../db/migrations/024_media_files_updated_at.sql');
+    const migPath = join(dir, '../../db/migrations/024_media_files_updated_at.sql');
 
     let content;
     try {
@@ -183,7 +183,7 @@ describe('Media Library schema — migration completeness', () => {
     const { dirname, join } = await import('path');
 
     const dir = dirname(fileURLToPath(import.meta.url));
-    const migPath = join(dir, '../../../db/migrations/022_media_library.sql');
+    const migPath = join(dir, '../../db/migrations/022_media_library.sql');
     const content = readFileSync(migPath, 'utf8');
 
     expect(content).toContain('CREATE TABLE IF NOT EXISTS conference_recordings');
@@ -197,7 +197,7 @@ describe('Media Library schema — migration completeness', () => {
     const { dirname, join } = await import('path');
 
     const dir = dirname(fileURLToPath(import.meta.url));
-    const migPath = join(dir, '../../../db/migrations/023_conference_recordings_unique.sql');
+    const migPath = join(dir, '../../db/migrations/023_conference_recordings_unique.sql');
     const content = readFileSync(migPath, 'utf8');
 
     expect(content).toContain('UNIQUE');
