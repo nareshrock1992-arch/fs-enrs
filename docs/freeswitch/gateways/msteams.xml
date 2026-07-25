@@ -1,0 +1,16 @@
+<include>
+  <gateway name="ms-teams">
+    <param name="proxy" value="sbc.yourdomain.com:5061"/>
+    <param name="register" value="false"/>
+    <param name="transport" value="tls"/>
+
+    <!-- TLS requirements -->
+    <param name="tls-verify-policy" value="none"/>
+    <param name="tls-version" value="tlsv1.2"/>
+    <param name="tls-ciphers" value="ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="30"/>
+  </gateway>
+</include>
+

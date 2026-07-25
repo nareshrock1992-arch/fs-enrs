@@ -1,0 +1,19 @@
+<include>
+  <gateway name="generic-itsp">
+    <param name="username" value="user123"/>
+    <param name="password" value="pass123"/>
+    <param name="realm" value="sip.provider.com"/>
+    <param name="proxy" value="sip.provider.com"/>
+    <param name="register" value="true"/>
+
+    <!-- Timers -->
+    <param name="expire-seconds" value="3600"/>
+    <param name="retry-seconds" value="30"/>
+
+    <!-- Transport -->
+    <param name="transport" value="udp"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="25"/>
+  </gateway>
+</include>

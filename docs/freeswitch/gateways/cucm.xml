@@ -1,0 +1,15 @@
+<include>
+  <gateway name="cisco-cucm">
+    <param name="proxy" value="10.10.10.10:5060"/>
+    <param name="register" value="false"/>
+    <param name="transport" value="tcp"/>
+    <param name="realm" value="cucm.local"/>
+    <param name="from-domain" value="cucm.local"/>
+
+    <!-- Caller-ID handling -->
+    <param name="caller-id-in-from" value="true"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="30"/>
+  </gateway>
+</include>

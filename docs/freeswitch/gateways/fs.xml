@@ -1,0 +1,16 @@
+<include>
+  <gateway name="fsb-gateway">
+    <param name="proxy" value="192.168.1.144:5060"/>
+    <param name="register" value="false"/>
+    <param name="realm" value="192.168.1.144"/>
+    <param name="from-domain" value="testlab.local"/>
+    <param name="transport" value="udp"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="30"/>
+    <param name="retry-seconds" value="30"/>
+
+    <!-- Contact handling -->
+    <param name="extension-in-contact" value="true"/>
+  </gateway>
+</include>

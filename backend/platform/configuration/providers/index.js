@@ -11,6 +11,7 @@ import { SwitchCoreProvider }   from './SwitchCoreProvider.js';
 import { EventSocketProvider }  from './EventSocketProvider.js';
 import { AclProvider }          from './AclProvider.js';
 import { SofiaProvider }        from './SofiaProvider.js';
+import { ConferenceProvider }   from './ConferenceProvider.js';
 
 /**
  * Register all active providers with the given registry.
@@ -23,4 +24,5 @@ export function registerAll(registry, driver) {
   registry.register(new EventSocketProvider(driver));
   registry.register(new AclProvider(driver));
   registry.register(new SofiaProvider(driver));
+  registry.register(new ConferenceProvider(driver));
 }

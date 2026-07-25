@@ -1,0 +1,13 @@
+<include>
+  <gateway name="audiocodes-sbc">
+    <param name="proxy" value="172.16.10.5:5060"/>
+    <param name="register" value="false"/>
+    <param name="transport" value="udp"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="30"/>
+
+    <!-- Contact handling -->
+    <param name="extension-in-contact" value="true"/>
+  </gateway>
+</include>

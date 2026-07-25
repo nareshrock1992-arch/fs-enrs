@@ -33,8 +33,12 @@ export class ProviderRegistry {
   get(id) {
     const p = this.#providers.get(id);
     if (!p) {
+      const registered = Array.from(this.#providers.keys());
       throw Object.assign(
-        new Error(`Provider '${id}' is not registered.`),
+        new Error(
+          `Provider '${id}' is not registered. ` +
+          `Registered providers: [${registered.join(', ') || 'none'}]`
+        ),
         { statusCode: 404 }
       );
     }

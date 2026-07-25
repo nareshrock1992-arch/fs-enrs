@@ -1,0 +1,10 @@
+<include>
+  <gateway name="ribbon-sbc">
+    <param name="proxy" value="192.168.50.10:5060"/>
+    <param name="register" value="false"/>
+    <param name="transport" value="tcp"/>
+
+    <!-- Keepalive -->
+    <param name="ping" value="30"/>
+  </gateway>
+</include>
