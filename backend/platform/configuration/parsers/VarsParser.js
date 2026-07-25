@@ -199,7 +199,9 @@ export function serialize(segments) {
     }
 
     // type === 'entry'
-    const indent = seg.indent || '  ';
+    // Use null/undefined check, not falsy, so zero-indent entries ('') are preserved
+    // rather than being silently expanded to 2 spaces on the next write.
+    const indent = seg.indent != null ? seg.indent : '  ';
     const data   = `${seg.key}=${seg.value}`;
     if (seg.enabled) {
       lines.push(`${indent}<X-PRE-PROCESS cmd="set" data="${data}"/>`);

@@ -337,10 +337,11 @@ export const varsCatalog = {
 
   // ── System › Logging ─────────────────────────────────────────────────────
 
-  loglevel: {
+  // Key matches the actual variable name in vars.xml (console_loglevel, not loglevel).
+  console_loglevel: {
     category:    'System',
     group:       'Logging',
-    label:       'Log Level',
+    label:       'Console Log Level',
     description: 'Logging verbosity. Values: CONSOLE DEBUG INFO NOTICE WARNING ERR CRIT ALERT.',
     purpose:     'Controls the minimum severity of log messages output by FreeSWITCH. Lower severity levels are inclusive — WARNING also outputs ERR, CRIT, and ALERT. Affects both console and file log sinks.',
     notes:       'Use WARNING or ERR in production for minimal logging overhead. Use DEBUG only when troubleshooting — it generates very high log volume and can impact call processing performance. NOTICE or INFO provides a useful middle ground for staging environments.',
@@ -374,11 +375,12 @@ export const varsCatalog = {
   },
 
   // ── Caller ID ─────────────────────────────────────────────────────────────
+  // Keys match the actual variable names in vars.xml (outbound_caller_name / outbound_caller_id).
 
-  outbound_caller_id_name: {
+  outbound_caller_name: {
     category:    'Caller ID',
     group:       'Caller ID',
-    label:       'Outbound Caller ID Name',
+    label:       'Outbound Caller Name',
     description: 'Default caller name sent on outbound calls.',
     purpose:     'The caller name (CNAM) sent on outbound PSTN calls when no per-call override is specified. Displayed on the recipient phone as the caller name alongside the number.',
     notes:       'PSTN carriers may override this value with their own CNAM lookup. For ENRS emergency notifications, set this to your organisation name (e.g. "City Emergency Alert") to ensure recipients recognise and answer the call.',
@@ -390,14 +392,14 @@ export const varsCatalog = {
     riskLevel:   'low',
     affectedServices:  ['SIP Gateway', 'ENRS ENS Notifications'],
     aliases:          ['caller name', 'cnam', 'outbound caller name', 'from name', 'caller id name'],
-    relatedVariables: ['outbound_caller_id_number'],
+    relatedVariables: ['outbound_caller_id'],
     usedBy:           ['ENRS ENS Campaign Engine'],
   },
 
-  outbound_caller_id_number: {
+  outbound_caller_id: {
     category:    'Caller ID',
     group:       'Caller ID',
-    label:       'Outbound Caller ID Number',
+    label:       'Outbound Caller ID',
     description: 'Default caller number (ANI) sent on outbound calls.',
     purpose:     'The caller number (ANI) placed in the SIP From header for outbound PSTN calls when no per-call override is set. This is the number displayed on the recipient phone and used for call-back.',
     notes:       'Must be a number authorised by your PSTN carrier. Presenting unauthorised numbers may violate STIR/SHAKEN regulations. For ENRS emergency notifications, use a recognisable published callback number that recipients can verify before answering.',
@@ -409,7 +411,7 @@ export const varsCatalog = {
     riskLevel:   'low',
     affectedServices:  ['SIP Gateway', 'ENRS ENS Notifications'],
     aliases:          ['caller id', 'ani', 'outbound number', 'from number', 'caller number', 'caller id number'],
-    relatedVariables: ['outbound_caller_id_name'],
+    relatedVariables: ['outbound_caller_name'],
     usedBy:           ['ENRS ENS Campaign Engine'],
   },
 };
