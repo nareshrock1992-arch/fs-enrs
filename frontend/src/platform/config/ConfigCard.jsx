@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, RefreshCw, GitBranch } from 'lucide-react';
 import RichInput from './RichInput.jsx';
 import { diagL5CardInvoked } from './__configDiag.js';
 
@@ -149,6 +149,51 @@ export default function ConfigCard({
           />
         </div>
       </div>
+
+      {/* Alternatives — only rendered when this key has multiple file definitions */}
+      {entry.alternatives?.length > 0 && (
+        <div
+          className="px-4 pb-3 border-t border-surface-border/40"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-1 mt-2 mb-1.5">
+            <GitBranch size={10} className="text-text-muted" />
+            <span className="text-[10px] uppercase tracking-wider text-text-muted font-medium">
+              Alternatives
+            </span>
+          </div>
+          <div className="flex flex-col gap-1">
+            {entry.alternatives.map(alt => (
+              <div
+                key={`${entry.key}:${alt.definitionId}`}
+                className="flex items-center justify-between gap-3 py-0.5"
+              >
+                <span className="font-mono text-xs text-text-muted truncate flex-1">
+                  {alt.value}
+                </span>
+                <span className="text-[10px] text-text-muted shrink-0">
+                  {alt.disabledHint}
+                </span>
+                <button
+                  onClick={() => onChange({
+                    key:          entry.key,
+                    op:           'enable',
+                    definitionId: alt.definitionId,
+                    value:        alt.value,
+                    enabled:      true,
+                  })}
+                  disabled={disabled}
+                  className="text-[10px] font-medium text-brand hover:text-brand/70
+                             disabled:opacity-40 disabled:cursor-not-allowed
+                             transition-colors shrink-0"
+                >
+                  Use this
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

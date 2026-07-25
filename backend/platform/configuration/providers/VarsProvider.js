@@ -4,6 +4,7 @@ import { DeploymentStrategies } from '../deploy/DeploymentStrategy.js';
 import {
   parse as vpParse,
   buildIndex,
+  groupByKey,
   applyChanges as vpApplyChanges,
   serialize as vpSerialize,
   toEntries,
@@ -11,6 +12,14 @@ import {
 } from '../parsers/VarsParser.js';
 import { varsCatalog, lookupVar } from '../catalogs/varsCatalog.js';
 import { checkXmlAttributeValue }  from '../xml/XmlAttributeUtil.js';
+
+// Translate parser-internal disabledForm into a display string.
+// The frontend receives only this string and never branches on parser internals.
+function toDisabledHint(def) {
+  if (def.disabledForm === 'z-tag')  return 'Z-tag convention';
+  if (def.disabledForm === 'xx-tag') return 'XX-tag convention';
+  return 'XML comment';
+}
 
 /**
  * VarsProvider — manages FreeSWITCH vars.xml (System Variables).
@@ -64,13 +73,25 @@ export class VarsProvider extends ConfigurationProvider {
   /**
    * @param {string} rawContent
    * @returns {{ segments, index, entries, checksum }}
+   *
+   * entries: one per unique key (grouped model).
+   * Each entry carries an `alternatives` array for keys with multiple definitions.
    */
   parse(rawContent) {
     const { segments, checksum } = vpParse(rawContent);
     const index   = buildIndex(segments);
-    const entries = toEntries(segments).map(e => ({
-      ...e,
-      ...lookupVar(e.key),
+    const entries = groupByKey(segments).map(({ key, primary, alternatives }) => ({
+      key,
+      value:        primary.value,
+      enabled:      primary.enabled,
+      definitionId: primary.definitionId,
+      ...lookupVar(key),
+      alternatives: alternatives.map(alt => ({
+        value:        alt.value,
+        enabled:      alt.enabled,
+        definitionId: alt.definitionId,
+        disabledHint: toDisabledHint(alt),
+      })),
     }));
     return { segments, index, entries, checksum };
   }
@@ -89,15 +110,24 @@ export class VarsProvider extends ConfigurationProvider {
 
   /**
    * @param {{ segments, index }} doc
-   * @param {Array} changes   — [{ op, key, value?, enabled? }]
+   * @param {Array} changes
    * @returns {{ segments, index, entries, checksum: null }}
    */
   applyChanges(doc, changes) {
     const newSegments = vpApplyChanges(doc.segments, doc.index, changes);
     const newIndex    = buildIndex(newSegments);
-    const newEntries  = toEntries(newSegments).map(e => ({
-      ...e,
-      ...lookupVar(e.key),
+    const newEntries  = groupByKey(newSegments).map(({ key, primary, alternatives }) => ({
+      key,
+      value:        primary.value,
+      enabled:      primary.enabled,
+      definitionId: primary.definitionId,
+      ...lookupVar(key),
+      alternatives: alternatives.map(alt => ({
+        value:        alt.value,
+        enabled:      alt.enabled,
+        definitionId: alt.definitionId,
+        disabledHint: toDisabledHint(alt),
+      })),
     }));
     return { segments: newSegments, index: newIndex, entries: newEntries, checksum: null };
   }
@@ -125,15 +155,6 @@ export class VarsProvider extends ConfigurationProvider {
           errors.push(`Variable '${entry.key}' value ${valCheck.reason}.`);
         }
       }
-    }
-
-    // Detect duplicate keys (last-occurrence-wins in VarsParser — warn so users can fix the file).
-    const seen = new Set();
-    for (const entry of doc.entries ?? []) {
-      if (entry.key && seen.has(entry.key)) {
-        warnings.push(`Duplicate variable key '${entry.key}' found — last occurrence wins. Remove the duplicate.`);
-      }
-      if (entry.key) seen.add(entry.key);
     }
 
     // Warn if default_password looks like the known-weak default.

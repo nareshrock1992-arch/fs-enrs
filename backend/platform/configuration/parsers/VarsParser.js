@@ -151,15 +151,92 @@ export function parse(rawContent) {
 
 /**
  * Build a Map<key → segment index> for O(1) key lookups.
+ * When a key appears multiple times, the ENABLED definition wins.
+ * If all definitions are disabled, the first occurrence wins.
+ * This prevents last-wins from silently hiding the active definition.
+ *
  * @param {Array} segments
  * @returns {Map<string, number>}
  */
 export function buildIndex(segments) {
   const idx = new Map();
   segments.forEach((seg, i) => {
-    if (seg.type === 'entry') idx.set(seg.key, i);
+    if (seg.type !== 'entry') return;
+    const existing = idx.get(seg.key);
+    if (existing === undefined) {
+      idx.set(seg.key, i);
+    } else if (!segments[existing].enabled && seg.enabled) {
+      // Prefer enabled over disabled for the canonical index entry.
+      idx.set(seg.key, i);
+    }
+    // Same enabled state → keep the first occurrence (stable order).
   });
   return idx;
+}
+
+/**
+ * Build a Map<key → segmentIndex[]> capturing ALL definitions per key.
+ * Required for multi-definition key operations (enable, disable, activate-definition).
+ *
+ * @param {Array} segments
+ * @returns {Map<string, number[]>}
+ */
+export function buildGroupMap(segments) {
+  const map = new Map();
+  segments.forEach((seg, i) => {
+    if (seg.type !== 'entry') return;
+    const arr = map.get(seg.key);
+    if (arr) arr.push(i);
+    else map.set(seg.key, [i]);
+  });
+  return map;
+}
+
+/**
+ * Group entry segments by key, returning one group per unique key.
+ * Within each group:
+ *   primary      — the active definition (first enabled), or the first if all disabled
+ *   alternatives — all other definitions for the same key
+ *
+ * Each definition carries a `definitionId` — the 0-based occurrence index of that
+ * definition among all definitions of the same key, in file order. This is a stable
+ * identifier that is meaningful to callers (providers, frontend) without exposing the
+ * raw segment index. The backend resolves `(key, definitionId)` back to a segment
+ * index inside applyChanges via `siblings[definitionId]`.
+ *
+ * The groups are returned in first-appearance order (file order).
+ *
+ * @param {Array} segments
+ * @returns {Array<{ key, primary, alternatives }>}
+ */
+export function groupByKey(segments) {
+  const order  = [];
+  const defMap = new Map(); // key → Array of { ...segFields, definitionId }
+
+  segments.forEach((seg, i) => {
+    if (seg.type !== 'entry') return;
+    const { key } = seg;
+    if (!defMap.has(key)) {
+      defMap.set(key, []);
+      order.push(key);
+    }
+    // Store a copy of the segment fields; definitionId is assigned below.
+    // The raw segment index (i) is NOT propagated — callers must not depend on it.
+    defMap.get(key).push({ ...seg });
+  });
+
+  return order.map(key => {
+    const definitions = defMap.get(key);
+    // Assign definitionId = occurrence index (0, 1, 2 …) in file order.
+    // siblings[definitionId] resolves to the correct segment index in applyChanges.
+    definitions.forEach((def, definitionId) => {
+      def.definitionId = definitionId;
+    });
+    const primaryPos   = definitions.findIndex(d => d.enabled);
+    const primary      = definitions[primaryPos === -1 ? 0 : primaryPos];
+    const alternatives = definitions.filter(d => d !== primary);
+    return { key, primary, alternatives };
+  });
 }
 
 /**
@@ -167,9 +244,12 @@ export function buildIndex(segments) {
  *
  * Change shapes:
  *   { op: 'set',    key, value, enabled? }   — update existing or add new
- *   { op: 'enable', key }                    — enable a disabled variable
- *   { op: 'disable', key }                   — comment out a variable
- *   { op: 'delete', key }                    — remove a variable entirely
+ *   { op: 'enable', key, definitionId? }     — enable a definition; if definitionId (0-based
+ *                                              occurrence index) is provided, that specific
+ *                                              definition becomes active and siblings are disabled;
+ *                                              absent → the indexed (primary) definition wins
+ *   { op: 'disable', key }                   — comment out all definitions of key
+ *   { op: 'delete',  key }                   — remove all definitions of key
  *
  * @param {Array}  segments
  * @param {Map}    index
@@ -180,10 +260,12 @@ export function applyChanges(segments, index, changes) {
   // Clone so we never mutate the original parsed state.
   const result = segments.map(s => ({ ...s }));
 
+  // Build group map up front so enable/disable/delete/activate-definition ops
+  // can act on ALL definitions of a key, not just the indexed one.
+  const gMap = buildGroupMap(result);
+
   // Last write wins: if the caller sends two changes for the same key
   // (e.g. a value edit followed by a toggle), apply only the final one.
-  // This also prevents a new key from being splice-inserted twice when
-  // the same key appears more than once and the index hasn't been updated.
   const uniqueChanges = [...new Map(changes.map(c => [c.key, c])).values()];
 
   for (const change of uniqueChanges) {
@@ -193,7 +275,8 @@ export function applyChanges(segments, index, changes) {
       throw new Error(`VarsParser.applyChanges: change missing 'key' field`);
     }
 
-    const idx = index.get(key);
+    const idx      = index.get(key);
+    const siblings = gMap.get(key) ?? [];
 
     if (op === 'set') {
       const value   = String(change.value ?? '');
@@ -217,13 +300,35 @@ export function applyChanges(segments, index, changes) {
           result.push(newSeg);
         }
       }
+
     } else if (op === 'enable') {
-      // Clearing disabledForm means re-disabling later produces canonical form.
-      if (idx !== undefined) result[idx] = { ...result[idx], enabled: true, modified: true, disabledForm: null };
+      // Enable a definition of this key and disable all siblings.
+      // change.definitionId is the 0-based occurrence index of the target definition
+      // among all definitions of this key in file order (siblings[definitionId]).
+      // When absent, the indexed (primary) definition is enabled.
+      let target = idx;
+      if (change.definitionId !== undefined) {
+        const t = siblings[change.definitionId];
+        if (t !== undefined) target = t;
+      }
+      for (const si of siblings) {
+        const active = si === target;
+        result[si] = { ...result[si], enabled: active, modified: true,
+          ...(active ? { disabledForm: null } : {}) };
+      }
+
     } else if (op === 'disable') {
-      if (idx !== undefined) result[idx] = { ...result[idx], enabled: false, modified: true };
+      // Disable ALL definitions of this key (including alternatives).
+      for (const si of siblings) {
+        result[si] = { ...result[si], enabled: false, modified: true };
+      }
+
     } else if (op === 'delete') {
-      if (idx !== undefined) result[idx] = { type: 'deleted' };
+      // Delete ALL definitions of this key.
+      for (const si of siblings) {
+        result[si] = { type: 'deleted' };
+      }
+
     } else {
       throw new Error(`VarsParser.applyChanges: unknown op '${op}'`);
     }

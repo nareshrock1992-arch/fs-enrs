@@ -27,10 +27,40 @@ The parser must be pure (no I/O). It receives raw file content and returns a doc
 
 ```js
 {
-  entries: [{ key, value, enabled }],  // required
-  checksum: string,                    // sha256 of rawContent
-  // ... any other provider-specific fields (segments, index, etc.)
+  entries: [{
+    key:          string,   // variable / directive name
+    value:        string,   // primary definition's value
+    enabled:      boolean,  // primary definition's active state
+    definitionId: number,   // 0-based occurrence index of the primary definition
+                            // among all definitions of this key (file order).
+                            // Echoed back by the frontend in `enable` op to select
+                            // a specific definition. The provider maps it back to
+                            // an internal location (e.g. segment index) without
+                            // exposing that mapping to the frontend.
+    alternatives: [{        // empty array when the key appears exactly once
+      value:        string,
+      enabled:      boolean,
+      definitionId: number,   // occurrence index of this alternative
+      disabledHint: string,   // display-only label (e.g. 'XML comment', 'Z-tag
+                              // convention'). The frontend shows it verbatim and
+                              // never branches on it — all disable mechanisms are
+                              // opaque to the UI.
+    }],
+    // ...catalog metadata (label, description, category, riskLevel, etc.)
+  }],
+  checksum: string,         // sha256 of rawContent
+  // ... provider-specific internal fields (segments, nodes, index, etc.)
 }
+```
+
+`alternatives` lists every other definition of the same key found in the file. Providers for formats where each key appears at most once always return `alternatives: []`. The frontend renders nothing extra for those entries.
+
+**Change operations (same for all providers):**
+```js
+{ op: 'set',     key, value, enabled? }   // update the primary definition
+{ op: 'enable',  key, definitionId? }     // enable a definition; absent = primary
+{ op: 'disable', key }                    // disable all definitions for key
+{ op: 'delete',  key }                    // remove all definitions for key
 ```
 
 Export named functions matching the parser pattern:

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parse, serialize, toEntries, applyChanges, buildIndex } from '../../../platform/configuration/parsers/VarsParser.js';
+import {
+  parse, serialize, toEntries, applyChanges, buildIndex,
+  buildGroupMap, groupByKey,
+} from '../../../platform/configuration/parsers/VarsParser.js';
 
 // ── Multi-line comment regression ────────────────────────────────────────────
 //
@@ -355,5 +358,214 @@ describe('VarsParser — mixed disabled forms (xml-comment + z-tag + xx-tag)', (
     const out = serialize(segments);
     expect(out).toContain('<!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=custom"/> -->');
     expect(out).toContain('<XX-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>');
+  });
+});
+
+// ── Grouped-definition model ───────────────────────────────────────────────────
+//
+// vars.xml uses adjacent lines to represent alternative values for the same key:
+//   <X-PRE-PROCESS cmd="set" data="sound_prefix=callie"/>
+//   <!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=allison"/> -->
+//
+// The grouped model surfaces these as ONE entry with an alternatives array
+// instead of two separate entries that would create duplicate UI cards.
+
+const MULTI_DEF_CONTENT = `<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain_name=enrs.local"/>
+  <X-PRE-PROCESS cmd="set" data="sound_prefix=$\${sounds_dir}/en/us/callie"/>
+  <!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=$\${sounds_dir}/en/us/allison"/> -->
+  <X-PRE-PROCESS cmd="set" data="max_sessions=1000"/>
+</include>`;
+
+describe('VarsParser — buildGroupMap', () => {
+  it('returns a single entry array for keys that appear once', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const gm = buildGroupMap(segments);
+    expect(gm.get('domain_name')).toHaveLength(1);
+    expect(gm.get('max_sessions')).toHaveLength(1);
+  });
+
+  it('returns two indices for a key with an active and a disabled definition', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const gm = buildGroupMap(segments);
+    expect(gm.get('sound_prefix')).toHaveLength(2);
+  });
+
+  it('does not include non-entry segments', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const gm = buildGroupMap(segments);
+    // Only keys that appear in parsed entries
+    expect([...gm.keys()]).toEqual(expect.arrayContaining(['domain_name', 'sound_prefix', 'max_sessions']));
+    expect([...gm.keys()]).toHaveLength(3);
+  });
+});
+
+describe('VarsParser — buildIndex with duplicate keys', () => {
+  it('buildIndex prefers the enabled definition for a duplicate key', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx = buildIndex(segments);
+    // The indexed segment for sound_prefix must be the enabled one (callie)
+    const targetSeg = segments[idx.get('sound_prefix')];
+    expect(targetSeg.enabled).toBe(true);
+    expect(targetSeg.value).toBe('$${sounds_dir}/en/us/callie');
+  });
+
+  it('buildIndex does not point to the disabled alternative', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx = buildIndex(segments);
+    const targetSeg = segments[idx.get('sound_prefix')];
+    expect(targetSeg.value).not.toContain('allison');
+  });
+});
+
+describe('VarsParser — groupByKey', () => {
+  it('returns one group per unique key', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const groups = groupByKey(segments);
+    const keys = groups.map(g => g.key);
+    expect(keys).toEqual(['domain_name', 'sound_prefix', 'max_sessions']);
+  });
+
+  it('primary of sound_prefix is the enabled (callie) definition', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const group = groupByKey(segments).find(g => g.key === 'sound_prefix');
+    expect(group.primary.enabled).toBe(true);
+    expect(group.primary.value).toContain('callie');
+  });
+
+  it('alternatives of sound_prefix contains the disabled (allison) definition', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const group = groupByKey(segments).find(g => g.key === 'sound_prefix');
+    expect(group.alternatives).toHaveLength(1);
+    expect(group.alternatives[0].enabled).toBe(false);
+    expect(group.alternatives[0].value).toContain('allison');
+    expect(group.alternatives[0].disabledForm).toBe('z-tag');
+  });
+
+  it('alternatives carries the correct segmentIndex', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const groups = groupByKey(segments);
+    const sp = groups.find(g => g.key === 'sound_prefix');
+    const alt = sp.alternatives[0];
+    // segmentIndex must point to the correct segment
+    expect(segments[alt.segmentIndex].value).toContain('allison');
+  });
+
+  it('single-definition keys have empty alternatives', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const groups = groupByKey(segments);
+    const dn = groups.find(g => g.key === 'domain_name');
+    expect(dn.alternatives).toHaveLength(0);
+  });
+});
+
+describe('VarsParser — applyChanges: enable on multi-definition key', () => {
+  it('enabling the primary also disables the alternative', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx  = buildIndex(segments);
+    // 'enable' targets the indexed (callie) definition → allison must be disabled
+    const after = applyChanges(segments, idx, [{ op: 'enable', key: 'sound_prefix' }]);
+    const groups = groupByKey(after);
+    const sp = groups.find(g => g.key === 'sound_prefix');
+    expect(sp.primary.enabled).toBe(true);
+    expect(sp.primary.value).toContain('callie');
+    expect(sp.alternatives[0].enabled).toBe(false);
+  });
+
+  it('disabling a multi-definition key disables all definitions', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx  = buildIndex(segments);
+    const after = applyChanges(segments, idx, [{ op: 'disable', key: 'sound_prefix' }]);
+    const groups = groupByKey(after);
+    const sp = groups.find(g => g.key === 'sound_prefix');
+    // All definitions should be disabled
+    const allDefs = [sp.primary, ...sp.alternatives];
+    expect(allDefs.every(d => !d.enabled)).toBe(true);
+  });
+});
+
+describe('VarsParser — applyChanges: enable with definitionId (alternative switching)', () => {
+  it('enable + definitionId activates the target alternative and disables the active definition', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const groups = groupByKey(segments);
+    const sp = groups.find(g => g.key === 'sound_prefix');
+    // alternatives[0] is allison (definitionId 1, since callie is 0)
+    const allisonDefId = sp.alternatives[0].definitionId;
+    expect(typeof allisonDefId).toBe('number');
+
+    const after = applyChanges(segments, buildIndex(segments), [{
+      op: 'enable',
+      key: 'sound_prefix',
+      definitionId: allisonDefId,
+    }]);
+
+    const afterGroups = groupByKey(after);
+    const afterSp = afterGroups.find(g => g.key === 'sound_prefix');
+
+    // primary should now be allison (enabled)
+    expect(afterSp.primary.value).toContain('allison');
+    expect(afterSp.primary.enabled).toBe(true);
+    // alternative (callie) should be disabled
+    expect(afterSp.alternatives[0].value).toContain('callie');
+    expect(afterSp.alternatives[0].enabled).toBe(false);
+  });
+
+  it('serializing after alternative switch produces one active X-PRE-PROCESS and one disabled', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const allisonDefId = groupByKey(segments).find(g => g.key === 'sound_prefix').alternatives[0].definitionId;
+
+    const after = applyChanges(segments, buildIndex(segments), [{
+      op: 'enable', key: 'sound_prefix', definitionId: allisonDefId,
+    }]);
+    const out = serialize(after);
+
+    // Allison must be active
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="sound_prefix=$${sounds_dir}/en/us/allison"/>');
+    // Callie must be disabled (canonical comment form since it was enabled before)
+    expect(out).toContain('<!--<X-PRE-PROCESS cmd="set" data="sound_prefix=$${sounds_dir}/en/us/callie"/>-->');
+    // No Z-PRE-PROCESS in active form
+    const activeLines = out.split('\n').filter(l => l.includes('sound_prefix') && !l.trim().startsWith('<!--'));
+    expect(activeLines).toHaveLength(1);
+  });
+
+  it('round-trip: serialize → re-parse preserves enabled states after alternative switch', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const allisonDefId = groupByKey(segments).find(g => g.key === 'sound_prefix').alternatives[0].definitionId;
+
+    const after    = applyChanges(segments, buildIndex(segments), [{
+      op: 'enable', key: 'sound_prefix', definitionId: allisonDefId,
+    }]);
+    const out      = serialize(after);
+    const reparsed = groupByKey(parse(out).segments);
+    const sp       = reparsed.find(g => g.key === 'sound_prefix');
+
+    expect(sp.primary.value).toContain('allison');
+    expect(sp.primary.enabled).toBe(true);
+    expect(sp.alternatives[0].value).toContain('callie');
+    expect(sp.alternatives[0].enabled).toBe(false);
+  });
+
+  it('enable without definitionId falls back to the indexed (primary) definition', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const idx = buildIndex(segments);
+    // Disable all definitions first so we have something to re-enable
+    const disabled  = applyChanges(segments, idx, [{ op: 'disable', key: 'sound_prefix' }]);
+    const reEnabled = applyChanges(disabled, buildIndex(disabled), [{ op: 'enable', key: 'sound_prefix' }]);
+    const sp = groupByKey(reEnabled).find(g => g.key === 'sound_prefix');
+    expect(sp.primary.enabled).toBe(true);
+  });
+
+  it('groupByKey assigns definitionId as 0-based occurrence index per key', () => {
+    const { segments } = parse(MULTI_DEF_CONTENT);
+    const groups = groupByKey(segments);
+    const sp = groups.find(g => g.key === 'sound_prefix');
+    // Two definitions: primary (callie) and one alternative (allison)
+    expect(sp.primary.definitionId).toBe(0);
+    expect(sp.alternatives[0].definitionId).toBe(1);
+    // Single-definition keys always get definitionId 0
+    const domain = groups.find(g => g.key === 'domain_name');
+    expect(domain.primary.definitionId).toBe(0);
+    expect(domain.alternatives).toHaveLength(0);
   });
 });
