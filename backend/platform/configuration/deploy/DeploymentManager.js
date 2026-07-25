@@ -33,6 +33,17 @@ export class DeploymentManager {
     const filePath   = provider.getFilePath();
     const rawContent = await this.#readFile(filePath);
 
+    // Step 1b: Drift check (preview — same as deploy, no write).
+    if (context.expectedChecksum && sha256(rawContent) !== context.expectedChecksum) {
+      throw Object.assign(
+        new Error(
+          'Configuration changed outside the UI since you loaded this page. ' +
+          'Reload the page to fetch the latest version before previewing.'
+        ),
+        { statusCode: 409, code: 'configuration_drift' }
+      );
+    }
+
     // Step 2: Parse.
     const parsed = provider.parse(rawContent);
 
@@ -97,6 +108,25 @@ export class DeploymentManager {
       await recordStep('Read file', async () => {
         rawContent = await this.#readFile(filePath);
       });
+
+      // ── Step 1b: Drift / concurrent-edit check ────────────────────────────
+      // If the caller sent the checksum they read at page-load time, verify
+      // the file on disk still matches. A mismatch means someone edited the
+      // file between load and deploy (direct disk edit or another admin).
+      if (context.expectedChecksum) {
+        await recordStep('Drift check', async () => {
+          const current = sha256(rawContent);
+          if (current !== context.expectedChecksum) {
+            throw Object.assign(
+              new Error(
+                'Configuration changed outside the UI since you loaded this page. ' +
+                'Reload the page to fetch the latest version before deploying.'
+              ),
+              { statusCode: 409, code: 'configuration_drift' }
+            );
+          }
+        });
+      }
 
       // ── Step 2: Parse ─────────────────────────────────────────────────────
       let parsed;
@@ -356,7 +386,13 @@ export class DeploymentManager {
         backupPath = await backupManager.backup(provider.id, filePath);
       });
 
-      // Snapshot the rollback state in DB.
+      // Atomic write — before DB snapshot so the version row only exists
+      // when the content is confirmed on disk (matches deploy ordering).
+      await recordStep('Atomic write', async () => {
+        await atomicWriter.write(filePath, targetVersion.xml_content);
+      });
+
+      // Snapshot the rollback state in DB (after write, matching deploy order).
       await recordStep('Create version snapshot', async () => {
         newVersionId = await versionManager.createVersion({
           tenantId:    context.tenantId,
@@ -369,11 +405,6 @@ export class DeploymentManager {
           backupPath,
           deployMeta:  { rollbackOf: versionId, strategy: strategy.id },
         });
-      });
-
-      // Atomic write.
-      await recordStep('Atomic write', async () => {
-        await atomicWriter.write(filePath, targetVersion.xml_content);
       });
 
       // Execute strategy.

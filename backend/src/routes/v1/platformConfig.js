@@ -17,7 +17,7 @@ import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { FreeSwitchDriver }     from '../../../platform/drivers/FreeSwitchDriver.js';
 import { ProviderRegistry }     from '../../../platform/configuration/ProviderRegistry.js';
 import { ConfigurationManager } from '../../../platform/configuration/ConfigurationManager.js';
-import { VarsProvider }         from '../../../platform/configuration/providers/VarsProvider.js';
+import { registerAll }          from '../../../platform/configuration/providers/index.js';
 import { PlatformHealthChecker } from '../../../platform/health/PlatformHealthChecker.js';
 
 // ── Lazy service imports (already singletons loaded at boot) ──────────────────
@@ -39,11 +39,7 @@ async function bootstrap() {
   _pathService = pathMod.fsPathService;
 
   const registry = new ProviderRegistry();
-
-  // ── Register providers (Phase 7.1) ─────────────────────────────────────────
-  registry.register(new VarsProvider(_driver));
-  // Phase 7.2+: registry.register(new SwitchProvider(_driver));
-  // Phase 7.2+: registry.register(new EventSocketProvider(_driver));
+  registerAll(registry, _driver);
 
   _manager = new ConfigurationManager(registry);
 }
@@ -127,28 +123,28 @@ router.get('/:providerId', ...auth, asyncHandler(async (req, res) => {
 
 // POST /platform/config/:providerId/preview — preview changes (no write)
 router.post('/:providerId/preview', ...auth, asyncHandler(async (req, res) => {
-  const { changes = [] } = req.body;
+  const { changes = [], expectedChecksum } = req.body;
   if (!Array.isArray(changes) || changes.length === 0) {
     return res.status(400).json({ error: 'changes must be a non-empty array' });
   }
   const result = await req._configMgr.preview(
     req.params.providerId,
     changes,
-    { userId: req.user.id, tenantId: req.user.tenantId }
+    { userId: req.user.id, tenantId: req.user.tenantId, expectedChecksum }
   );
   res.json(result);
 }));
 
 // POST /platform/config/:providerId/deploy — full deploy pipeline
 router.post('/:providerId/deploy', ...auth, asyncHandler(async (req, res) => {
-  const { changes = [], reason } = req.body;
+  const { changes = [], reason, expectedChecksum } = req.body;
   if (!Array.isArray(changes) || changes.length === 0) {
     return res.status(400).json({ error: 'changes must be a non-empty array' });
   }
   const result = await req._configMgr.deploy(
     req.params.providerId,
     changes,
-    { userId: req.user.id, tenantId: req.user.tenantId, reason }
+    { userId: req.user.id, tenantId: req.user.tenantId, reason, expectedChecksum }
   );
   res.json(result);
 }));

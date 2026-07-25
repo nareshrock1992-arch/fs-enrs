@@ -154,6 +154,21 @@ export class ConfigurationProvider {
     return { passed: true, checks: [] };
   }
 
+  // ── Catalog ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Metadata catalog for this provider's configuration entries.
+   * Consumed by ConfigurationManager.read() and the UI's DetailsPanel.
+   *
+   * Override in concrete providers to return the full catalog map.
+   * The doc shape returned by parse() must include:
+   *   { segments?, index?, entries: ConfigEntry[], checksum: string|null }
+   * where ConfigEntry has at minimum: { key, value, enabled }.
+   *
+   * @returns {object} key → ConfigurationEntry metadata
+   */
+  get catalog() { return {}; }
+
   // ── Accessor ──────────────────────────────────────────────────────────────────
 
   get driver() { return this.#driver; }

@@ -13,17 +13,20 @@ export function useDeployment(providerId) {
   const [previewing, setPreviewing] = useState(false);
   const [result,     setResult]     = useState(null);
   const [error,      setError]      = useState(null);
+  const [isDrift,    setIsDrift]    = useState(false);
 
-  const fetchPreview = useCallback(async (changes) => {
+  const fetchPreview = useCallback(async (changes, checksum) => {
     if (!changes?.length) return;
     setPreviewing(true);
     setError(null);
     setPreview(null);
+    setIsDrift(false);
     try {
-      const data = await api.platformConfig.preview(providerId, changes);
+      const data = await api.platformConfig.preview(providerId, changes, checksum);
       setPreview(data);
       return data;
     } catch (err) {
+      if (err.status === 409) setIsDrift(true);
       setError(err.message);
       return null;
     } finally {
@@ -31,16 +34,18 @@ export function useDeployment(providerId) {
     }
   }, [providerId]);
 
-  const deploy = useCallback(async (changes, reason) => {
+  const deploy = useCallback(async (changes, reason, checksum) => {
     if (!changes?.length) return null;
     setDeploying(true);
     setError(null);
     setResult(null);
+    setIsDrift(false);
     try {
-      const data = await api.platformConfig.deploy(providerId, changes, reason);
+      const data = await api.platformConfig.deploy(providerId, changes, reason, checksum);
       setResult(data);
       return data;
     } catch (err) {
+      if (err.status === 409) setIsDrift(true);
       setError(err.message);
       return null;
     } finally {
@@ -67,6 +72,7 @@ export function useDeployment(providerId) {
     setResult(null);
     setPreview(null);
     setError(null);
+    setIsDrift(false);
   }, []);
 
   return {
@@ -76,6 +82,7 @@ export function useDeployment(providerId) {
     rolling,
     result,
     error,
+    isDrift,
     fetchPreview,
     deploy,
     rollback,

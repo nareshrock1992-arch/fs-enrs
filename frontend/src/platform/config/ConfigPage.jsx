@@ -51,9 +51,9 @@ class ConfigDiagBoundary extends Component {
  *   />
  */
 export default function ConfigPage({ providerId, title, subtitle }) {
-  const { entries, loading, error, load, filePath, parsedAt } = useConfigProvider(providerId);
+  const { entries, loading, error, load, filePath, parsedAt, checksum } = useConfigProvider(providerId);
   const {
-    preview, previewing, deploying, result, error: deployError,
+    preview, previewing, deploying, result, error: deployError, isDrift,
     fetchPreview, deploy, clearResult,
   } = useDeployment(providerId);
 
@@ -148,12 +148,12 @@ export default function ConfigPage({ providerId, title, subtitle }) {
 
   // ── Deploy flow ──────────────────────────────────────────────────────────────
   const handlePreviewDeploy = async () => {
-    const p = await fetchPreview(changes);
+    const p = await fetchPreview(changes, checksum);
     if (p) setShowDeploy(true);
   };
 
   const handleDeployConfirm = async (reason) => {
-    const res = await deploy(changes, reason);
+    const res = await deploy(changes, reason, checksum);
     if (res?.success) {
       // Refresh config and clear pending changes in the background so the
       // success screen remains visible until the user clicks Close.
@@ -236,8 +236,30 @@ export default function ConfigPage({ providerId, title, subtitle }) {
         </div>
       </div>
 
+      {/* Drift banner — file changed on disk since page load */}
+      {isDrift && (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800
+                        bg-amber-50 dark:bg-amber-950 p-4 flex gap-3 items-start">
+          <AlertCircle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+              Configuration changed outside the UI
+            </p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+              The file was edited directly on disk since you loaded this page. Reload to fetch the latest version.
+            </p>
+          </div>
+          <button
+            onClick={reload}
+            className="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300
+                       underline hover:no-underline">
+            Reload
+          </button>
+        </div>
+      )}
+
       {/* Deploy error banner — shown when modal is closed */}
-      {deployError && !showDeploy && (
+      {deployError && !isDrift && !showDeploy && (
         <div className="rounded-xl border border-red-200 dark:border-red-800
                         bg-red-50 dark:bg-red-950 p-4 flex gap-3 items-start">
           <AlertCircle size={16} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />

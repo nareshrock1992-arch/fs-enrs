@@ -127,6 +127,15 @@ export class VarsProvider extends ConfigurationProvider {
       }
     }
 
+    // Detect duplicate keys (last-occurrence-wins in VarsParser — warn so users can fix the file).
+    const seen = new Set();
+    for (const entry of doc.entries ?? []) {
+      if (entry.key && seen.has(entry.key)) {
+        warnings.push(`Duplicate variable key '${entry.key}' found — last occurrence wins. Remove the duplicate.`);
+      }
+      if (entry.key) seen.add(entry.key);
+    }
+
     // Warn if default_password looks like the known-weak default.
     const pwEntry = doc.entries?.find(e => e.key === 'default_password');
     if (pwEntry?.enabled && pwEntry.value === '1234') {
