@@ -9,7 +9,7 @@
 import { VarsProvider }         from './VarsProvider.js';
 import { SwitchCoreProvider }   from './SwitchCoreProvider.js';
 import { EventSocketProvider }  from './EventSocketProvider.js';
-// Future: import { AclProvider } from './AclProvider.js';
+import { AclProvider }          from './AclProvider.js';
 
 /**
  * Register all active providers with the given registry.
@@ -20,5 +20,5 @@ export function registerAll(registry, driver) {
   registry.register(new VarsProvider(driver));
   registry.register(new SwitchCoreProvider(driver));
   registry.register(new EventSocketProvider(driver));
-  // Future: registry.register(new AclProvider(driver));
+  registry.register(new AclProvider(driver));
 }
