@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parse, serialize, toEntries } from '../../../platform/configuration/parsers/VarsParser.js';
+import { parse, serialize, toEntries, applyChanges, buildIndex } from '../../../platform/configuration/parsers/VarsParser.js';
 
 // ── Multi-line comment regression ────────────────────────────────────────────
 //
@@ -176,5 +176,184 @@ describe('VarsParser — checksum is stable', () => {
     const a = parse(MULTI_LINE_DISABLED);
     const b = parse(SINGLE_LINE_DISABLED);
     expect(a.checksum).not.toBe(b.checksum);
+  });
+});
+
+// ── FreeSWITCH tag-mangling conventions ────────────────────────────────────────
+//
+// vars.xml documents two additional patterns for disabling directives:
+//
+//   Z-PRE-PROCESS inside an XML comment (Z-prefix convention):
+//     <!--<Z-PRE-PROCESS cmd="set" data="key=val"/> -->
+//
+//   XX-PRE-PROCESS as a bare tag (XX-prefix convention):
+//     <XX-PRE-PROCESS cmd="set" data="key=val"/>
+//     (preceding comment often reads "change XX to X below to enable")
+//
+// FreeSWITCH ignores both because (a) the Z/XX forms are inside an XML comment
+// or use an unrecognised tag name. The UI should display them as enabled:false.
+
+const Z_TAG_CONTENT = `<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain_name=enrs.local"/>
+  <!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=/usr/share/freeswitch/sounds/en/us/allison"/> -->
+</include>`;
+
+const XX_TAG_CONTENT = `<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain_name=enrs.local"/>
+  <!-- change XX to X below to enable -->
+  <XX-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>
+</include>`;
+
+const BOTH_DISABLED_CONTENT = `<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain_name=enrs.local"/>
+  <!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=custom"/> -->
+  <!-- change XX to X below to enable -->
+  <XX-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>
+  <X-PRE-PROCESS cmd="set" data="max_sessions=1000"/>
+</include>`;
+
+describe('VarsParser — Z-PRE-PROCESS (Z-tag convention)', () => {
+  it('parses Z-PRE-PROCESS inside XML comment as a disabled entry', () => {
+    const { segments } = parse(Z_TAG_CONTENT);
+    const entries = toEntries(segments);
+    const e = entries.find(e => e.key === 'sound_prefix');
+    expect(e).toBeDefined();
+    expect(e.enabled).toBe(false);
+    expect(e.value).toBe('/usr/share/freeswitch/sounds/en/us/allison');
+  });
+
+  it('does not affect the active entry that precedes it', () => {
+    const { segments } = parse(Z_TAG_CONTENT);
+    const entries = toEntries(segments);
+    expect(entries.find(e => e.key === 'domain_name')?.enabled).toBe(true);
+  });
+
+  it('total entry count is 2 (active + z-tag disabled)', () => {
+    expect(toEntries(parse(Z_TAG_CONTENT).segments)).toHaveLength(2);
+  });
+
+  it('unmodified z-tag serialises to the exact original line (byte-for-byte)', () => {
+    const { segments } = parse(Z_TAG_CONTENT);
+    const out = serialize(segments);
+    expect(out).toContain('<!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=/usr/share/freeswitch/sounds/en/us/allison"/> -->');
+  });
+
+  it('enabling a z-tag entry serialises it as X-PRE-PROCESS', () => {
+    const { segments } = parse(Z_TAG_CONTENT);
+    const idx   = buildIndex(segments);
+    const after  = applyChanges(segments, idx, [{ op: 'enable', key: 'sound_prefix' }]);
+    const out    = serialize(after);
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="sound_prefix=/usr/share/freeswitch/sounds/en/us/allison"/>');
+    expect(out).not.toContain('Z-PRE-PROCESS');
+  });
+
+  it('after enabling then re-disabling, produces canonical <!--<X-PRE-PROCESS.../>-->', () => {
+    const { segments } = parse(Z_TAG_CONTENT);
+    const idx   = buildIndex(segments);
+    const step1 = applyChanges(segments, idx, [{ op: 'enable', key: 'sound_prefix' }]);
+    const idx2  = buildIndex(step1);
+    const step2 = applyChanges(step1, idx2, [{ op: 'disable', key: 'sound_prefix' }]);
+    const out   = serialize(step2);
+    expect(out).toContain('<!--<X-PRE-PROCESS cmd="set" data="sound_prefix=/usr/share/freeswitch/sounds/en/us/allison"/>-->');
+    expect(out).not.toContain('Z-PRE-PROCESS');
+  });
+
+  it('round-trip parse → serialize → parse preserves key, value, enabled', () => {
+    const doc1 = parse(Z_TAG_CONTENT);
+    const out  = serialize(doc1.segments);
+    const doc2 = parse(out);
+    const e1   = toEntries(doc1.segments).find(e => e.key === 'sound_prefix');
+    const e2   = toEntries(doc2.segments).find(e => e.key === 'sound_prefix');
+    expect(e2).toBeDefined();
+    expect(e2.key).toBe(e1.key);
+    expect(e2.value).toBe(e1.value);
+    expect(e2.enabled).toBe(e1.enabled);
+  });
+});
+
+describe('VarsParser — XX-PRE-PROCESS (XX-tag convention)', () => {
+  it('parses bare XX-PRE-PROCESS tag as a disabled entry', () => {
+    const { segments } = parse(XX_TAG_CONTENT);
+    const entries = toEntries(segments);
+    const e = entries.find(e => e.key === 'digits_dialed_filter');
+    expect(e).toBeDefined();
+    expect(e.enabled).toBe(false);
+    expect(e.value).toBe('secret');
+  });
+
+  it('does not affect the active entry', () => {
+    const entries = toEntries(parse(XX_TAG_CONTENT).segments);
+    expect(entries.find(e => e.key === 'domain_name')?.enabled).toBe(true);
+  });
+
+  it('total entry count is 2 (active + xx-tag disabled)', () => {
+    expect(toEntries(parse(XX_TAG_CONTENT).segments)).toHaveLength(2);
+  });
+
+  it('unmodified xx-tag serialises to the exact original line (byte-for-byte)', () => {
+    const { segments } = parse(XX_TAG_CONTENT);
+    const out = serialize(segments);
+    expect(out).toContain('<XX-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>');
+  });
+
+  it('enabling an xx-tag entry serialises it as X-PRE-PROCESS', () => {
+    const { segments } = parse(XX_TAG_CONTENT);
+    const idx  = buildIndex(segments);
+    const after = applyChanges(segments, idx, [{ op: 'enable', key: 'digits_dialed_filter' }]);
+    const out   = serialize(after);
+    expect(out).toContain('<X-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>');
+    expect(out).not.toContain('XX-PRE-PROCESS');
+  });
+
+  it('after enabling then re-disabling, produces canonical <!--<X-PRE-PROCESS.../>-->', () => {
+    const { segments } = parse(XX_TAG_CONTENT);
+    const idx   = buildIndex(segments);
+    const step1 = applyChanges(segments, idx, [{ op: 'enable', key: 'digits_dialed_filter' }]);
+    const idx2  = buildIndex(step1);
+    const step2 = applyChanges(step1, idx2, [{ op: 'disable', key: 'digits_dialed_filter' }]);
+    const out   = serialize(step2);
+    expect(out).toContain('<!--<X-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>-->');
+    expect(out).not.toContain('XX-PRE-PROCESS');
+  });
+
+  it('round-trip parse → serialize → parse preserves key, value, enabled', () => {
+    const doc1 = parse(XX_TAG_CONTENT);
+    const out  = serialize(doc1.segments);
+    const doc2 = parse(out);
+    const e1   = toEntries(doc1.segments).find(e => e.key === 'digits_dialed_filter');
+    const e2   = toEntries(doc2.segments).find(e => e.key === 'digits_dialed_filter');
+    expect(e2).toBeDefined();
+    expect(e2.key).toBe(e1.key);
+    expect(e2.value).toBe(e1.value);
+    expect(e2.enabled).toBe(e1.enabled);
+  });
+});
+
+describe('VarsParser — mixed disabled forms (xml-comment + z-tag + xx-tag)', () => {
+  it('correctly classifies all 4 entries', () => {
+    const entries = toEntries(parse(BOTH_DISABLED_CONTENT).segments);
+    expect(entries).toHaveLength(4);
+    expect(entries.find(e => e.key === 'domain_name')?.enabled).toBe(true);
+    expect(entries.find(e => e.key === 'sound_prefix')?.enabled).toBe(false);
+    expect(entries.find(e => e.key === 'digits_dialed_filter')?.enabled).toBe(false);
+    expect(entries.find(e => e.key === 'max_sessions')?.enabled).toBe(true);
+  });
+
+  it('round-trip preserves all keys and enabled states', () => {
+    const doc1    = parse(BOTH_DISABLED_CONTENT);
+    const doc2    = parse(serialize(doc1.segments));
+    const entries1 = toEntries(doc1.segments).map(e => `${e.key}:${e.enabled}`).sort();
+    const entries2 = toEntries(doc2.segments).map(e => `${e.key}:${e.enabled}`).sort();
+    expect(entries2).toEqual(entries1);
+  });
+
+  it('unmodified z-tag and xx-tag lines are preserved verbatim in serialised output', () => {
+    const { segments } = parse(BOTH_DISABLED_CONTENT);
+    const out = serialize(segments);
+    expect(out).toContain('<!--<Z-PRE-PROCESS cmd="set" data="sound_prefix=custom"/> -->');
+    expect(out).toContain('<XX-PRE-PROCESS cmd="set" data="digits_dialed_filter=secret"/>');
   });
 });

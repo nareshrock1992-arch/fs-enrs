@@ -9,8 +9,19 @@ import crypto from 'crypto';
  * lines, the XML declaration, the <include> wrapper) byte-for-byte.
  *
  * Segment model:
- *  { type: 'entry', key, value, enabled, original }
- *  { type: 'other', content }                        ← preserved verbatim
+ *  { type: 'entry', key, value, enabled, indent, original, modified, disabledForm? }
+ *  { type: 'other', content }   ← preserved verbatim
+ *
+ * disabledForm values:
+ *  undefined / null  — canonical <!--<X-PRE-PROCESS.../>--> form (or enabled)
+ *  'z-tag'           — <!--<Z-PRE-PROCESS.../>--> (FreeSWITCH Z-prefix convention)
+ *  'xx-tag'          — <XX-PRE-PROCESS.../> (FreeSWITCH XX-prefix convention)
+ *
+ * modified: false on parse; set to true by applyChanges when the entry is touched.
+ * Unmodified z-tag / xx-tag entries are round-tripped verbatim (via original).
+ * Once modified (enabled, value changed, re-disabled), they regenerate in the
+ * appropriate format. An entry that transitions through enabled clears disabledForm
+ * so subsequent disable produces canonical form.
  *
  * NEVER called with cached content — the caller (DeploymentManager) always
  * reads the file fresh from disk before passing rawContent here.
@@ -23,6 +34,16 @@ const RE_ACTIVE = /^(\s*)<X-PRE-PROCESS\s+cmd="set"\s+data="([^"=]+)=([^"]*)"\s*
 // Matches a disabled X-PRE-PROCESS set directive wrapped in an XML comment.
 // Handles both <!--<X-PRE-PROCESS ... />--> and <!-- <X-PRE-PROCESS ... /> -->.
 const RE_DISABLED = /^(\s*)<!--\s*<X-PRE-PROCESS\s+cmd="set"\s+data="([^"=]+)=([^"]*)"\s*\/?>\s*-->/;
+
+// FreeSWITCH Z-prefix convention: <!--<Z-PRE-PROCESS cmd="set" data="key=val"/> -->
+// The Z tag inside an XML comment is one of two documented disable mechanisms.
+// The trailing --> may have optional whitespace before it.
+const RE_Z_TAG = /^(\s*)<!--\s*<Z-PRE-PROCESS\s+cmd="set"\s+data="([^"=]+)=([^"]*)"\s*\/?>\s*-->/;
+
+// FreeSWITCH XX-prefix convention: <XX-PRE-PROCESS cmd="set" data="key=val"/>
+// A bare (non-commented) tag with XX prefix — FreeSWITCH ignores tags it
+// doesn't recognise. Comments in vars.xml read "change XX to X below to enable".
+const RE_XX_TAG = /^(\s*)<XX-PRE-PROCESS\s+cmd="set"\s+data="([^"=]+)=([^"]*)"\s*\/?>/;
 
 /**
  * Parse rawContent into a list of segments.
@@ -63,6 +84,7 @@ export function parse(rawContent) {
           enabled:  false,
           indent:   innerMatch[1],
           original: line + '\n' + lines[i + 1] + '\n' + lines[i + 2],
+          modified: false,
         });
         i += 2; // consume the inner line and the closing -->
         continue;
@@ -71,6 +93,8 @@ export function parse(rawContent) {
 
     const activeMatch   = RE_ACTIVE.exec(line);
     const disabledMatch = !activeMatch && RE_DISABLED.exec(line);
+    const zTagMatch     = !activeMatch && !disabledMatch && RE_Z_TAG.exec(line);
+    const xxTagMatch    = !activeMatch && !disabledMatch && !zTagMatch && RE_XX_TAG.exec(line);
 
     if (activeMatch) {
       segments.push({
@@ -80,6 +104,7 @@ export function parse(rawContent) {
         enabled:  true,
         indent:   activeMatch[1],
         original: line,
+        modified: false,
       });
     } else if (disabledMatch) {
       segments.push({
@@ -89,6 +114,29 @@ export function parse(rawContent) {
         enabled:  false,
         indent:   disabledMatch[1],
         original: line,
+        modified: false,
+      });
+    } else if (zTagMatch) {
+      segments.push({
+        type:         'entry',
+        key:          zTagMatch[2].trim(),
+        value:        zTagMatch[3],
+        enabled:      false,
+        indent:       zTagMatch[1],
+        original:     line,
+        modified:     false,
+        disabledForm: 'z-tag',
+      });
+    } else if (xxTagMatch) {
+      segments.push({
+        type:         'entry',
+        key:          xxTagMatch[2].trim(),
+        value:        xxTagMatch[3],
+        enabled:      false,
+        indent:       xxTagMatch[1],
+        original:     line,
+        modified:     false,
+        disabledForm: 'xx-tag',
       });
     } else {
       segments.push({ type: 'other', content: line });
@@ -152,12 +200,15 @@ export function applyChanges(segments, index, changes) {
       const enabled = change.enabled !== undefined ? Boolean(change.enabled) : true;
 
       if (idx !== undefined) {
-        result[idx] = { ...result[idx], value, enabled };
+        result[idx] = { ...result[idx], value, enabled, modified: true };
+        // Enabling clears the non-canonical disabledForm so a subsequent disable
+        // produces canonical <!--<X-PRE-PROCESS.../>--> rather than z-tag/xx-tag.
+        if (enabled) result[idx] = { ...result[idx], disabledForm: null };
       } else {
         // New variable — append before the closing </include> tag.
         const closeIdx = findCloseTag(result);
         const indent   = guessIndent(result);
-        const newSeg   = { type: 'entry', key, value, enabled, indent, original: null };
+        const newSeg   = { type: 'entry', key, value, enabled, indent, original: null, modified: false };
         if (closeIdx >= 0) {
           result.splice(closeIdx, 0, newSeg);
           // The index is now stale, but we've built it before this call;
@@ -167,9 +218,10 @@ export function applyChanges(segments, index, changes) {
         }
       }
     } else if (op === 'enable') {
-      if (idx !== undefined) result[idx] = { ...result[idx], enabled: true };
+      // Clearing disabledForm means re-disabling later produces canonical form.
+      if (idx !== undefined) result[idx] = { ...result[idx], enabled: true, modified: true, disabledForm: null };
     } else if (op === 'disable') {
-      if (idx !== undefined) result[idx] = { ...result[idx], enabled: false };
+      if (idx !== undefined) result[idx] = { ...result[idx], enabled: false, modified: true };
     } else if (op === 'delete') {
       if (idx !== undefined) result[idx] = { type: 'deleted' };
     } else {
@@ -205,7 +257,17 @@ export function serialize(segments) {
     const data   = `${seg.key}=${seg.value}`;
     if (seg.enabled) {
       lines.push(`${indent}<X-PRE-PROCESS cmd="set" data="${data}"/>`);
+    } else if (!seg.modified && seg.disabledForm && seg.original != null) {
+      // Unmodified z-tag / xx-tag entries: round-trip the exact original line.
+      lines.push(seg.original);
+    } else if (seg.disabledForm === 'z-tag') {
+      // Modified z-tag: regenerate in Z-prefix comment form.
+      lines.push(`${indent}<!--<Z-PRE-PROCESS cmd="set" data="${data}"/> -->`);
+    } else if (seg.disabledForm === 'xx-tag') {
+      // Modified xx-tag: regenerate in XX-prefix bare-tag form.
+      lines.push(`${indent}<XX-PRE-PROCESS cmd="set" data="${data}"/>`);
     } else {
+      // Canonical disabled form (xml-comment, 3-line-block normalised, or new).
       lines.push(`${indent}<!--<X-PRE-PROCESS cmd="set" data="${data}"/>-->`);
     }
   }
