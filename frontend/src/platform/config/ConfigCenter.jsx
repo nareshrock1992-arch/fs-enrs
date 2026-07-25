@@ -27,8 +27,8 @@ const NAV_SECTIONS = [
     label: 'Core System',
     items: [
       { id: 'vars',         label: 'System Variables',  icon: Variable, to: '/config/vars',         active: true  },
-      { id: 'switch',       label: 'Switch Core',        icon: Server,   to: '/config/switch',        active: false },
-      { id: 'event-socket', label: 'Event Socket',       icon: Radio,    to: '/config/event-socket',  active: false },
+      { id: 'switch',       label: 'Switch Core',        icon: Server,   to: '/config/switch',        active: true  },
+      { id: 'event-socket', label: 'Event Socket',       icon: Radio,    to: '/config/event-socket',  active: true  },
     ],
   },
   {

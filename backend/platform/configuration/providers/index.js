@@ -6,9 +6,10 @@
  *  2. Add one registry.register() call in registerAll()
  *  3. No other file needs to change
  */
-import { VarsProvider } from './VarsProvider.js';
-// Phase 7.2+: import { SwitchProvider }       from './SwitchProvider.js';
-// Phase 7.2+: import { EventSocketProvider }  from './EventSocketProvider.js';
+import { VarsProvider }         from './VarsProvider.js';
+import { SwitchCoreProvider }   from './SwitchCoreProvider.js';
+import { EventSocketProvider }  from './EventSocketProvider.js';
+// Future: import { AclProvider } from './AclProvider.js';
 
 /**
  * Register all active providers with the given registry.
@@ -17,6 +18,7 @@ import { VarsProvider } from './VarsProvider.js';
  */
 export function registerAll(registry, driver) {
   registry.register(new VarsProvider(driver));
-  // Phase 7.2+: registry.register(new SwitchProvider(driver));
-  // Phase 7.2+: registry.register(new EventSocketProvider(driver));
+  registry.register(new SwitchCoreProvider(driver));
+  registry.register(new EventSocketProvider(driver));
+  // Future: registry.register(new AclProvider(driver));
 }

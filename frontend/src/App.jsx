@@ -28,6 +28,8 @@ import EnsReport           from './pages/reports/EnsReport.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
 import SysVarsPage         from './pages/settings/SysVarsPage.jsx';
+import SwitchCorePage      from './pages/settings/SwitchCorePage.jsx';
+import EventSocketPage     from './pages/settings/EventSocketPage.jsx';
 import ConfigCenter        from './platform/config/ConfigCenter.jsx';
 import ConfigDashboard     from './platform/config/ConfigDashboard.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
@@ -114,7 +116,9 @@ export default function App() {
         {/* Platform Configuration Center (Phase 7) */}
         <Route path="config" element={<RequireAdmin><ConfigCenter /></RequireAdmin>}>
           <Route index element={<ConfigDashboard />} />
-          <Route path="vars" element={<SysVarsPage />} />
+          <Route path="vars"         element={<SysVarsPage />} />
+          <Route path="switch"       element={<SwitchCorePage />} />
+          <Route path="event-socket" element={<EventSocketPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
