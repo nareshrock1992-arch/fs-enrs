@@ -142,6 +142,44 @@ CORRECT:   Determine whether ConfigurationProvider already supports hierarchy.
            Extend with docType getter. That is all that is needed.
 ```
 
+### Anti-Pattern 4 — Direct Path Access
+
+```
+Need:      path to a dialplan XML file
+
+WRONG:     import { fsConfig } from '../config/fsConfig.js'; fsConfig.dialplanDir + '/default.xml'
+WRONG:     import { fsPathService } from '../services/freeSwitchPathService.js'; fsPathService.getDialplanDir()
+WRONG:     '/etc/freeswitch/dialplan/default.xml'   ← hardcoded path
+CORRECT:   driver.resolveConfigurationPath('dialplan', 'default.xml')
+
+All path resolution must go through the PlatformDriver chain.
+See ARCHITECTURE.md — "Path Resolution Rule".
+```
+
+### Anti-Pattern 5 — Parallel Knowledge Catalogs
+
+```
+Need:      application metadata for IVR module
+
+WRONG:     Create ivrApplicationCatalog.js listing bridge, hangup, lua, transfer
+           ← duplicates dialplanCatalog.js entries for the same FreeSWITCH applications
+CORRECT:   Import lookupApplication() from dialplanCatalog.js
+           The catalog is a platform knowledge catalog, not a Dialplan-only catalog.
+           See ARCHITECTURE.md — "FreeSWITCH Platform Knowledge Catalog".
+```
+
+### Anti-Pattern 6 — Provider Registered for Generated XML
+
+```
+Need:      IVR Builder output (enrs_ivr.xml) visible in Config Center
+
+WRONG:     Register a DialplanFileProvider for enrs_ivr.xml
+           ← gives Config Center edit ownership of an IVR Builder artifact
+CORRECT:   Exclude enrs_ivr.xml from provider discovery.
+           Config Center may deploy it; it must never become its editor.
+           See ARCHITECTURE.md — "Managed XML vs Generated XML".
+```
+
 ---
 
 ## Required Output: Design Impact Assessment
@@ -210,19 +248,25 @@ API, or file output is a regression and must be stopped immediately:
 
 The framework already provides. Your first assumption must be that these are sufficient:
 
-- XML parsing: `XmlParser`, `SegmentUtils`, module-specific parsers
-- Catalogs: per-provider catalog objects with metadata, validation, display
-- Providers: `ConfigurationProvider` base class with `parse / serialize / applyChanges / validate / diff`
+- XML parsing: `XmlParser`, `SegmentUtils`, module-specific parsers, `DialplanParser`
+- Catalogs: `dialplanCatalog` (FreeSWITCH platform knowledge), per-provider metadata catalogs
+- Providers: `ConfigurationProvider` base class with `parse / serialize / applyChanges / validate / diff`; `docType` getter for flat vs hierarchical routing
 - Registry: `ProviderRegistry` with `register / get / has / list`
 - Configuration Manager: `read / preview / deploy / rollback / getHistory / getAuditLog`
-- Driver: `FreeSwitchDriver` with path resolution and ESL commands
+- Driver: `FreeSwitchDriver` with `resolveConfigurationPath(type, relativePath)` (generic, covers all modules)
 - Deployment: `DeploymentManager` 13-step pipeline, `AtomicWriter`, `BackupManager`
 - Deployment strategies: `DeploymentStrategy` (RELOAD_XML, SOFIA_RESCAN, RELOAD_MODULE, RESTART_MODULE)
 - History: `VersionManager`
 - Audit: `AuditLogger`
 - Frontend hooks: `useConfigProvider`, `useDeployment`
-- Frontend stores: `configChangesStore`
+- Frontend stores: `configChangesStore` (flat mode + ordered-ops mode for hierarchical providers)
 - Frontend pages: `ConfigPage`, `ConfigCenter`, `ConfigHistory`, `ConfigAudit`, `DeployModal`
+- Provider discovery: `discoverGatewayProviders` pattern — reuse for all future dynamic discovery
+
+**See also:** `ARCHITECTURE.md` for the full platform governance rules including
+Configuration Ownership, Configuration Authority, Deployment Responsibility,
+Managed vs Generated XML, FreeSWITCH Platform Knowledge Catalog, XML Document
+Contract, Path Resolution Rule, Discovery Rule, and Provider Constructor Guideline.
 
 ---
 

@@ -129,6 +129,16 @@ describe('DialplanFileProvider — identity', () => {
     expect(p.id).toBe('dialplan:internal');
   });
 
+  it('id converts path separator to colon for subdirectory files', () => {
+    const p = new DialplanFileProvider(makeMockDriver(), 'default/cc.xml');
+    expect(p.id).toBe('dialplan:default:cc');
+  });
+
+  it('id converts path separator for deeply-nested relative paths', () => {
+    const p = new DialplanFileProvider(makeMockDriver(), 'public/00_inbound_did.xml');
+    expect(p.id).toBe('dialplan:public:00_inbound_did');
+  });
+
   it('name contains the filename', () => {
     const p = new DialplanFileProvider(makeMockDriver(), 'default.xml');
     expect(p.name).toContain('default.xml');
@@ -181,6 +191,19 @@ describe('DialplanFileProvider — getFilePath', () => {
     const driver = { resolveConfigurationPath: () => '/custom/path/to/default.xml' };
     const p = new DialplanFileProvider(driver, 'default.xml');
     expect(p.getFilePath()).toBe('/custom/path/to/default.xml');
+  });
+
+  it('passes subdirectory relative path straight through to the driver', () => {
+    let capturedFilename;
+    const driver = {
+      resolveConfigurationPath: (_type, filename) => {
+        capturedFilename = filename;
+        return `/etc/freeswitch/dialplan/${filename}`;
+      },
+    };
+    const p = new DialplanFileProvider(driver, 'default/cc.xml');
+    p.getFilePath();
+    expect(capturedFilename).toBe('default/cc.xml');
   });
 });
 

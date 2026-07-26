@@ -77,11 +77,15 @@ export class DialplanFileProvider extends ConfigurationProvider {
   // ── Identity ──────────────────────────────────────────────────────────────────
 
   get id() {
-    // Strip .xml suffix for the provider ID.
+    // Strip .xml suffix, then replace path separators with ':' so provider IDs
+    // remain logical identifiers and never expose filesystem path characters.
+    // 'default.xml'              → 'dialplan:default'
+    // 'default/cc.xml'           → 'dialplan:default:cc'
+    // 'public/00_inbound_did.xml'→ 'dialplan:public:00_inbound_did'
     const base = this.#filename.endsWith('.xml')
       ? this.#filename.slice(0, -4)
       : this.#filename;
-    return `dialplan:${base}`;
+    return `dialplan:${base.replace(/\//g, ':')}`;
   }
 
   get name() {
