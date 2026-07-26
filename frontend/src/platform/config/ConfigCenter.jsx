@@ -36,7 +36,7 @@ const NAV_SECTIONS = [
     items: [
       { id: 'acl',          label: 'ACL Rules',          icon: Shield,   to: '/config/acl',           active: true  },
       { id: 'sip-profiles', label: 'SIP Profiles',       icon: Phone,    to: '/config/sip-profiles',  active: true  },
-      { id: 'gateways',     label: 'Gateways',           icon: Network,  to: '/config/gateways',      active: false },
+      { id: 'gateways',     label: 'Gateways',           icon: Network,  to: '/config/gateways',      active: true  },
     ],
   },
   {

@@ -60,6 +60,21 @@ export class FreeSwitchDriver extends PlatformDriver {
     return path.posix.join(this.#pathService.getSoundDir(), filename);
   }
 
+  /**
+   * Resolve a path relative to the SIP profiles directory.
+   * With no argument returns the sip profiles directory itself.
+   * Delegates to FreeSwitchPathService.getSipProfileDir() — never reads
+   * process.env directly.
+   *
+   * @param {string} [relativePath]  — optional sub-path (e.g. 'external/avaya.xml')
+   * @returns {string}
+   */
+  resolveSipProfilePath(relativePath) {
+    const sipDir = this.#pathService.getSipProfileDir();
+    if (!relativePath) return sipDir;
+    return path.posix.join(sipDir, relativePath);
+  }
+
   // ── Reload operations ─────────────────────────────────────────────────────────
 
   async reloadXml() {

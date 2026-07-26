@@ -32,8 +32,9 @@ import SwitchCorePage      from './pages/settings/SwitchCorePage.jsx';
 import EventSocketPage     from './pages/settings/EventSocketPage.jsx';
 import AclPage             from './pages/settings/AclPage.jsx';
 import SipProfilesPage    from './pages/settings/SipProfilesPage.jsx';
-import ConferencePage     from './pages/settings/ConferencePage.jsx';
-import ConfigCenter        from './platform/config/ConfigCenter.jsx';
+import ConferencePage          from './pages/settings/ConferencePage.jsx';
+import GatewayCollectionPage  from './pages/settings/GatewayCollectionPage.jsx';
+import ConfigCenter            from './platform/config/ConfigCenter.jsx';
 import ConfigDashboard     from './platform/config/ConfigDashboard.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
 import MediaLibrary        from './pages/media/MediaLibrary.jsx';
@@ -125,6 +126,7 @@ export default function App() {
           <Route path="acl"          element={<AclPage />} />
           <Route path="sip-profiles" element={<SipProfilesPage />} />
           <Route path="conference"   element={<ConferencePage />} />
+          <Route path="gateways"     element={<GatewayCollectionPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

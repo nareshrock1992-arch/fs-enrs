@@ -39,7 +39,7 @@ async function bootstrap() {
   _pathService = pathMod.fsPathService;
 
   const registry = new ProviderRegistry();
-  registerAll(registry, _driver);
+  await registerAll(registry, _driver);
 
   _manager = new ConfigurationManager(registry);
 }
