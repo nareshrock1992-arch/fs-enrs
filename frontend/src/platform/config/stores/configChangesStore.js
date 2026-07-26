@@ -104,11 +104,31 @@ export const useConfigChangesStore = create((set, get) => ({
    * @param {ChangeOperation} op  — plain JSON object with at minimum { op: string }
    */
   appendOp(providerId, op) {
+    // DEBUG — remove before production
+    // eslint-disable-next-line no-console
+    console.group(`%c[appendOp] ${new Date().toISOString()}`, 'color:#f59e0b;font-weight:bold');
+    // eslint-disable-next-line no-console
+    console.log('Provider   :', providerId);
+    // eslint-disable-next-line no-console
+    console.log('Op         :', op.op);
+    // eslint-disable-next-line no-console
+    console.log('ExtensionId:', op.extensionId ?? '—');
+    // eslint-disable-next-line no-console
+    console.log('ConditionId:', op.conditionId ?? '—');
+    // eslint-disable-next-line no-console
+    console.log('Full op    :', JSON.stringify(op, null, 2));
+    // eslint-disable-next-line no-console
+    console.trace('call site');
+    // eslint-disable-next-line no-console
+    console.groupEnd();
+
     set(state => {
       const next  = new Map(state._ops);
       const entry = next.get(providerId) ?? { ops: [], pointer: -1 };
       const active = entry.ops.slice(0, entry.pointer + 1);
       const ops    = [...active, op];
+      // eslint-disable-next-line no-console
+      console.log(`[appendOp] Store now has ${ops.length} op(s) for ${providerId}`);
       next.set(providerId, { ops, pointer: ops.length - 1 });
       return { _ops: next };
     });

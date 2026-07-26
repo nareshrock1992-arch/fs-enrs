@@ -654,21 +654,30 @@ function _applyOne(doc, ch) {
       };
 
     // ── Actions ───────────────────────────────────────────────────────────────
-    case 'add_action':
-      return _withAction(doc, ch, (arr, action) => {
-        const a = [...arr];
-        if (ch.atIndex !== undefined) a.splice(ch.atIndex, 0, action);
-        else                          a.push(action);
-        return a;
+    case 'add_action': {
+      const action = {
+        id:          ch._tempId ?? nextId(),
+        application: ch.application ?? '',
+        data:        ch.data ?? null,
+        enabled:     true,
+      };
+      return _walkCondition(doc, ch, 'actions', arr => {
+        if (ch.atIndex !== undefined) {
+          const a = [...arr];
+          a.splice(ch.atIndex, 0, action);
+          return a;
+        }
+        return [...arr, action];
       });
+    }
 
     case 'update_action':
-      return _withAction(doc, ch, (arr) =>
-        arr.map(a => a.id === ch.id ? { ...a, ...(ch.patch ?? {}) } : a)
+      return _walkCondition(doc, ch, 'actions', arr =>
+        arr.map(a => a.id === ch.id ? { ...a, ..._pickDefined(ch, ['application', 'data', 'enabled']) } : a)
       );
 
     case 'delete_action':
-      return _withAction(doc, ch, (arr) => arr.filter(a => a.id !== ch.id));
+      return _walkCondition(doc, ch, 'actions', arr => arr.filter(a => a.id !== ch.id));
 
     case 'move_action':
       return _withAction(doc, ch, (arr) => {
@@ -678,6 +687,32 @@ function _applyOne(doc, ch) {
         base.splice(Math.min(ch.toIndex ?? base.length, base.length), 0, item);
         return base;
       });
+
+    // ── Anti-actions ──────────────────────────────────────────────────────────
+    case 'add_anti_action': {
+      const aa = {
+        id:          ch._tempId ?? nextId(),
+        application: ch.application ?? '',
+        data:        ch.data ?? null,
+        enabled:     true,
+      };
+      return _walkCondition(doc, ch, 'antiActions', arr => {
+        if (ch.atIndex !== undefined) {
+          const a = [...arr];
+          a.splice(ch.atIndex, 0, aa);
+          return a;
+        }
+        return [...arr, aa];
+      });
+    }
+
+    case 'update_anti_action':
+      return _walkCondition(doc, ch, 'antiActions', arr =>
+        arr.map(a => a.id === ch.id ? { ...a, ..._pickDefined(ch, ['application', 'data', 'enabled']) } : a)
+      );
+
+    case 'delete_anti_action':
+      return _walkCondition(doc, ch, 'antiActions', arr => arr.filter(a => a.id !== ch.id));
 
     // ── Comments / Directives ─────────────────────────────────────────────────
     case 'add_comment': {
@@ -697,6 +732,36 @@ function _applyOne(doc, ch) {
     default:
       throw new Error(`DialplanParser.applyChanges: unknown op '${ch.op}'`);
   }
+}
+
+/**
+ * Navigate to a condition's named array (`actions` or `antiActions`) and apply
+ * a transform to it. Used by add/update/delete ops for both action types.
+ * The `key` parameter is supplied by the caller — no `ch.kind` discriminator needed.
+ */
+function _walkCondition(doc, ch, key, transform) {
+  return {
+    ...doc,
+    nodes: doc.nodes.map(n => {
+      if (n.type !== 'extension' || n.id !== ch.extensionId) return n;
+      return {
+        ...n,
+        conditions: n.conditions.map(c => {
+          if (c.id !== ch.conditionId) return c;
+          return { ...c, [key]: transform(c[key] ?? []) };
+        }),
+      };
+    }),
+  };
+}
+
+/** Copy only keys that are present and not undefined from `src` into a new object. */
+function _pickDefined(src, keys) {
+  const out = {};
+  for (const k of keys) {
+    if (k in src && src[k] !== undefined) out[k] = src[k];
+  }
+  return out;
 }
 
 /** Shared helper: mutate the actions or antiActions array of a specific condition. */

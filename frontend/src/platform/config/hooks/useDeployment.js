@@ -17,6 +17,13 @@ export function useDeployment(providerId) {
 
   const fetchPreview = useCallback(async (changes, checksum) => {
     if (!changes?.length) return;
+    // DEBUG — remove before production
+    // eslint-disable-next-line no-console
+    console.group('%c[fetchPreview] ops being sent to backend', 'color:#3b82f6;font-weight:bold');
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify(changes, null, 2));
+    // eslint-disable-next-line no-console
+    console.groupEnd();
     setPreviewing(true);
     setError(null);
     setPreview(null);
@@ -36,6 +43,13 @@ export function useDeployment(providerId) {
 
   const deploy = useCallback(async (changes, reason, checksum) => {
     if (!changes?.length) return null;
+    // DEBUG — remove before production
+    // eslint-disable-next-line no-console
+    console.group('%c[deploy] ops being sent to backend', 'color:#ef4444;font-weight:bold');
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify(changes, null, 2));
+    // eslint-disable-next-line no-console
+    console.groupEnd();
     setDeploying(true);
     setError(null);
     setResult(null);
