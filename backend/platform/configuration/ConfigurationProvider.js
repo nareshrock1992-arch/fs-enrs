@@ -29,6 +29,18 @@ export class ConfigurationProvider {
   /** Machine-readable provider ID — matches the URL segment. */
   get id() { return this._abstract('id'); }
 
+  /**
+   * Document type — determines which frontend renderer is used.
+   *
+   * 'flat'         — key/value param list (ConfigPage, default for all existing providers)
+   * 'hierarchical' — ordered tree of typed nodes (TreeRenderer, used by Dialplan,
+   *                  Directory, IVR, Call Center, and future hierarchical modules)
+   *
+   * Hierarchical providers override this getter to return 'hierarchical'.
+   * Flat providers inherit this default and need no change.
+   */
+  get docType() { return 'flat'; }
+
   /** Human-readable name shown in the UI. */
   get name() { return this._abstract('name'); }
 

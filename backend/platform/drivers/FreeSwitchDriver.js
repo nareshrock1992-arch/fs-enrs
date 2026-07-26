@@ -75,6 +75,45 @@ export class FreeSwitchDriver extends PlatformDriver {
     return path.posix.join(sipDir, relativePath);
   }
 
+  /**
+   * Resolve a path for any named configuration directory.
+   * Generic alternative to module-specific resolve methods.
+   * Delegates to FreeSwitchPathService — never reads process.env directly.
+   *
+   * Supported types:
+   *   'sipProfile' — sip_profiles/  (e.g. 'external/avaya.xml')
+   *   'dialplan'   — dialplan/       (e.g. 'default.xml')
+   *   'script'     — scripts/        (e.g. 'ens_blast_trigger.lua')
+   *   'sound'      — sounds/
+   *   'recording'  — recordings/
+   *
+   * With no relativePath returns the directory itself.
+   * New configuration types should be added here rather than as new methods.
+   *
+   * @param {string} type           — one of the supported type strings above
+   * @param {string} [relativePath] — optional sub-path within the directory
+   * @returns {string}
+   */
+  resolveConfigurationPath(type, relativePath) {
+    const dirs = {
+      sipProfile: () => this.#pathService.getSipProfileDir(),
+      dialplan:   () => this.#pathService.getDialplanDir(),
+      script:     () => this.#pathService.getScriptDir(),
+      sound:      () => this.#pathService.getSoundDir(),
+      recording:  () => this.#pathService.getRecordingDir(),
+    };
+    const getDir = dirs[type];
+    if (!getDir) {
+      throw new Error(
+        `FreeSwitchDriver.resolveConfigurationPath: unknown type '${type}'. ` +
+        `Supported: ${Object.keys(dirs).join(', ')}`
+      );
+    }
+    const dir = getDir();
+    if (!relativePath) return dir;
+    return path.posix.join(dir, relativePath);
+  }
+
   // ── Reload operations ─────────────────────────────────────────────────────────
 
   async reloadXml() {

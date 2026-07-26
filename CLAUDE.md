@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Mandatory Reading Before Any Development
+
+**Read these two files at the start of every session before writing any code:**
+
+- [`GOVERNANCE.md`](GOVERNANCE.md) — permanent development governance rules; defines the mandatory
+  Design Impact Assessment process, the decision order (reuse → extend → create), and the
+  anti-pattern catalogue. No code may be written without following it.
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — frozen architectural specification; defines the approved
+  pipeline, object models, and invariants. Any proposal conflicting with it requires explicit
+  approval before implementation.
+
+**The default assumption is always: "The existing framework is sufficient unless I can prove otherwise."**
+
 ## Commands
 
 ### Backend (run from `backend/`)

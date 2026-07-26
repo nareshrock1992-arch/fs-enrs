@@ -56,6 +56,7 @@ export class ProviderRegistry {
       id:               p.id,
       name:             p.name,
       description:      p.description,
+      docType:          p.docType ?? 'flat',
       strategy:         p.deploymentStrategy.id,
       strategyLabel:    p.deploymentStrategy.label,
       riskLevel:        p.deploymentStrategy.riskLevel,
