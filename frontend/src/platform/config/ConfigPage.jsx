@@ -1,55 +1,43 @@
-import { useEffect, useMemo, useCallback, useState } from 'react';
+import { useEffect, useMemo, useCallback, useState } from 'react'; // useCallback kept for reload
 import { History, ShieldCheck, Loader2, AlertCircle } from 'lucide-react';
 import { useConfigProvider }     from './hooks/useConfigProvider.js';
 import { useDeployment }         from './hooks/useDeployment.js';
 import { useConfigChangesStore } from './stores/configChangesStore.js';
-import ConfigSection  from './ConfigSection.jsx';
-import ConfigFilters  from './ConfigFilters.jsx';
-import DetailsPanel   from './DetailsPanel.jsx';
 import ConfigHistory  from './ConfigHistory.jsx';
 import ConfigAudit    from './ConfigAudit.jsx';
 import DeployModal    from './DeployModal.jsx';
 import ChangesBar     from './ChangesBar.jsx';
-import {
-  isVisible,
-  shouldShow,
-  getSearchText,
-  describeChange,
-} from './utils/metadataUtils.js';
+import FlatRenderer        from './renderers/FlatRenderer.jsx';
+import HierarchicalRenderer from './renderers/HierarchicalRenderer.jsx';
+import { describeChange }   from './utils/metadataUtils.js';
+import { describeOp }       from './renderers/applyHierarchicalOps.js';
 
 /**
- * ConfigPage — shared template for all configuration provider pages.
+ * ConfigPage — single entry point for all configuration provider pages.
  *
- * Phase 7.3B refactor: 3-pane layout (filters sidebar | entry list | detail panel),
- * metadata-driven visibility filtering (Basic/Advanced/Expert), grouped accordion
- * view via ConfigSection, and DetailsPanel for the selected entry.
+ * Dispatches to FlatRenderer (docType='flat', default) or HierarchicalRenderer
+ * (docType='hierarchical') based on the docType prop. All cross-cutting concerns
+ * — loading/error, header, drift banner, deploy flow, history/audit panels — live
+ * here. Renderer-specific layout and state live in each renderer.
  *
  * Usage:
- *   <ConfigPage
- *     providerId="vars"
- *     title="System Variables"
- *     subtitle="vars.xml — Global FreeSWITCH variables"
- *   />
+ *   <ConfigPage providerId="vars"      title="System Variables" />
+ *   <ConfigPage providerId="dialplan:default" docType="hierarchical" title="default" />
  */
-export default function ConfigPage({ providerId, title, subtitle }) {
+export default function ConfigPage({ providerId, title, subtitle, docType = 'flat' }) {
   const { entries, loading, error, load, filePath, parsedAt, checksum } = useConfigProvider(providerId);
   const {
     preview, previewing, deploying, result, error: deployError, isDrift,
     fetchPreview, deploy, clearResult,
   } = useDeployment(providerId);
 
-  const { getChanges, setChange, revertKey, clearProvider } = useConfigChangesStore();
-  const pending = getChanges(providerId);
+  const { getChanges, clearProvider, getOps } = useConfigChangesStore();
 
-  const [search,         setSearch]         = useState('');
-  // Default 'advanced' matches the old flat-list behaviour where all variables
-  // were visible immediately. 'basic' hides the ~68 custom/ring-tone vars that
-  // have no catalog entry, which the user never sees without manually switching.
-  const [visibilityLevel, setVisibilityLevel] = useState('advanced');
-  const [category,       setCategory]       = useState('All');
-  const [selectedKey,    setSelectedKey]    = useState(null);
-  const [panel,          setPanel]          = useState(null); // 'history' | 'audit' | null
-  const [showDeploy,     setShowDeploy]     = useState(false);
+  // Reactive pointer for hierarchical mode — triggers re-render when ops change.
+  const opPointer = useConfigChangesStore(s => s._ops?.get(providerId)?.pointer ?? -1);
+
+  const [panel,      setPanel]      = useState(null); // 'history' | 'audit' | null
+  const [showDeploy, setShowDeploy] = useState(false);
 
   useEffect(() => { load(); }, [load]);
 
@@ -58,52 +46,20 @@ export default function ConfigPage({ providerId, title, subtitle }) {
     await load();
   }, [load, clearProvider, providerId]);
 
-  const handleChange = useCallback((change) => {
-    setChange(providerId, change);
-  }, [setChange, providerId]);
+  // ── Change list and descriptions — mode-branched ────────────────────────────
 
-  const handleRevertKey = useCallback((key) => {
-    revertKey(providerId, key);
-  }, [revertKey, providerId]);
+  const pending = getChanges(providerId);
 
-  const handleSelect = useCallback((key) => {
-    setSelectedKey(k => k === key ? null : key);
-  }, []);
+  const changes = useMemo(() => {
+    if (docType === 'hierarchical') return getOps(providerId);
+    return [...pending.values()];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docType, pending, getOps, providerId, opPointer]);
 
-  // Current values map used for shouldShow() conditional visibility
-  const currentValues = useMemo(() => {
-    const map = {};
-    for (const entry of entries) {
-      const pc = pending.get(entry.key);
-      map[entry.key] = pc?.value !== undefined ? pc.value : (entry.value ?? '');
-    }
-    return map;
-  }, [entries, pending]);
-
-  // Category list for filter nav — derived from all entries (not filtered ones)
-  const categories = useMemo(() => {
-    const cats = new Set(entries.map(e => (e.metadata ?? e).category).filter(Boolean));
-    return ['All', ...cats];
-  }, [entries]);
-
-  // Filtered entries — visibility + showIf + category + search
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return entries.filter(e => {
-      if (!isVisible(e, visibilityLevel))    return false;
-      if (!shouldShow(e, currentValues))     return false;
-      const meta = e.metadata ?? e;
-      if (category !== 'All' && meta.category !== category) return false;
-      if (q && !getSearchText(e).includes(q)) return false;
-      return true;
-    });
-  }, [entries, visibilityLevel, category, search, currentValues]);
-
-
-  const changes = useMemo(() => [...pending.values()], [pending]);
-
-  // Change descriptions for ChangeSummary inside DeployModal
   const changeDescriptions = useMemo(() => {
+    if (docType === 'hierarchical') {
+      return changes.map((op, i) => describeOp(op, i));
+    }
     const entryMap = new Map(entries.map(e => [e.key, e]));
     return changes.map(c => {
       const entry = entryMap.get(c.key);
@@ -115,13 +71,7 @@ export default function ConfigPage({ providerId, title, subtitle }) {
       const newValue = c.enabled === false ? '(disabled)' : (c.value ?? '(unset)');
       return describeChange(entry, oldValue, newValue);
     });
-  }, [changes, entries]);
-
-  // Entry object for DetailsPanel
-  const selectedEntry = useMemo(
-    () => entries.find(e => e.key === selectedKey) ?? null,
-    [entries, selectedKey]
-  );
+  }, [docType, changes, entries]);
 
   // ── Deploy flow ──────────────────────────────────────────────────────────────
   const handlePreviewDeploy = async () => {
@@ -265,56 +215,11 @@ export default function ConfigPage({ providerId, title, subtitle }) {
         </div>
       )}
 
-      {/* 3-pane layout: [filter sidebar] [entry list] [detail panel] */}
-      <div className="flex gap-4 items-start">
-
-        {/* Left: filter sidebar — hidden on mobile, visible xl+ */}
-        <div className="hidden xl:block w-48 shrink-0">
-          <ConfigFilters
-            search={search}
-            onSearchChange={setSearch}
-            visibilityLevel={visibilityLevel}
-            onVisibilityChange={setVisibilityLevel}
-            category={category}
-            onCategoryChange={setCategory}
-            categories={categories}
-          />
-        </div>
-
-        {/* Center: mobile filters + grouped entry list */}
-        <div className="flex-1 min-w-0 space-y-3">
-          {/* Compact filter row for mobile / non-xl viewports */}
-          <div className="xl:hidden">
-            <ConfigFilters
-              search={search}
-              onSearchChange={setSearch}
-              visibilityLevel={visibilityLevel}
-              onVisibilityChange={setVisibilityLevel}
-              category={category}
-              onCategoryChange={setCategory}
-              categories={categories}
-              compact
-            />
-          </div>
-
-          <ConfigSection
-            entries={filtered}
-            pending={pending}
-            onChange={handleChange}
-            onRevert={handleRevertKey}
-            selectedKey={selectedKey}
-            onSelect={handleSelect}
-            disabled={deploying}
-          />
-        </div>
-
-        {/* Right: detail panel — only when an entry is selected, xl+ only */}
-        {selectedKey && (
-          <div className="hidden xl:block w-72 shrink-0">
-            <DetailsPanel entry={selectedEntry} />
-          </div>
-        )}
-      </div>
+      {/* Renderer — dispatched by docType */}
+      {docType === 'hierarchical'
+        ? <HierarchicalRenderer providerId={providerId} entries={entries} deploying={deploying} />
+        : <FlatRenderer         providerId={providerId} entries={entries} deploying={deploying} />
+      }
 
       {/* Deploy modal */}
       {showDeploy && (

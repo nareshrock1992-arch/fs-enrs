@@ -43,7 +43,7 @@ const NAV_SECTIONS = [
     label: 'Media & Routing',
     items: [
       { id: 'conference',   label: 'Conference',         icon: Layers,   to: '/config/conference',    active: true  },
-      { id: 'dialplan',     label: 'Dialplan',           icon: BookOpen, to: '/config/dialplan',      active: false },
+      { id: 'dialplan',     label: 'Dialplan',           icon: BookOpen, to: '/config/dialplan',      active: true  },
       { id: 'directory',    label: 'Directory',          icon: BookOpen, to: '/config/directory',     active: false },
       { id: 'modules',      label: 'Modules',            icon: Settings2,to: '/config/modules',       active: false },
       { id: 'logging',      label: 'Logging',            icon: LogOut,   to: '/config/logging',       active: false },

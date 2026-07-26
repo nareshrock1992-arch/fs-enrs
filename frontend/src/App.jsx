@@ -34,6 +34,7 @@ import AclPage             from './pages/settings/AclPage.jsx';
 import SipProfilesPage    from './pages/settings/SipProfilesPage.jsx';
 import ConferencePage          from './pages/settings/ConferencePage.jsx';
 import GatewayCollectionPage  from './pages/settings/GatewayCollectionPage.jsx';
+import DialplanPage            from './pages/settings/DialplanPage.jsx';
 import ConfigCenter            from './platform/config/ConfigCenter.jsx';
 import ConfigDashboard     from './platform/config/ConfigDashboard.jsx';
 import AudioLibrary        from './pages/audio/AudioLibrary.jsx';
@@ -127,6 +128,7 @@ export default function App() {
           <Route path="sip-profiles" element={<SipProfilesPage />} />
           <Route path="conference"   element={<ConferencePage />} />
           <Route path="gateways"     element={<GatewayCollectionPage />} />
+          <Route path="dialplan"     element={<DialplanPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

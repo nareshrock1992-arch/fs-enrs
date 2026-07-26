@@ -153,7 +153,7 @@ WRONG:     '/etc/freeswitch/dialplan/default.xml'   ← hardcoded path
 CORRECT:   driver.resolveConfigurationPath('dialplan', 'default.xml')
 
 All path resolution must go through the PlatformDriver chain.
-See ARCHITECTURE.md — "Path Resolution Rule".
+See Platform Invariant: Path Resolution Rule (below) and ARCHITECTURE.md — "Path Resolution Rule".
 ```
 
 ### Anti-Pattern 5 — Parallel Knowledge Catalogs
@@ -179,6 +179,152 @@ CORRECT:   Exclude enrs_ivr.xml from provider discovery.
            Config Center may deploy it; it must never become its editor.
            See ARCHITECTURE.md — "Managed XML vs Generated XML".
 ```
+
+---
+
+## Platform Technical Invariants
+
+These rules apply to every module, every session, and every developer without exception.
+They are stated as invariants — not examples — because no business justification, time
+pressure, or architectural convenience overrides them.
+
+---
+
+### Path Resolution Rule (Platform Invariant)
+
+Platform modules **must never** construct FreeSWITCH filesystem paths.
+
+The only approved resolution mechanism is:
+
+```
+Provider
+    ↓
+Platform Driver (FreeSwitchDriver)
+    ↓
+FreeSwitchPathService
+    ↓
+Environment Configuration (FS_* env vars)
+    ↓
+Filesystem
+```
+
+**Forbidden in all module code — providers, parsers, catalogs, discovery, deployment:**
+
+| Forbidden | Reason |
+|---|---|
+| `'/etc/freeswitch/...'` | Hardcoded path — breaks Docker, custom installs, non-Debian packages |
+| `path.join('/etc/freeswitch', ...)` | Path construction — same as hardcoding |
+| `fsConfig.dialplanDir` | Direct config access — bypasses the driver chain |
+| `fsConfig.gatewayDir` | Direct config access — bypasses the driver chain |
+| `process.env.FS_DIALPLAN_DIR` | Direct env access — bypasses the driver chain |
+| `import freeSwitchPathService` | Direct service import — bypasses PlatformDriver |
+
+**Allowed — driver methods are the only public API for path resolution:**
+
+```js
+driver.resolveConfigurationPath('dialplan', 'default.xml')    // → absolute path to file
+driver.resolveConfigurationPath('dialplan', 'default/cc.xml') // → subdirectory file
+driver.resolveConfigurationPath('dialplan')                   // → directory path
+driver.resolveSipProfilePath('external/avaya.xml')            // → gateway file
+driver.resolveGatewayPath(...)                                // → future driver methods
+```
+
+The Driver is the **only** public API for path resolution. This rule guarantees
+environment independence, Docker portability, custom installation support, and future
+driver replaceability.
+
+**This rule applies equally to test code.** Tests must mock the driver and derive all
+path comparisons from the driver's return values — never from hardcoded string literals.
+A test that hardcodes `/etc/freeswitch/...` is as much a violation as production code.
+
+Violation of this rule is an architectural defect.
+See also: Anti-Pattern 4. Full chain rationale: ARCHITECTURE.md §Path Resolution Rule.
+
+---
+
+### Filesystem Discovery Rule (Platform Invariant)
+
+Dynamic provider discovery is **always data-driven**. No module may enumerate
+configuration by hardcoded filename lists or hardcoded directory paths.
+
+Every discovery implementation must:
+
+1. Obtain all root directories exclusively from `driver` — never from `fsConfig`,
+   `freeSwitchPathService`, or environment variables directly.
+2. Be fully data-driven — no hardcoded filenames, context names, or subdirectory names
+   in the enumeration logic itself. (Exclusions for known Generated XML files are
+   permitted as exact-basename matches with documented ownership reasons.)
+3. Skip **hidden files** (basename starts with `.`) and **temporary files** (basename
+   starts with `_`) at every tier of enumeration.
+4. **Continue boot** when a directory is inaccessible — `ENOENT`, `EACCES`, or similar.
+   Log a warning. Never throw. Never prevent other providers from registering.
+5. **Log the registration count** after discovery completes, when at least one provider
+   was registered. Log nothing when the directory is empty or absent.
+6. Handle **duplicate provider IDs** without throwing — log a warning per duplicate;
+   continue registration of the remaining providers.
+7. **Skip Generated XML files** by exact basename when the owning module is known.
+   Every skip rule must be documented inline with its ownership reason and a reference
+   to the Configuration Ownership table in ARCHITECTURE.md.
+
+The reference implementation is `discoverGatewayProviders` in `providers/index.js`.
+All new discovery functions must mirror its structure and error-handling.
+See also: ARCHITECTURE.md §Discovery Rule.
+
+---
+
+### Discovery Before Configuration Rule (Platform Invariant)
+
+Provider discovery must **complete before** any configuration API is exposed to
+request handlers.
+
+- `registerAll(registry, driver)` must be `await`ed to completion before route
+  handlers are mounted. No configuration route may be reachable during discovery.
+- A partially-populated registry (some providers registered, others skipped due to
+  inaccessible directories) is a valid but warned state. It is **not** a reason to
+  abort the server. Platform boot continues; the missing providers are simply
+  unavailable until the underlying filesystem issue is resolved.
+- Discovery errors that propagate as uncaught exceptions are defects. Every
+  discovery function must handle its own errors and return cleanly.
+- **Test code** that calls `registerAll()` must supply a complete mock driver and
+  mock filesystem. A partially-wired test that leaves the registry inconsistent
+  produces false test results and is itself a governance violation.
+
+---
+
+### Provider Identity Rule (Platform Invariant)
+
+Every provider must have a **unique, deterministic, logical ID** that is stable
+across server restarts.
+
+**ID format:**
+
+```
+<type>:<identifier>[:<sub-identifier>]
+```
+
+| Provider | ID |
+|---|---|
+| `dialplan/default.xml` | `dialplan:default` |
+| `dialplan/public.xml` | `dialplan:public` |
+| `dialplan/default/cc.xml` | `dialplan:default:cc` |
+| `sip_profiles/external/avaya.xml` | `gateway:external:avaya` |
+
+**Rules:**
+
+1. **Uniqueness** — no two registered providers may share an ID. The registry
+   throws on duplicate registration. Discovery functions must catch the throw,
+   log a warning, and continue — never propagate the exception.
+2. **No filesystem characters** — IDs must never contain `/`, `\`, or `.`
+   (the suffix separator). These characters imply a filesystem path interpretation,
+   which violates the logical-identifier contract. Path separators in relative
+   paths are replaced with `:` before becoming part of the ID.
+3. **Determinism** — an ID must be derivable from the provider's relative filesystem
+   path alone, without runtime state. The same file must always produce the same ID.
+4. **Stability** — an ID must not change between server restarts for the same file.
+   A changed ID for a stable file is a breaking change: it invalidates stored history,
+   audit records, and frontend state. Such a change requires a DIA and explicit approval.
+5. **Namespace prefix** — IDs are prefixed by configuration type (`dialplan:`,
+   `gateway:`, `vars`, `switch-core`, etc.) to prevent cross-type collisions.
 
 ---
 
@@ -263,10 +409,14 @@ The framework already provides. Your first assumption must be that these are suf
 - Frontend pages: `ConfigPage`, `ConfigCenter`, `ConfigHistory`, `ConfigAudit`, `DeployModal`
 - Provider discovery: `discoverGatewayProviders` pattern — reuse for all future dynamic discovery
 
-**See also:** `ARCHITECTURE.md` for the full platform governance rules including
-Configuration Ownership, Configuration Authority, Deployment Responsibility,
-Managed vs Generated XML, FreeSWITCH Platform Knowledge Catalog, XML Document
-Contract, Path Resolution Rule, Discovery Rule, and Provider Constructor Guideline.
+**See also:**
+- `ARCHITECTURE.md` for the full architectural specifications: Configuration Ownership,
+  Configuration Authority, Deployment Responsibility, Managed vs Generated XML,
+  FreeSWITCH Platform Knowledge Catalog + Catalog Rules + Metadata Vocabulary,
+  XML Document Contract, Path Resolution Rule rationale, Discovery Rule, and Provider
+  Constructor Guideline.
+- Platform Technical Invariants section (above) for enforcement rules: Path Resolution Rule,
+  Filesystem Discovery Rule, Discovery Before Configuration Rule, Provider Identity Rule.
 
 ---
 
