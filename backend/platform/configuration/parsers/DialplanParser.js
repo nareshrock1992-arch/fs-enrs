@@ -100,10 +100,15 @@ function stripPrefix(attrs) {
 
 /**
  * Parse a FreeSWITCH dialplan XML file into a DialplanDoc.
+ *
  * @param {string} rawContent
+ * @param {object} [hints]
+ * @param {string} [hints.contextName] — fallback context name used when the
+ *   document is a fragment (no <context> wrapper). Callers should pass the
+ *   context name derived from the provider ID (segment 2 of 'dialplan:ctx:frag').
  * @returns {DialplanDoc}
  */
-export function parse(rawContent) {
+export function parse(rawContent, hints = {}) {
   _seq = 0; // reset ID sequence per parse
 
   let tree;
@@ -113,34 +118,72 @@ export function parse(rawContent) {
     throw new Error(`DialplanParser: XML parse error — ${err.message}`);
   }
 
-  const { contextName, contextAttrs, contextChildren } = findContext(tree);
+  const { contextName, contextAttrs, contextChildren, isFragment } =
+    findContext(tree, hints);
   const nodes = buildNodes(contextChildren);
 
-  return { contextName, contextAttrs, nodes, checksum: sha256(rawContent) };
+  return { contextName, contextAttrs, nodes, checksum: sha256(rawContent), isFragment };
 }
 
 /**
- * Locate the <context> element and return its name, extra attrs, and children.
- * Supports three document layouts:
- *   (a) <?xml?> + <include><context>…</context></include>
- *   (b) <include><context>…</context></include>
- *   (c) bare <context>…</context>
+ * Locate the <context> element and return its name, attrs, children, and
+ * whether the document is a fragment (no <context> wrapper).
+ *
+ * Supports four document layouts:
+ *   (a) <?xml?> + <include><context name="…">…</context></include>   — standalone
+ *   (b) <include><context name="…">…</context></include>              — standalone
+ *   (c) bare <context name="…">…</context>                           — standalone
+ *   (d) <include> with direct <extension> children (no <context>)     — fragment
+ *   (e) bare <extension> elements at root                             — fragment
+ *
+ * Fragment layouts occur for files included via `default/*.xml` directives.
+ * Their context name is derived from hints.contextName (supplied by the provider
+ * from its own ID) rather than from the document itself.
  */
-function findContext(tree) {
+function findContext(tree, hints = {}) {
+  // ── Layouts (a), (b), (c): explicit <context> element ──────────────────────
   for (const node of tree) {
     const tag = tagOf(node);
 
     if (tag === 'include') {
       for (const child of childrenOf(node)) {
         if (tagOf(child) === 'context') {
-          return extractContextNode(child);
+          return { ...extractContextNode(child), isFragment: false };
         }
       }
     }
 
     if (tag === 'context') {
-      return extractContextNode(node);
+      return { ...extractContextNode(node), isFragment: false };
     }
+  }
+
+  // ── Layout (d): <include> whose direct children are <extension> elements ───
+  // Occurs when a fragment author adds an <include> wrapper around bare extensions.
+  for (const node of tree) {
+    if (tagOf(node) === 'include') {
+      const includeChildren = childrenOf(node);
+      if (includeChildren.some(c => tagOf(c) === 'extension')) {
+        return {
+          contextName:     hints.contextName ?? '',
+          contextAttrs:    {},
+          contextChildren: includeChildren,
+          isFragment:      true,
+        };
+      }
+    }
+  }
+
+  // ── Layout (e): bare <extension> elements at document root ─────────────────
+  // Most common fragment form: file contains only <extension> blocks with no
+  // outer wrapper. FreeSWITCH includes these via `dialplan/default/*.xml`.
+  if (tree.some(n => tagOf(n) === 'extension')) {
+    return {
+      contextName:     hints.contextName ?? '',
+      contextAttrs:    {},
+      contextChildren: tree,
+      isFragment:      true,
+    };
   }
 
   throw new Error(
@@ -334,10 +377,19 @@ function rebuildElement(node) {
 /**
  * Serialize a DialplanDoc back to a FreeSWITCH-compatible XML string.
  * Generates clean canonical XML; does not round-trip original whitespace.
+ *
+ * Standalone docs  (doc.isFragment !== true) → full <include><context>…</context></include>
+ * Fragment docs    (doc.isFragment === true)  → bare <extension> elements only,
+ *   matching the format FreeSWITCH expects for files included via `default/*.xml`.
+ *
  * @param {object} doc — DialplanDoc
  * @returns {string}
  */
 export function serialize(doc) {
+  if (doc.isFragment) {
+    return _serializeFragment(doc);
+  }
+
   const lines = [];
   lines.push('<include>');
 
@@ -364,6 +416,33 @@ export function serialize(doc) {
   lines.push('</include>');
 
   return lines.join('\n');
+}
+
+/**
+ * Serialize a fragment DialplanDoc — bare extension/comment/directive nodes
+ * with no <include><context> wrapper.
+ */
+function _serializeFragment(doc) {
+  const lines = [];
+
+  for (const node of doc.nodes) {
+    switch (node.type) {
+      case 'comment':
+        emitComment(lines, node, '');
+        break;
+      case 'directive':
+        lines.push(node.raw);
+        break;
+      case 'extension':
+        emitExtension(lines, node, '');
+        break;
+    }
+    lines.push('');
+  }
+
+  // Trim trailing blank lines, then ensure a single trailing newline.
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n') + '\n';
 }
 
 function emitComment(lines, node, indent) {
@@ -660,13 +739,14 @@ function _insertNode(doc, node, beforeId) {
  * Generate a human-readable diff between two raw content strings.
  * @param {string} oldRaw
  * @param {string} newRaw
+ * @param {object} [hints] — same hints accepted by parse() (e.g. { contextName })
  * @returns {string}
  */
-export function diff(oldRaw, newRaw) {
+export function diff(oldRaw, newRaw, hints = {}) {
   if (oldRaw === newRaw) return '(no dialplan changes)';
 
-  const oldDoc = parse(oldRaw);
-  const newDoc = parse(newRaw);
+  const oldDoc = parse(oldRaw, hints);
+  const newDoc = parse(newRaw, hints);
   const lines  = [];
 
   if (oldDoc.contextName !== newDoc.contextName) {

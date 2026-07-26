@@ -127,15 +127,20 @@ export class DialplanFileProvider extends ConfigurationProvider {
   /**
    * Parse raw XML into a DialplanDoc.
    *
-   * Returns { contextName, contextAttrs, nodes, checksum, entries }
+   * Returns { contextName, contextAttrs, nodes, checksum, isFragment, entries }
    * where entries = nodes is the compatibility adapter for ConfigurationManager.
    * The parser is unaware of entries — the adaptation is performed here only.
+   *
+   * hints.contextName is derived from this provider's ID (segment 2 of
+   * 'dialplan:<context>[:<fragment>]') and used as a fallback when the document
+   * is a fragment file with no <context> wrapper.
    *
    * @param {string} rawContent
    * @returns {DialplanDoc & { entries: Node[] }}
    */
   parse(rawContent) {
-    const doc = dpParse(rawContent);
+    const hints = { contextName: this.id.split(':')[1] ?? '' };
+    const doc = dpParse(rawContent, hints);
     return { ...doc, entries: doc.nodes };
   }
 
@@ -283,7 +288,8 @@ export class DialplanFileProvider extends ConfigurationProvider {
   // ── Diff ──────────────────────────────────────────────────────────────────────
 
   diff(oldRaw, newRaw) {
-    return dpDiff(oldRaw, newRaw);
+    const hints = { contextName: this.id.split(':')[1] ?? '' };
+    return dpDiff(oldRaw, newRaw, hints);
   }
 
   // ── Accessors ─────────────────────────────────────────────────────────────────

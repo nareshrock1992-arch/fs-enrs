@@ -434,6 +434,139 @@ describe('DialplanFileProvider — diff', () => {
   });
 });
 
+// ── Fragment file support ─────────────────────────────────────────────────────
+
+// Fragment files live under dialplan/default/*.xml.  They contain bare
+// <extension> elements with no <include><context> wrapper — FreeSWITCH pulls
+// them in via the include directive inside default.xml.
+
+const FRAGMENT_BARE_XML = `<extension name="support-queue">
+  <condition field="destination_number" expression="^2020$">
+    <action application="answer"/>
+    <action application="callcenter" data="support@default"/>
+  </condition>
+</extension>`;
+
+const FRAGMENT_MULTI_EXTENSION_XML = `<extension name="support-queue">
+  <condition field="destination_number" expression="^2020$">
+    <action application="answer"/>
+    <action application="callcenter" data="support@default"/>
+  </condition>
+</extension>
+<!-- internal routing -->
+<extension name="internal-transfer">
+  <condition field="destination_number" expression="^(1[0-9]{3})$">
+    <action application="transfer" data="$1 XML default"/>
+  </condition>
+</extension>`;
+
+const FRAGMENT_WITH_INCLUDE_WRAPPER_XML = `<include>
+  <extension name="wrapped-frag">
+    <condition field="destination_number" expression="^3000$">
+      <action application="answer"/>
+    </condition>
+  </extension>
+</include>`;
+
+describe('DialplanFileProvider — fragment files (subdirectory *.xml)', () => {
+  let fragmentProvider;
+  beforeEach(() => {
+    // Provider ID 'dialplan:default:cc' → contextName hint = 'default'
+    fragmentProvider = new DialplanFileProvider(makeMockDriver(), 'default/cc.xml');
+  });
+
+  it('parses a bare-extension fragment without throwing', () => {
+    expect(() => fragmentProvider.parse(FRAGMENT_BARE_XML)).not.toThrow();
+  });
+
+  it('parsed fragment has isFragment = true', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    expect(doc.isFragment).toBe(true);
+  });
+
+  it('fragment contextName is derived from the provider ID, not the XML', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    // Provider id = 'dialplan:default:cc' → segment[1] = 'default'
+    expect(doc.contextName).toBe('default');
+  });
+
+  it('fragment nodes contain the extension defined in the file', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    const exts = doc.nodes.filter(n => n.type === 'extension');
+    expect(exts.length).toBe(1);
+    expect(exts[0].name).toBe('support-queue');
+  });
+
+  it('multi-extension fragment: all extensions are present after parse', () => {
+    const doc  = fragmentProvider.parse(FRAGMENT_MULTI_EXTENSION_XML);
+    const exts = doc.nodes.filter(n => n.type === 'extension');
+    expect(exts.length).toBe(2);
+    expect(exts.map(e => e.name)).toEqual(['support-queue', 'internal-transfer']);
+  });
+
+  it('multi-extension fragment: comments between extensions are preserved', () => {
+    const doc      = fragmentProvider.parse(FRAGMENT_MULTI_EXTENSION_XML);
+    const comments = doc.nodes.filter(n => n.type === 'comment');
+    expect(comments.length).toBeGreaterThan(0);
+    expect(comments[0].text).toContain('internal routing');
+  });
+
+  it('parses a fragment with an <include> wrapper (but no <context>) correctly', () => {
+    const doc  = fragmentProvider.parse(FRAGMENT_WITH_INCLUDE_WRAPPER_XML);
+    expect(doc.isFragment).toBe(true);
+    const exts = doc.nodes.filter(n => n.type === 'extension');
+    expect(exts.length).toBe(1);
+    expect(exts[0].name).toBe('wrapped-frag');
+  });
+
+  it('fragment contextName from <include>-wrapped form also uses provider hint', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_WITH_INCLUDE_WRAPPER_XML);
+    expect(doc.contextName).toBe('default');
+  });
+
+  it('serialize(parse(fragment)) does NOT wrap output in <include><context>', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    const xml = fragmentProvider.serialize(doc);
+    expect(xml).not.toContain('<include>');
+    expect(xml).not.toContain('<context');
+  });
+
+  it('serialize(parse(fragment)) produces an <extension> at the root level', () => {
+    const doc = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    const xml = fragmentProvider.serialize(doc);
+    expect(xml.trimStart()).toMatch(/^<extension/);
+  });
+
+  it('serialize round-trip preserves extension name in fragment', () => {
+    const doc1 = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    const doc2 = fragmentProvider.parse(fragmentProvider.serialize(doc1));
+    expect(doc2.nodes.filter(n => n.type === 'extension')[0].name)
+      .toBe('support-queue');
+  });
+
+  it('validate passes for a valid fragment (contextName populated from hint)', () => {
+    const doc    = fragmentProvider.parse(FRAGMENT_BARE_XML);
+    const result = fragmentProvider.validate(doc);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('standalone provider (default.xml) still sets isFragment = false', () => {
+    const standaloneProvider = new DialplanFileProvider(makeMockDriver(), 'default.xml');
+    const doc = standaloneProvider.parse(MINIMAL_XML);
+    expect(doc.isFragment).toBe(false);
+  });
+
+  it('diff works on two fragment strings without throwing', () => {
+    expect(() => fragmentProvider.diff(FRAGMENT_BARE_XML, FRAGMENT_BARE_XML)).not.toThrow();
+  });
+
+  it('diff returns no-change indicator for identical fragment content', () => {
+    const result = fragmentProvider.diff(FRAGMENT_BARE_XML, FRAGMENT_BARE_XML);
+    expect(result).toMatch(/no.*change/i);
+  });
+});
+
 // ── Regression guard ──────────────────────────────────────────────────────────
 
 describe('DialplanFileProvider — regression guard (existing providers unaffected)', () => {
