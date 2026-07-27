@@ -19,14 +19,30 @@ services:
       - enrs
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - enrs
+    restart: unless-stopped
+
   backend:
     build: ./backend
     env_file: ./backend/.env
     environment:
       DB_HOST: db
+      REDIS_HOST: redis
       NODE_ENV: production
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "4100:4100"

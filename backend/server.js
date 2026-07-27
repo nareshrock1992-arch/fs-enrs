@@ -37,6 +37,8 @@ import { startEngine, stopEngine, onCallAnswer, onCallHangup } from './src/servi
 import v1Routes        from './src/routes/v1/index.js';
 import internalRoutes  from './src/routes/internal/index.js';
 import { internalAuth, internalRateLimit } from './src/middleware/internalAuth.js';
+import healthRouter    from './src/infrastructure/health/router.js';
+import { validateEnvironment } from './src/infrastructure/config/validator.js';
 import { errorHandler } from './src/middleware/asyncHandler.js';
 import { checkNodeTypeApiEndpoints } from './src/nodeTypes/selfCheck.js';
 
@@ -72,10 +74,17 @@ app.use('/api', rateLimit({
 // ── Static uploads ────────────────────────────────────────────
 app.use('/uploads', express.static('./uploads'));
 
-// ── Health check (no auth) ────────────────────────────────────
+// ── Health / metrics (no auth) ────────────────────────────────────────────
+// Legacy probe — retained for backwards compatibility.
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'fs-enrs', time: new Date().toISOString() });
 });
+// New structured probes — Sprint 0 infrastructure foundation.
+// GET /health/live  — liveness (process alive)
+// GET /health/ready — readiness (DB + Redis up)
+// GET /health/full  — detailed check with all dependency statuses
+// GET /metrics      — Prometheus text format
+app.use(healthRouter);
 
 // ── Internal API (Lua contract) — X-Internal-Key auth only ───
 // IMPORTANT: This must never be exposed to the public internet.
@@ -293,6 +302,8 @@ async function printStartupBanner() {
 }
 
 async function start() {
+  // Sprint 0: structured environment validation (replaces checkCredentials long-term)
+  validateEnvironment();
   checkCredentials();
 
   // Verify DB before starting
@@ -367,9 +378,14 @@ async function start() {
   // Start outbound campaign engine
   startEngine();
 
-  const gracefulShutdown = (signal) => {
+  const gracefulShutdown = async (signal) => {
     console.log(`[boot] ${signal} received — shutting down gracefully`);
     stopEngine();
+    // Disconnect Redis client (Sprint 0 infrastructure)
+    try {
+      const { disconnect: redisDisconnect } = await import('./src/infrastructure/redis/client.js');
+      await redisDisconnect();
+    } catch { /* Redis may not have connected yet — safe to ignore */ }
     server.close(() => {
       console.log('[boot] HTTP server closed');
       process.exit(0);
