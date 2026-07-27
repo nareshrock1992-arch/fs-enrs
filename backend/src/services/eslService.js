@@ -1646,11 +1646,11 @@ function scheduleReconnect() {
 
 // ─── Execute an ESL command, return result ───────────────────
 //
-// Uses a 10-second timeout so a stale/dropped connection doesn't hang
-// indefinitely. Callers that need a different timeout use eslCommandTimeout
-// directly.
-export function eslCommand(cmd) {
-  return eslCommandTimeout(cmd, 10_000);
+// Default 10-second timeout prevents hung connections from blocking requests.
+// Pass an explicit timeoutMs for commands that are known to take longer
+// (e.g. reloadxml on a large config tree, conference list on busy systems).
+export function eslCommand(cmd, timeoutMs = 10_000) {
+  return eslCommandTimeout(cmd, timeoutMs);
 }
 
 // ─── Originate a call leg ────────────────────────────────────

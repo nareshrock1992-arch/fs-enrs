@@ -117,7 +117,9 @@ export class FreeSwitchDriver extends PlatformDriver {
   // ── Reload operations ─────────────────────────────────────────────────────────
 
   async reloadXml() {
-    const output = await this.#eslService.eslCommand('reloadxml');
+    // reloadxml on a large config tree can take 10–20 s. The default eslCommand
+    // timeout (10 s) is too low; use 20 s to avoid false timeout failures.
+    const output = await this.#eslService.eslCommand('reloadxml', 20_000);
     const success = typeof output === 'string'
       && (output.includes('+OK') || output.includes('Reloading XML'));
     return { success, output: String(output) };

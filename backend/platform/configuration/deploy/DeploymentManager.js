@@ -198,7 +198,8 @@ export class DeploymentManager {
       // the file on disk already matches xml_content.
       const checksumBefore = sha256(rawContent);
       const checksumAfter  = sha256(proposedRaw);
-      const changedKeys    = changes.map(c => c.key).filter(Boolean);
+      // Flat providers supply c.key; hierarchical ops have no .key but always have c.op.
+      const changedKeys    = changes.map(c => c.key ?? c.op).filter(Boolean);
       const deployMeta     = {
         durationMs:    null, // filled in at end
         strategy:      strategy.id,

@@ -566,12 +566,25 @@ function _applyOne(doc, ch) {
   switch (ch.op) {
 
     // ── Context ────────────────────────────────────────────────────────────────
+    // Reads top-level fields from the op (Gen2 protocol).
+    // Supported fields: contextName, contextAttrs.
     case 'update_context':
-      return { ...doc, ...(ch.patch ?? {}) };
+      return { ...doc, ..._pickDefined(ch, ['contextName', 'contextAttrs']) };
 
     // ── Extensions ────────────────────────────────────────────────────────────
+    // Gen2 protocol: name, _tempId, continue, enabled, attrs are top-level fields.
+    // _tempId is the client-assigned temporary ID (becomes the node's ephemeral id
+    // for the lifetime of this loaded session so the frontend can select it).
     case 'add_extension': {
-      const ext = { type: 'extension', id: nextId(), ...ch.extension };
+      const ext = {
+        type:       'extension',
+        id:         ch._tempId ?? nextId(),
+        name:       ch.name       ?? 'new_extension',
+        continue:   ch.continue   ?? null,
+        attrs:      ch.attrs      ?? {},
+        enabled:    ch.enabled    !== false,
+        conditions: ch.conditions ?? [],
+      };
       if (!ch.beforeId) return { ...doc, nodes: [...doc.nodes, ext] };
       const idx = doc.nodes.findIndex(n => n.id === ch.beforeId);
       if (idx < 0) return { ...doc, nodes: [...doc.nodes, ext] };
@@ -580,11 +593,14 @@ function _applyOne(doc, ch) {
       return { ...doc, nodes };
     }
 
+    // Gen2 protocol: name, continue, enabled, attrs are top-level fields.
     case 'update_extension':
       return {
         ...doc,
         nodes: doc.nodes.map(n =>
-          n.type === 'extension' && n.id === ch.id ? { ...n, ...(ch.patch ?? {}) } : n
+          n.type === 'extension' && n.id === ch.id
+            ? { ...n, ..._pickDefined(ch, ['name', 'continue', 'enabled', 'attrs']) }
+            : n
         ),
       };
 
@@ -604,19 +620,35 @@ function _applyOne(doc, ch) {
     }
 
     // ── Conditions ────────────────────────────────────────────────────────────
-    case 'add_condition':
+    // Gen2 protocol: all condition fields are top-level on the op.
+    // _tempId is the client-assigned ephemeral ID for the new condition.
+    case 'add_condition': {
       return {
         ...doc,
         nodes: doc.nodes.map(n => {
           if (n.type !== 'extension' || n.id !== ch.extensionId) return n;
-          const cond       = { id: nextId(), ...ch.condition };
+          const cond = {
+            id:                ch._tempId         ?? nextId(),
+            field:             ch.field            ?? null,
+            expression:        ch.expression       ?? null,
+            expressionCdata:   ch.expressionCdata  ?? false,
+            expressionIsChild: ch.expressionIsChild ?? false,
+            break:             ch.break            ?? null,
+            attrs:             ch.attrs            ?? {},
+            enabled:           ch.enabled          !== false,
+            actions:           ch.actions          ?? [],
+            antiActions:       ch.antiActions      ?? [],
+          };
           const conditions = [...n.conditions];
           if (ch.atIndex !== undefined) conditions.splice(ch.atIndex, 0, cond);
           else                          conditions.push(cond);
           return { ...n, conditions };
         }),
       };
+    }
 
+    // Gen2 protocol: field, expression, expressionCdata, expressionIsChild,
+    // break, enabled, attrs are top-level fields on the op.
     case 'update_condition':
       return {
         ...doc,
@@ -625,7 +657,9 @@ function _applyOne(doc, ch) {
           return {
             ...n,
             conditions: n.conditions.map(c =>
-              c.id === ch.id ? { ...c, ...(ch.patch ?? {}) } : c
+              c.id === ch.id
+                ? { ...c, ..._pickDefined(ch, ['field', 'expression', 'expressionCdata', 'expressionIsChild', 'break', 'enabled', 'attrs']) }
+                : c
             ),
           };
         }),
@@ -764,7 +798,11 @@ function _pickDefined(src, keys) {
   return out;
 }
 
-/** Shared helper: mutate the actions or antiActions array of a specific condition. */
+/**
+ * Navigate to condition actions/antiActions and apply a transform.
+ * Used only by move_action (which needs ch.kind to determine the array).
+ * add/update/delete actions use _walkCondition with an explicit key instead.
+ */
 function _withAction(doc, ch, transform) {
   const key = ch.kind === 'anti-action' ? 'antiActions' : 'actions';
   return {
@@ -775,13 +813,7 @@ function _withAction(doc, ch, transform) {
         ...n,
         conditions: n.conditions.map(c => {
           if (c.id !== ch.conditionId) return c;
-          const newAction = ch.op === 'add_action'
-            ? { id: nextId(), enabled: true, ...ch.action }
-            : null;
-          return {
-            ...c,
-            [key]: transform(c[key] ?? [], newAction),
-          };
+          return { ...c, [key]: transform(c[key] ?? []) };
         }),
       };
     }),

@@ -295,8 +295,8 @@ describe('DialplanFileProvider — applyChanges', () => {
     const doc    = provider.parse(MINIMAL_XML);
     const before = doc.nodes.length;
     provider.applyChanges(doc, [{
-      op:        'add_extension',
-      extension: { name: 'new_ext', conditions: [] },
+      op:   'add_extension',
+      name: 'new_ext',
     }]);
     expect(doc.nodes.length).toBe(before);
   });
@@ -316,8 +316,8 @@ describe('DialplanFileProvider — applyChanges', () => {
   it('update_context changes the contextName', () => {
     const doc    = provider.parse(MINIMAL_XML);
     const newDoc = provider.applyChanges(doc, [{
-      op:   'update_context',
-      name: 'sales',
+      op:          'update_context',
+      contextName: 'sales',
     }]);
     expect(newDoc.contextName).toBe('sales');
   });
@@ -424,8 +424,8 @@ describe('DialplanFileProvider — diff', () => {
   it('returns a non-empty diff when an extension is added', () => {
     const doc    = provider.parse(MINIMAL_XML);
     const newDoc = provider.applyChanges(doc, [{
-      op:        'add_extension',
-      extension: { name: 'new_extension', conditions: [] },
+      op:   'add_extension',
+      name: 'new_extension',
     }]);
     const newXml = provider.serialize(newDoc);
     const result = provider.diff(MINIMAL_XML, newXml);
