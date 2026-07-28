@@ -11,9 +11,13 @@ human approval.
 
 ## Platform Identity
 
-This is **not** a generic FreeSWITCH web GUI. It is an enterprise administration platform
-for FreeSWITCH, philosophically equivalent to Avaya Aura System Manager, Avaya Communication
-Manager, and Cisco Unified CM Administration.
+This platform is an **Enterprise AI-Native Communications Platform**.
+
+The current implementation — FreeSWITCH administration, ENS, ERS, IVR Builder — is the foundation. In scope and rigor it is equivalent to Avaya Aura System Manager, Avaya Communication Manager, and Cisco Unified CM Administration. The long-term identity is a full-stack enterprise communications platform that integrates communication services, platform services, and AI capabilities as native platform services, not as bolt-ons.
+
+This is **not** a generic FreeSWITCH web GUI. Every architectural decision must be evaluated against the platform's long-term identity, not only its current module set.
+
+See **Platform Vision** in `GOVERNANCE.md`, **AI-First Platform Design** principles in `GOVERNANCE.md`, and the **Platform Framework Registry** below.
 
 ---
 
@@ -160,15 +164,83 @@ Dialplan operations: `update_context`, `add/update/delete/move_extension`,
 
 ---
 
+## Platform Framework Registry
+
+The platform is organized around named frameworks. Each framework has a status: implemented, in progress, planned, or reserved. Modules integrate through these frameworks rather than building parallel alternatives.
+
+Registering a framework here reserves the architectural space. A registry entry alone requires no DIA. **Only the implementation of a framework requires a DIA and approval.**
+
+| Framework | Status | Purpose |
+|---|---|---|
+| Platform Configuration Framework | ✓ Implemented | XML-based FreeSWITCH configuration: providers, catalog, registry, driver, deployment pipeline |
+| Platform Deployment Framework | ✓ Implemented | 13-step atomic deployment pipeline, backup, version history, audit trail |
+| Platform Provider Framework | ✓ Implemented | `ConfigurationProvider` base, `ProviderRegistry`, flat/hierarchical taxonomy |
+| Platform Observability Framework | ⚡ In Progress | Structured logging, metrics (`metrics.js`), distributed tracing (deferred) |
+| Platform Event Framework | ⚡ Partial | In-process event bus (`eventBus`); persistent event stream and external broker deferred |
+| Platform Security Framework | Planned | Authentication, authorization, RBAC, tenant isolation, API key management |
+| Platform Identity & Access Framework | Planned | IAM, SSO, directory integration, session lifecycle |
+| Platform Workflow Framework | Planned | Workflow engine, rules engine, business process automation |
+| Platform Integration Framework | Planned | API gateway, external system connectors, webhook management |
+| Platform Notification Framework | Planned | Multi-channel notifications: email, SMS, push, in-app |
+| Platform Analytics Framework | Planned | Reporting engine, dashboards, real-time analytics, data export |
+| Platform Knowledge Framework | Planned | RAG, vector database, knowledge base, catalog expansion |
+| Platform Automation Framework | Planned | AI automation engine, self-healing, predictive operations, capacity optimization |
+### Framework Rules
+
+1. **A module must never implement its own version of a registered framework capability.** Use the framework. If the framework cannot support a requirement, produce a DIA to extend it.
+2. **A new framework may only be added to this registry after its DIA is approved.** The entry and status can be updated freely; implementation requires approval.
+3. **The Platform AI Layer is reserved in full.** No sub-framework listed in the Platform AI Layer Architecture section may be implemented without its own approved DIA. When AI capabilities are required by a module, document the need as a Platform AI Layer requirement — not a module-level workaround.
+4. **Frameworks exposed to the rest of the platform export through `src/infrastructure/index.js`.** Internal implementation files are not public API.
+
+---
+
+## Platform AI Layer Architecture
+
+The Platform AI Layer is **not another row in the framework registry**. It is a **cross-cutting platform capability** — a horizontal layer that every other framework and module can leverage. No module builds its own AI logic. All AI capability comes from this layer.
+
+All sub-frameworks below are **Reserved**. None are implemented. A sub-framework may only be implemented after its own approved DIA.
+
+```
+Communications Modules       Platform Modules        AI-Powered Features
+  ENS  ERS  IVR  CC  ...     Config  Deploy  ...     AIOps  Assistants  ...
+    │    │    │    │              │       │                │        │
+    └────┴────┴────┴──────────────┴───────┴────────────────┴────────┘
+                                  │
+                    ┌─────────────▼─────────────────┐
+                    │      Platform AI Layer          │
+                    │  (cross-cutting capability)     │
+                    │                                 │
+                    │  AI Runtime · Model Management  │
+                    │  Agent Framework · MCP Layer    │
+                    │  Memory · Security · AIOps      │
+                    └─────────────────────────────────┘
+```
+
+| Sub-Framework | Status | Responsibility |
+|---|---|---|
+| **AI Runtime** | Reserved | Multi-provider abstraction: routes AI requests to OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, Google Vertex, Ollama, vLLM, or any future provider. Switching providers is a configuration change, not a code change |
+| **AI Model Management** | Reserved | Model registry: registers, versions, and routes models. Supports simultaneous use of different models for different operation types. Records model/provider/version on every interaction |
+| **AI Agent Framework** | Reserved | Orchestrates autonomous AI agents with defined scope, permissions, tool access, lifecycle management, and audit footprint |
+| **AI Context Framework** | Reserved | Supplies structured context to AI interactions: tenant context, operation context, call session, user session, conversation history |
+| **AI MCP Layer** | Reserved | MCP Server (exposes platform to AI agents), MCP Client (calls external MCP servers), Tool Registry, Tool Execution Framework (with auth + audit + rate limiting), Resource Registry, Prompt Registry, Context Providers |
+| **AI Memory Framework** | Reserved | Session Memory, User Memory, Organization Memory, Platform Knowledge, Configuration Knowledge, Operational History, Incident History, Documentation Knowledge, Vector Knowledge Base |
+| **AI Security & Governance** | Reserved | Prompt versioning, model versioning, tool permissions, AI audit logs, AI action approval, per-tenant AI policy enforcement, human approval workflows, AI explainability, AI safety controls |
+| **AI Observability Extension** | Reserved | AI-specific telemetry extending the Platform Observability Framework: model latency, token usage, cost, tool execution history, AI decision traces, model accuracy, failure analysis |
+| **AI Plugin Framework** | Reserved | Extension points for AI Skills, Agents, Workflows, Models, Tools, Prompts, Connectors, Knowledge Providers — registered dynamically without core code changes |
+| **AI AIOps** | Reserved | Incident detection, failure prediction, root cause analysis, capacity planning, performance optimization, configuration validation, security anomaly detection, self-healing recommendations |
+
+---
+
 ## Out of Scope (Never Implement)
 
 - Visual dialplan designer / drag-and-drop flow builder
-- AI dialplan generator
+- AI-generated dialplan within Config Center (AI capabilities are a Platform AI Framework concern, not a Config Center feature)
 - Call flow diagrams
 - Multi-node FreeSWITCH clustering
 - Full dependency graph (prepare architecture for it; do not implement)
 - Workflow approvals
 - Configuration database (separate from the operational DB)
+- Module-specific AI integration layers before the Platform AI Framework DIA is approved (see Platform Framework Registry)
 
 ---
 

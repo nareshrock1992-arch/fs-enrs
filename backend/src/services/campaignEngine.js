@@ -213,7 +213,22 @@ async function processCampaign(campaign) {
   const clid         = campaign.sip_caller_id || campaign.trigger_number || '999';
   const mediaPath    = campaign.recording_file || '';
 
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][processCampaign] campaign=${campaign.id} slots=${destinations.length} gatewayName=${JSON.stringify(gatewayName)} clid=${JSON.stringify(clid)} mediaPath=${JSON.stringify(mediaPath)}`);
   for (const dest of destinations) {
+    // DEBUG-PROBE: Layer 2 — RETURNING clause omits contact_id; fetch full row via JOIN
+    console.log(`[ENS-DEBUG][destClaimed] campaign=${campaign.id} dest.id=${dest.id} dest.phone_number=${JSON.stringify(dest.phone_number)} dest.contact_id=${JSON.stringify(dest.contact_id)} dest.contact_name=${JSON.stringify(dest.contact_name)}`);
+    {
+      const { rows: [fullRow] } = await query(
+        `SELECT d.id, d.contact_id, d.phone_number, d.status,
+                ec.extension_number, ec.mobile_number AS ec_mobile, ec.gateway_id
+         FROM ens_campaign_destinations d
+         LEFT JOIN emergency_contacts ec ON ec.id = d.contact_id AND ec.deleted_at IS NULL
+         WHERE d.id = $1`,
+        [dest.id]
+      );
+      console.log(`[ENS-DEBUG][destClaimed:fullRow] dest.id=${dest.id} contact_id=${fullRow?.contact_id ?? 'NULL'} phone_number=${JSON.stringify(fullRow?.phone_number)} ec.extension_number=${JSON.stringify(fullRow?.extension_number)} ec.mobile_number=${JSON.stringify(fullRow?.ec_mobile)} ec.gateway_id=${JSON.stringify(fullRow?.gateway_id)}`);
+    }
     const callUuid = randomUUID();
     state.cpsHistory.push(Date.now());
     await originateDestination(campaign, dest, callUuid, gatewayName, clid, mediaPath);
@@ -233,6 +248,10 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
     [dest.id, callUuid]
   );
 
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][originateDestination] ENTER campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid}`);
+  console.log(`[ENS-DEBUG][originateDestination]   number=${JSON.stringify(dest.phone_number)} contactId=${JSON.stringify(dest.contact_id ?? undefined)} gatewayName=${JSON.stringify(gatewayName)} clid=${JSON.stringify(clid)} playbackFile=${JSON.stringify(playbackFile || null)}`);
+
   try {
     await originateCampaignCall({
       callUuid,
@@ -245,8 +264,12 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
       playbackFile: playbackFile || null,
       timeout:     ORIGINATE_TIMEOUT,
     });
+    // DEBUG-PROBE
+    console.log(`[ENS-DEBUG][originateDestination] originateCampaignCall returned (no throw) campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid}`);
   } catch (e) {
     // ESL not connected or originate error — mark failed immediately
+    // DEBUG-PROBE
+    console.error(`[ENS-DEBUG][originateDestination] CAUGHT ERROR campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid} error="${e.message}"`);
     await handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message);
   }
 }
@@ -255,6 +278,8 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
 
 // Called from eslService via eslEvents EventEmitter
 export async function onCallAnswer(callUuid) {
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][onCallAnswer] CHANNEL_ANSWER received callUuid=${callUuid}`);
   const { rows: [dest] } = await query(
     `UPDATE ens_campaign_destinations
      SET status = 'answered', answered_at = now(), updated_at = now()
@@ -262,6 +287,8 @@ export async function onCallAnswer(callUuid) {
      RETURNING id, campaign_id`,
     [callUuid]
   );
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][onCallAnswer] dest lookup: ${dest ? `id=${dest.id} campaign=${dest.campaign_id}` : 'NO ROW FOUND (uuid not in dialing state?)'}`);
   if (!dest) return;
 
   await query(
@@ -280,11 +307,15 @@ export async function onCallAnswer(callUuid) {
 }
 
 export async function onCallHangup(callUuid, cause) {
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][onCallHangup] CHANNEL_HANGUP received callUuid=${callUuid} cause=${cause}`);
   const { rows: [dest] } = await query(
     `SELECT id, campaign_id, answered_at, attempt_count, max_attempts, status
      FROM ens_campaign_destinations WHERE call_uuid = $1`,
     [callUuid]
   );
+  // DEBUG-PROBE
+  console.log(`[ENS-DEBUG][onCallHangup] dest lookup: ${dest ? `id=${dest.id} campaign=${dest.campaign_id} status=${dest.status} answered_at=${dest.answered_at} attempt_count=${dest.attempt_count}/${dest.max_attempts}` : 'NO ROW FOUND (not a campaign call)'}`);
   if (!dest) return; // not a campaign call
 
   const state       = getOrCreateState(dest.campaign_id);
@@ -351,6 +382,8 @@ export async function onCallHangup(callUuid, cause) {
 }
 
 async function handleDestFailed(destId, campaignId, cause, errorMsg) {
+  // DEBUG-PROBE
+  console.error(`[ENS-DEBUG][handleDestFailed] dest=${destId} campaign=${campaignId} cause=${cause} error=${JSON.stringify(errorMsg)}`);
   await query(
     `UPDATE ens_campaign_destinations
      SET status = 'failed', hangup_cause = $3, error_message = $4,
@@ -501,8 +534,13 @@ export async function createCampaignByConfigId({
       ]
     );
 
+    // DEBUG-PROBE: Layer 1 — confirm what was stored in ens_campaigns
+    console.log(`[ENS-DEBUG][campaignCreated] id=${campaign.id} status=${campaign.status} recording_file=${JSON.stringify(campaign.recording_file)} sip_gateway=${JSON.stringify(campaign.sip_gateway)} sip_caller_id=${JSON.stringify(campaign.sip_caller_id)} total_destinations=${campaign.total_destinations} max_concurrent=${campaign.max_concurrent}`);
+
     // Bulk insert destinations
     for (const c of contacts) {
+      // DEBUG-PROBE
+      console.log(`[ENS-DEBUG][destInsert] campaign=${campaign.id} contact_id=${c.id ?? 'NULL'} phone_number=${JSON.stringify(c.mobile_number)} extension_number=${JSON.stringify(c.extension_number)} gateway_id=${JSON.stringify(c.gateway_id)} name=${JSON.stringify(c.name)}`);
       await tq(
         `INSERT INTO ens_campaign_destinations
            (campaign_id, contact_id, phone_number, contact_name, max_attempts)
@@ -595,6 +633,8 @@ async function resolveContacts(configId) {
     `SELECT DISTINCT
        ec.id,
        ec.mobile_number,
+       ec.extension_number,
+       ec.gateway_id,
        TRIM(COALESCE(ec.first_name,'') || ' ' || COALESCE(ec.last_name,'')) AS name
      FROM emergency_contacts ec
      WHERE ec.deleted_at IS NULL AND ec.is_active = true
@@ -614,6 +654,11 @@ async function resolveContacts(configId) {
      ORDER BY ec.id`,
     [configId]
   );
+  // DEBUG-PROBE: Layer 1 — full contact data from emergency_contacts
+  console.log(`[ENS-DEBUG][resolveContacts] configId=${configId} rowCount=${rows.length}`);
+  for (const r of rows) {
+    console.log(`[ENS-DEBUG][resolveContacts]   contact id=${r.id} mobile_number=${JSON.stringify(r.mobile_number)} extension_number=${JSON.stringify(r.extension_number)} gateway_id=${JSON.stringify(r.gateway_id)} name=${JSON.stringify(r.name)}`);
+  }
   return rows;
 }
 

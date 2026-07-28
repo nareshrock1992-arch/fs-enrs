@@ -400,13 +400,12 @@ end`,
     icon: '⏺',
     bg: '#2a1e2a', border: '#6a2a6a', color: '#e9d5ff',
     category: 'Recording',
-    description: 'Record caller audio',
+    description: 'Play a prompt audio file. Recording is not yet active — the node advances to the next node after playback.',
     ports: 'next',
     summaryTemplate: '→ ${variable_name} · max ${max_seconds}s',
     configSchema: [
-      { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session var that stores the recorded file path' },
-      { key: 'prompt_text', label: 'Prompt text (TTS)', fieldType: 'textarea', hint: 'Played before recording starts', placeholder: 'Please record your message after the tone. Press # when done.' },
-      { key: 'prompt_audio_url', label: 'Prompt audio URL (overrides TTS)', fieldType: 'audio_url', placeholder: '/media/record_prompt.wav' },
+      { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session var that will store the recorded file path (used when recording is enabled)' },
+      { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Audio file played before recording starts' },
       { key: 'max_seconds', label: 'Max seconds', fieldType: 'number', min: 1, max: 300 },
       { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Audio level below which is considered silence' },
       { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'How many silence chunks before stopping' },
@@ -415,27 +414,25 @@ end`,
     ],
     luaHandler: `
 local function exec_record_message(s, node)
-  local rec_dir = node.record_dir
-  if not rec_dir or rec_dir == "" then
-    rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
-    rec_dir = rec_dir .. "/ivr"
-  end
-  local fpath = rec_dir .. "/ivr_" .. s:getVariable("uuid") .. "_" .. os.time() .. ".wav"
-
+  -- Phase: prompt audio playback only.
+  -- TTS is not implemented. Recording is not yet active.
+  -- This node plays the configured audio file and advances to the next node.
   local pf = resolve_audio(node.prompt_audio_url)
-  if pf then
+  if pf and pf ~= "" then
     s:streamFile(pf)
-  else
-    local pt = interp(s, node.prompt_text) or ""
-    if pt ~= "" then speak(s, pt) end
   end
 
-  s:execute("playback", "tone_stream://%(500,0,640)")  -- recording beep
-  s:recordFile(fpath,
-    node.max_seconds       or 60,
-    node.silence_threshold or 500,
-    node.silence_hits      or 3)
-  s:setVariable(node.variable_name or "recorded_file_path", fpath)
+  -- TODO(recording-phase): when recording is enabled, add the following steps here:
+  --   local rec_dir = node.record_dir
+  --   if not rec_dir or rec_dir == "" then
+  --     rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
+  --     rec_dir = rec_dir .. "/ivr"
+  --   end
+  --   local fpath = rec_dir .. "/ivr_" .. s:getVariable("uuid") .. "_" .. os.time() .. ".wav"
+  --   s:execute("playback", "tone_stream://%(500,0,640)")
+  --   s:recordFile(fpath, node.max_seconds or 60, node.silence_threshold or 500, node.silence_hits or 3)
+  --   s:setVariable(node.variable_name or "recorded_file_path", fpath)
+
   return node.next
 end`,
     apiEndpoint: null,
