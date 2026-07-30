@@ -8,7 +8,7 @@
  *   import { logger, metrics, eventBus } from '../infrastructure/index.js';
  */
 
-export { logger }    from './logger.js';
+export { logger, createModuleLogger } from './logger.js';
 export { metrics, metricsText } from './metrics.js';
 export { getClient as getRedis, healthCheck as redisHealthCheck, disconnect as redisDisconnect } from './redis/client.js';
 export { eventBus, InProcessEventBus } from './eventBus/InProcessEventBus.js';
