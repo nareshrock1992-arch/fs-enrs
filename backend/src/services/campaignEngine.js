@@ -36,38 +36,35 @@ const BUSY_CAUSES = new Set(['BUSY', 'USER_BUSY', 'NORMAL_CIRCUIT_CONGESTION', '
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
 
-// Apply a gateway's mobile number formatting rules.
-// Gateway decides HOW to format; ENS only decided WHAT to dial.
-function applyMobileFormatting(raw, gw) {
-  if (!gw.mobile_normalize_enabled) return raw;
+// Apply ENS mobile dialing rules (prefix, strip leading zero, suffix).
+// Formatting is owned by the ENS configuration, not the gateway.
+// Only applied in gateway mode — internal routing uses the raw extension.
+function applyMobileFormatting(raw, cfg) {
+  if (!cfg.mobile_normalize_enabled) return raw;
   let n = String(raw || '').trim();
   if (!n) return n;
-  if (gw.mobile_strip_leading_zero && n.startsWith('0')) n = n.slice(1);
-  if (gw.mobile_prefix) n = gw.mobile_prefix + n;
-  if (gw.mobile_suffix) n = n + gw.mobile_suffix;
+  if (cfg.mobile_strip_leading_zero && n.startsWith('0')) n = n.slice(1);
+  if (cfg.mobile_prefix) n = cfg.mobile_prefix + n;
+  if (cfg.mobile_suffix) n = n + cfg.mobile_suffix;
   return n;
 }
 
-// Apply a gateway's extension formatting rules (prefix / suffix).
-function applyExtensionFormatting(raw, gw) {
-  if (!gw.ext_normalize_enabled) return raw;
+// Apply ENS extension dialing rules (prefix / suffix).
+// Only applied in gateway mode — internal routing uses user/<ext> directly.
+function applyExtensionFormatting(raw, cfg) {
+  if (!cfg.ext_normalize_enabled) return raw;
   let n = String(raw || '').trim();
   if (!n) return n;
-  if (gw.ext_prefix) n = gw.ext_prefix + n;
-  if (gw.ext_suffix) n = n + gw.ext_suffix;
+  if (cfg.ext_prefix) n = cfg.ext_prefix + n;
+  if (cfg.ext_suffix) n = n + cfg.ext_suffix;
   return n;
 }
 
-// Load all active gateways for a tenant into two maps for O(1) lookup.
-// Called once per campaign creation — never per-contact.
+// Load active gateways for a tenant — name lookup only.
+// Formatting is now owned by ENS configuration, not the gateway.
 async function loadGatewayMap(tenantId) {
   const { rows } = await query(
-    `SELECT id, name,
-            allow_mobile, allow_extension,
-            mobile_normalize_enabled, mobile_strip_leading_zero,
-            mobile_prefix, mobile_suffix,
-            ext_normalize_enabled, ext_prefix, ext_suffix
-     FROM sip_gateways
+    `SELECT id, name FROM sip_gateways
      WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL`,
     [tenantId]
   );
@@ -77,46 +74,43 @@ async function loadGatewayMap(tenantId) {
   };
 }
 
-// Resolve one contact into a bare dial target.
-// Returns { skip: false, phone_number, gateway_name } or { skip: true, reason }.
+// Resolve one contact into a dial target.
+// Returns { skip: false, phone_number, gateway_name, target_type,
+//           original_number, routing_mode_used }
+//      or { skip: true, reason }.
 //
-// Gateway priority chain:
+// Gateway priority chain (name-based — FreeSWITCH uses sofia/gateway/<name>):
 //   contact.gateway_id → cfg.sip_gateway → platform default → internal
 //
-// ENS policy fields read from cfg:
-//   routing_mode    — 'auto' | 'internal_only' | 'gateway_only'
-//   dial_preference — 'extension_only' | 'mobile_only' | 'extension_mobile' | 'mobile_extension'
-//
-// Gateway capability fields (allow_mobile, allow_extension) control which
-// contact fields are valid for that gateway. Formatting is gateway-owned.
+// ENS config owns ALL dialing policy:
+//   routing_mode    — auto | internal_only | gateway_only
+//   dial_preference — extension_only | mobile_only | extension_mobile | mobile_extension
+//   allow_mobile    — whether mobile numbers are permitted
+//   allow_extension — whether extension numbers are permitted
+//   mobile_*/ext_*  — formatting rules applied in gateway mode
 function resolveContact(contact, cfg, gateways) {
   const routingMode    = cfg.routing_mode    || 'auto';
   const dialPreference = cfg.dial_preference || 'extension_mobile';
 
-  // Step 1: Resolve effective gateway via priority chain
-  let gw     = null;
+  // Step 1: Gateway priority chain
   let gwName = null;
 
   if (contact.gateway_id) {
-    gw = gateways.byId.get(contact.gateway_id) || null;
+    const gw = gateways.byId.get(contact.gateway_id);
     gwName = gw?.name || null;
   }
-  if (!gw && cfg.sip_gateway) {
-    gw = gateways.byName.get(cfg.sip_gateway) || null;
-    // Use the name from the DB record if found; otherwise the raw config string
+  if (!gwName && cfg.sip_gateway) {
+    const gw = gateways.byName.get(cfg.sip_gateway);
     gwName = gw?.name || cfg.sip_gateway;
   }
-  if (!gw && !gwName) {
+  if (!gwName) {
     const platformGw = config.freeswitch?.defaultGateway || null;
-    if (platformGw) {
-      gw = gateways.byName.get(platformGw) || null;
-      gwName = gw?.name || null; // only use if registered
-    }
+    if (platformGw && gateways.byName.has(platformGw)) gwName = platformGw;
   }
 
-  // Step 2: Determine dialing mode
+  // Step 2: Determine routing mode
   let isGatewayMode;
-  if      (routingMode === 'internal_only') { isGatewayMode = false; gwName = null; gw = null; }
+  if      (routingMode === 'internal_only') { isGatewayMode = false; gwName = null; }
   else if (routingMode === 'gateway_only')  {
     isGatewayMode = true;
     if (!gwName) return { skip: true, reason: 'gateway_only_mode_but_no_gateway_configured' };
@@ -127,72 +121,67 @@ function resolveContact(contact, cfg, gateways) {
   const ext = contact.extension_number || null;
   const mob = contact.mobile_number    || null;
 
-  // Gateway capabilities (internal routing allows both)
-  const gwAllowMobile    = isGatewayMode ? (gw?.allow_mobile    ?? true)  : true;
-  const gwAllowExtension = isGatewayMode ? (gw?.allow_extension ?? false) : true;
+  // Step 3: ENS config capability flags
+  const allowMobile    = cfg.allow_mobile    ?? true;
+  const allowExtension = cfg.allow_extension ?? false;
 
-  // Step 3: Select number based on dial preference + gateway capabilities
+  // Step 4: Number selection per dial_preference + ENS capability flags
   let raw        = null;
   let targetType = null;
   let skipReason = null;
 
   switch (dialPreference) {
     case 'extension_only':
-      if      (ext && gwAllowExtension) { raw = ext; targetType = 'extension'; }
-      else if (!ext)                     skipReason = 'no_extension_number';
-      else                               skipReason = 'extension_not_allowed_by_gateway';
+      if      (ext && allowExtension) { raw = ext; targetType = 'extension'; }
+      else if (!ext)                   skipReason = 'no_extension_number';
+      else                             skipReason = 'extension_not_allowed';
       break;
 
     case 'mobile_only':
-      if      (mob && gwAllowMobile) { raw = mob; targetType = 'mobile'; }
-      else if (!mob)                  skipReason = 'no_mobile_number';
-      else                            skipReason = 'mobile_not_allowed_by_gateway';
+      if      (mob && allowMobile) { raw = mob; targetType = 'mobile'; }
+      else if (!mob)                skipReason = 'no_mobile_number';
+      else                          skipReason = 'mobile_not_allowed';
       break;
 
     case 'extension_mobile':
-      if      (ext && gwAllowExtension) { raw = ext; targetType = 'extension'; }
-      else if (mob && gwAllowMobile)    { raw = mob; targetType = 'mobile'; }
-      else if (!ext && !mob)             skipReason = 'no_dialable_number';
-      else                               skipReason = 'no_allowed_target_by_gateway';
+      if      (ext && allowExtension) { raw = ext; targetType = 'extension'; }
+      else if (mob && allowMobile)    { raw = mob; targetType = 'mobile'; }
+      else if (!ext && !mob)           skipReason = 'no_dialable_number';
+      else                             skipReason = 'no_allowed_target';
       break;
 
     case 'mobile_extension':
-      if      (mob && gwAllowMobile)    { raw = mob; targetType = 'mobile'; }
-      else if (ext && gwAllowExtension) { raw = ext; targetType = 'extension'; }
-      else if (!ext && !mob)             skipReason = 'no_dialable_number';
-      else                               skipReason = 'no_allowed_target_by_gateway';
+      if      (mob && allowMobile)    { raw = mob; targetType = 'mobile'; }
+      else if (ext && allowExtension) { raw = ext; targetType = 'extension'; }
+      else if (!ext && !mob)           skipReason = 'no_dialable_number';
+      else                             skipReason = 'no_allowed_target';
       break;
 
     default:
-      // Backward-compatible: gateway → mobile; internal → extension then mobile
-      if (isGatewayMode) {
-        raw = mob; targetType = 'mobile';
-        if (!raw)              skipReason = 'no_mobile_number';
-        else if (!gwAllowMobile) skipReason = 'mobile_not_allowed_by_gateway';
-        else                     raw = mob;
-      } else {
-        raw = ext || mob;
-        targetType = ext ? 'extension' : 'mobile';
-        if (!raw) skipReason = 'no_dialable_number';
-      }
+      raw = ext || mob;
+      targetType = ext ? 'extension' : 'mobile';
+      if (!raw) skipReason = 'no_dialable_number';
   }
 
   if (skipReason) return { skip: true, reason: skipReason };
 
-  // Step 4: Apply gateway formatting (gateway's rules, not ENS rules)
+  // Step 5: Apply ENS formatting rules (gateway mode only — internal uses user/<ext>)
   let phone_number;
-  if (isGatewayMode && gw) {
+  if (isGatewayMode) {
     phone_number = targetType === 'mobile'
-      ? applyMobileFormatting(raw, gw)
-      : applyExtensionFormatting(raw, gw);
+      ? applyMobileFormatting(raw, cfg)
+      : applyExtensionFormatting(raw, cfg);
   } else {
-    phone_number = raw; // internal: no formatting — dialResolver uses user/<ext>
+    phone_number = raw;
   }
 
   return {
-    skip:         false,
+    skip:             false,
     phone_number,
-    gateway_name: isGatewayMode ? (gwName || null) : null,
+    gateway_name:     isGatewayMode ? (gwName || null) : null,
+    target_type:      targetType,
+    original_number:  raw,
+    routing_mode_used: isGatewayMode ? 'gateway' : 'internal',
   };
 }
 
@@ -229,10 +218,13 @@ async function resolveDialTargets(contacts, cfg) {
       skipped.push({ contact_id: c.id, name: c.name, reason: result.reason });
     } else {
       resolved.push({
-        contact_id:   c.id || null,
-        phone_number: result.phone_number,
-        name:         c.name || null,
-        gateway_name: result.gateway_name || null,
+        contact_id:        c.id || null,
+        phone_number:      result.phone_number,
+        name:              c.name || null,
+        gateway_name:      result.gateway_name      || null,
+        target_type:       result.target_type       || null,
+        original_number:   result.original_number   || null,
+        routing_mode_used: result.routing_mode_used || null,
       });
     }
   }
@@ -253,14 +245,16 @@ let engineTimer     = null;
 export function startEngine() {
   if (engineTimer) return;
   engineTimer = setInterval(tick, TICK_MS);
-  console.log('[campaign] Engine started');
-  recoverStaleDialing().catch(e => console.error('[campaign] stale recovery error:', e.message));
+  logger.info({ module: 'campaignEngine' }, 'Engine started');
+  recoverStaleDialing().catch(e =>
+    logger.error({ module: 'campaignEngine', err: e }, 'Stale dialing recovery error')
+  );
 }
 
 export function stopEngine() {
   if (engineTimer) { clearInterval(engineTimer); engineTimer = null; }
   campaignState.clear();
-  console.log('[campaign] Engine stopped');
+  logger.info({ module: 'campaignEngine' }, 'Engine stopped');
 }
 
 // ── Crash recovery: reset dialing rows that were orphaned ────────────────────
@@ -276,7 +270,7 @@ async function recoverStaleDialing() {
     [STALE_DIALING_SEC]
   );
   if (rows.length) {
-    console.log(`[campaign] Recovered ${rows.length} stale dialing rows`);
+    logger.info({ module: 'campaignEngine', count: rows.length }, 'Recovered stale dialing rows');
     // Also fix campaign dialing counters
     const campaignIds = [...new Set(rows.map(r => r.campaign_id))];
     for (const id of campaignIds) {
@@ -293,7 +287,7 @@ async function tick() {
   try {
     await processAllCampaigns();
   } catch (e) {
-    console.error('[campaign] tick error:', e.message);
+    logger.error({ module: 'campaignEngine', err: e }, 'Tick error');
   } finally {
     ticking = false;
   }
@@ -308,7 +302,7 @@ async function processAllCampaigns() {
   );
   for (const c of campaigns) {
     await processCampaign(c).catch(e =>
-      console.error(`[campaign] error in ${c.id}:`, e.message)
+      logger.error({ module: 'campaignEngine', campaignId: c.id, err: e }, 'Campaign tick error')
     );
   }
 }
@@ -417,10 +411,7 @@ async function processCampaign(campaign) {
   const clid      = campaign.sip_caller_id || campaign.trigger_number || '999';
   const mediaPath = campaign.recording_file || '';
 
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][processCampaign] campaign=${campaign.id} slots=${destinations.length} clid=${JSON.stringify(clid)} mediaPath=${JSON.stringify(mediaPath)}`);
   for (const dest of destinations) {
-    console.log(`[ENS-DEBUG][destClaimed] campaign=${campaign.id} dest.id=${dest.id} dest.phone_number=${JSON.stringify(dest.phone_number)} dest.gateway_name=${JSON.stringify(dest.gateway_name)}`);
     const callUuid = randomUUID();
     state.cpsHistory.push(Date.now());
     await originateDestination(campaign, dest, callUuid, dest.gateway_name || null, clid, mediaPath);
@@ -440,28 +431,19 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
     [dest.id, callUuid]
   );
 
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][originateDestination] ENTER campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid}`);
-  console.log(`[ENS-DEBUG][originateDestination]   number=${JSON.stringify(dest.phone_number)} contactId=${JSON.stringify(dest.contact_id ?? undefined)} gatewayName=${JSON.stringify(gatewayName)} clid=${JSON.stringify(clid)} playbackFile=${JSON.stringify(playbackFile || null)}`);
-
   try {
     await originateCampaignCall({
       callUuid,
-      campaignId:  campaign.id,
-      destId:      dest.id,
-      number:      dest.phone_number,
+      campaignId:   campaign.id,
+      destId:       dest.id,
+      number:       dest.phone_number,
       clid,
       gatewayName,
-      contactId:   dest.contact_id || null,
+      contactId:    dest.contact_id || null,
       playbackFile: playbackFile || null,
-      timeout:     ORIGINATE_TIMEOUT,
+      timeout:      ORIGINATE_TIMEOUT,
     });
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][originateDestination] originateCampaignCall returned (no throw) campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid}`);
   } catch (e) {
-    // ESL not connected or originate error — mark failed immediately
-    // DEBUG-PROBE
-    console.error(`[ENS-DEBUG][originateDestination] CAUGHT ERROR campaign=${campaign.id} dest=${dest.id} callUuid=${callUuid} error="${e.message}"`);
     await handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message);
   }
 }
@@ -470,8 +452,6 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
 
 // Called from eslService via eslEvents EventEmitter
 export async function onCallAnswer(callUuid) {
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][onCallAnswer] CHANNEL_ANSWER received callUuid=${callUuid}`);
   const { rows: [dest] } = await query(
     `UPDATE ens_campaign_destinations
      SET status = 'answered', answered_at = now(), updated_at = now()
@@ -479,8 +459,6 @@ export async function onCallAnswer(callUuid) {
      RETURNING id, campaign_id`,
     [callUuid]
   );
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][onCallAnswer] dest lookup: ${dest ? `id=${dest.id} campaign=${dest.campaign_id}` : 'NO ROW FOUND (uuid not in dialing state?)'}`);
   if (!dest) return;
 
   await query(
@@ -499,15 +477,11 @@ export async function onCallAnswer(callUuid) {
 }
 
 export async function onCallHangup(callUuid, cause) {
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][onCallHangup] CHANNEL_HANGUP received callUuid=${callUuid} cause=${cause}`);
   const { rows: [dest] } = await query(
     `SELECT id, campaign_id, answered_at, attempt_count, max_attempts, status
      FROM ens_campaign_destinations WHERE call_uuid = $1`,
     [callUuid]
   );
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][onCallHangup] dest lookup: ${dest ? `id=${dest.id} campaign=${dest.campaign_id} status=${dest.status} answered_at=${dest.answered_at} attempt_count=${dest.attempt_count}/${dest.max_attempts}` : 'NO ROW FOUND (not a campaign call)'}`);
   if (!dest) return; // not a campaign call
 
   const state       = getOrCreateState(dest.campaign_id);
@@ -574,8 +548,6 @@ export async function onCallHangup(callUuid, cause) {
 }
 
 async function handleDestFailed(destId, campaignId, cause, errorMsg) {
-  // DEBUG-PROBE
-  console.error(`[ENS-DEBUG][handleDestFailed] dest=${destId} campaign=${campaignId} cause=${cause} error=${JSON.stringify(errorMsg)}`);
   await query(
     `UPDATE ens_campaign_destinations
      SET status = 'failed', hangup_cause = $3, error_message = $4,
@@ -607,7 +579,7 @@ async function completeCampaign(campaignId) {
   if (c) {
     campaignState.delete(campaignId);
     emitInternal('enrs::campaign_completed', { campaign_id: campaignId, stats: c });
-    console.log(`[campaign] Completed: ${campaignId}`);
+    logger.info({ module: 'campaignEngine', campaignId }, 'Campaign completed');
   }
 }
 
@@ -627,7 +599,7 @@ async function expireCampaign(campaignId) {
   );
   campaignState.delete(campaignId);
   emitInternal('enrs::campaign_expired', { campaign_id: campaignId });
-  console.log(`[campaign] Expired: ${campaignId}`);
+  logger.info({ module: 'campaignEngine', campaignId }, 'Campaign expired');
 }
 
 // ── Public campaign management API ───────────────────────────────────────────
@@ -690,8 +662,8 @@ export async function createCampaignByConfigId({
   }
 
   // Pre-resolve each contact into a concrete dial target before the transaction.
-  // Gateway dialing rules (allow_mobile, allow_extension, formatting) are read
-  // from sip_gateways. ENS only decides routing_mode + dial_preference.
+  // All dialing rules (allow_mobile, allow_extension, formatting) are read from
+  // the ENS configuration. The gateway provides only the SIP route name.
   const { resolved, skipped } = await resolveDialTargets(contacts, cfg);
 
   if (skipped.length > 0) {
@@ -735,21 +707,21 @@ export async function createCampaignByConfigId({
         triggeredBy,
         triggeredVia,
         triggerNumber,
-        recordingFile || null,
+        recordingFile   || null,
         messageAudioUrl || null,
-        messageText || null,
+        messageText     || null,
         cfg.max_concurrent_calls || 30,
         cfg.calls_per_second     || 2.0,
-        cfg.retry_count          || 3,
-        cfg.retry_interval_sec   || 300,
-        cfg.max_attempts         || 4,
-        cfg.retry_failed_only    !== false,
-        cfg.adaptive_throttling  !== false,
+        cfg.max_attempts         || 3,
+        cfg.retry_interval_sec   || 60,
+        cfg.max_attempts         || 3,
+        cfg.retry_failed_only    === true,
+        cfg.adaptive_throttling  === true,
         cfg.campaign_priority    || 5,
         cfg.campaign_timeout_min || 60,
         cfg.sip_gateway          || null,
-        cfg.sip_caller_id        || null,
-        resolved.length,  // Wave 1: skipped contacts are excluded from total_destinations
+        cfg.blast_clid           || null,  // outbound caller ID shown to blast recipients
+        resolved.length,
       ]
     );
 
@@ -766,9 +738,11 @@ export async function createCampaignByConfigId({
     for (const r of resolved) {
       await tq(
         `INSERT INTO ens_campaign_destinations
-           (campaign_id, contact_id, phone_number, contact_name, max_attempts, gateway_name)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [campaign.id, r.contact_id, r.phone_number, r.name, cfg.max_attempts || 4, r.gateway_name]
+           (campaign_id, contact_id, phone_number, contact_name, max_attempts,
+            gateway_name, target_type, original_number, routing_mode_used)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [campaign.id, r.contact_id, r.phone_number, r.name, cfg.max_attempts || 3,
+         r.gateway_name, r.target_type, r.original_number, r.routing_mode_used]
       );
     }
 
@@ -883,11 +857,6 @@ async function resolveContacts(configId) {
      ORDER BY ec.id`,
     [configId]
   );
-  // DEBUG-PROBE: Layer 1 — full contact data from emergency_contacts
-  console.log(`[ENS-DEBUG][resolveContacts] configId=${configId} rowCount=${rows.length}`);
-  for (const r of rows) {
-    console.log(`[ENS-DEBUG][resolveContacts]   contact id=${r.id} mobile_number=${JSON.stringify(r.mobile_number)} extension_number=${JSON.stringify(r.extension_number)} gateway_id=${JSON.stringify(r.gateway_id)} name=${JSON.stringify(r.name)}`);
-  }
   return rows;
 }
 

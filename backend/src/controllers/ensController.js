@@ -11,36 +11,47 @@ const EnsConfigSchema = z.object({
   name:                      z.string().min(1).max(128),
   description:               emptyToNull,
 
-  // Auth
-  pin:                       emptyToNull,
+  // Caller ID
   blast_clid:                emptyToNull,
   reply_clid:                emptyToNull,
 
-  // Campaign engine settings
-  max_concurrent:            intDef(30, 1),        // max concurrent blast calls
-  max_concurrent_calls:      intDef(30, 1),        // alias used by campaign engine
+  // Auth
+  pin:                       emptyToNull,
+
+  // Campaign engine
+  max_concurrent_calls:      intDef(30, 1),
   calls_per_second:          numDef(2.0),
   batch_size:                intDef(30, 1),
-  retry_count:               intDef(3, 0, 10),
-  retry_delay_seconds:       intDef(300, 0),
-  retry_interval_sec:        intDef(300, 0),
-  max_attempts:              intDef(4, 1, 10),
+  retry_interval_sec:        intDef(60, 0),
+  max_attempts:              intDef(3, 0, 10),
   campaign_timeout_min:      intDef(60, 1),
   recording_retention_hours: intDef(24, 1),
-  retry_failed_only:         z.boolean().default(true),
-  adaptive_throttling:       z.boolean().default(true),
+  retry_failed_only:         z.boolean().default(false),
+  adaptive_throttling:       z.boolean().default(false),
   campaign_priority:         intDef(5, 1, 10),
   max_active_campaigns:      intDef(1, 1),
 
-  // Gateway
+  // Gateway (stored as name string — FreeSWITCH uses sofia/gateway/<name>)
   sip_gateway:               emptyToNull,
-  sip_caller_id:             emptyToNull,
 
-  // Dialing policy — ENS decides WHAT to dial; gateway decides HOW (migration 034)
+  // Routing policy (migration 034)
   routing_mode:    z.enum(['auto','internal_only','gateway_only']).default('auto'),
   dial_preference: z.enum(['extension_only','mobile_only','extension_mobile','mobile_extension']).default('extension_mobile'),
   fallback_mode:   z.enum(['none','extension_mobile','mobile_extension']).default('none'),
   skip_behavior:   z.enum(['skip','fail','warn']).default('skip'),
+
+  // Mobile dialing rules (migration 035)
+  allow_mobile:              z.boolean().default(true),
+  mobile_normalize_enabled:  z.boolean().default(false),
+  mobile_strip_leading_zero: z.boolean().default(false),
+  mobile_prefix:             emptyToNull,
+  mobile_suffix:             emptyToNull,
+
+  // Extension dialing rules (migration 035)
+  allow_extension:           z.boolean().default(false),
+  ext_normalize_enabled:     z.boolean().default(false),
+  ext_prefix:                emptyToNull,
+  ext_suffix:                emptyToNull,
 
   // Messages
   no_pending_msg:            emptyToNull,
@@ -158,32 +169,34 @@ export const createConfiguration = asyncHandler(async (req, res) => {
     `INSERT INTO ens_configurations (
        organization_id, tenant_id, name, description,
        blast_clid, reply_clid, pin,
-       max_concurrent, max_concurrent_calls, calls_per_second,
-       batch_size, retry_count, retry_delay_seconds, retry_interval_sec,
+       max_concurrent_calls, calls_per_second,
+       batch_size, retry_interval_sec,
        max_attempts, campaign_timeout_min, recording_retention_hours,
        retry_failed_only, adaptive_throttling, campaign_priority, max_active_campaigns,
-       sip_gateway, sip_caller_id,
+       sip_gateway,
+       routing_mode, dial_preference, fallback_mode, skip_behavior,
+       allow_mobile, mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
+       allow_extension, ext_normalize_enabled, ext_prefix, ext_suffix,
        no_pending_msg, expiry_announcement,
-       is_active,
-       routing_mode, dial_preference, fallback_mode, skip_behavior
+       is_active
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-       $18,$19,$20,$21,$22,$23,$24,$25,$26,
-       $27,$28,$29,$30
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
       d.blast_clid, d.reply_clid, d.pin,
-      d.max_concurrent, d.max_concurrent_calls ?? d.max_concurrent,
-      d.calls_per_second,
-      d.batch_size, d.retry_count, d.retry_delay_seconds,
-      d.retry_interval_sec ?? d.retry_delay_seconds,
+      d.max_concurrent_calls, d.calls_per_second,
+      d.batch_size, d.retry_interval_sec,
       d.max_attempts, d.campaign_timeout_min, d.recording_retention_hours,
       d.retry_failed_only, d.adaptive_throttling, d.campaign_priority, d.max_active_campaigns,
-      d.sip_gateway, d.sip_caller_id,
+      d.sip_gateway,
+      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
+      d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
+      d.mobile_prefix, d.mobile_suffix,
+      d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
-      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
     ]
   );
   const cfg = rows[0];
@@ -209,48 +222,53 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        blast_clid                = COALESCE($4,  blast_clid),
        reply_clid                = COALESCE($5,  reply_clid),
        pin                       = COALESCE($6,  pin),
-       max_concurrent            = COALESCE($7,  max_concurrent),
-       max_concurrent_calls      = COALESCE($8,  max_concurrent_calls),
-       calls_per_second          = COALESCE($9,  calls_per_second),
-       batch_size                = COALESCE($10, batch_size),
-       retry_count               = COALESCE($11, retry_count),
-       retry_delay_seconds       = COALESCE($12, retry_delay_seconds),
-       retry_interval_sec        = COALESCE($13, retry_interval_sec),
-       max_attempts              = COALESCE($14, max_attempts),
-       campaign_timeout_min      = COALESCE($15, campaign_timeout_min),
-       recording_retention_hours = COALESCE($16, recording_retention_hours),
-       retry_failed_only         = COALESCE($17, retry_failed_only),
-       adaptive_throttling       = COALESCE($18, adaptive_throttling),
-       campaign_priority         = COALESCE($19, campaign_priority),
-       max_active_campaigns      = COALESCE($20, max_active_campaigns),
-       sip_gateway               = COALESCE($21, sip_gateway),
-       sip_caller_id             = COALESCE($22, sip_caller_id),
-       no_pending_msg            = COALESCE($23, no_pending_msg),
-       expiry_announcement       = COALESCE($24, expiry_announcement),
-       is_active                 = COALESCE($25, is_active),
-       tenant_id                 = COALESCE(tenant_id, $26),
-       routing_mode    = COALESCE($27, routing_mode),
-       dial_preference = COALESCE($28, dial_preference),
-       fallback_mode   = COALESCE($29, fallback_mode),
-       skip_behavior   = COALESCE($30, skip_behavior),
-       updated_at      = now()
-     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $26 RETURNING *`,
+       max_concurrent_calls      = COALESCE($7,  max_concurrent_calls),
+       calls_per_second          = COALESCE($8,  calls_per_second),
+       batch_size                = COALESCE($9,  batch_size),
+       retry_interval_sec        = COALESCE($10, retry_interval_sec),
+       max_attempts              = COALESCE($11, max_attempts),
+       campaign_timeout_min      = COALESCE($12, campaign_timeout_min),
+       recording_retention_hours = COALESCE($13, recording_retention_hours),
+       retry_failed_only         = COALESCE($14, retry_failed_only),
+       adaptive_throttling       = COALESCE($15, adaptive_throttling),
+       campaign_priority         = COALESCE($16, campaign_priority),
+       max_active_campaigns      = COALESCE($17, max_active_campaigns),
+       sip_gateway               = COALESCE($18, sip_gateway),
+       routing_mode              = COALESCE($19, routing_mode),
+       dial_preference           = COALESCE($20, dial_preference),
+       fallback_mode             = COALESCE($21, fallback_mode),
+       skip_behavior             = COALESCE($22, skip_behavior),
+       allow_mobile              = COALESCE($23, allow_mobile),
+       mobile_normalize_enabled  = COALESCE($24, mobile_normalize_enabled),
+       mobile_strip_leading_zero = COALESCE($25, mobile_strip_leading_zero),
+       mobile_prefix             = COALESCE($26, mobile_prefix),
+       mobile_suffix             = COALESCE($27, mobile_suffix),
+       allow_extension           = COALESCE($28, allow_extension),
+       ext_normalize_enabled     = COALESCE($29, ext_normalize_enabled),
+       ext_prefix                = COALESCE($30, ext_prefix),
+       ext_suffix                = COALESCE($31, ext_suffix),
+       no_pending_msg            = COALESCE($32, no_pending_msg),
+       expiry_announcement       = COALESCE($33, expiry_announcement),
+       is_active                 = COALESCE($34, is_active),
+       tenant_id                 = COALESCE(tenant_id, $35),
+       updated_at                = now()
+     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $35 RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
       d.blast_clid, d.reply_clid, d.pin,
-      d.max_concurrent,
-      d.max_concurrent_calls ?? d.max_concurrent,
-      d.calls_per_second,
-      d.batch_size, d.retry_count, d.retry_delay_seconds,
-      d.retry_interval_sec ?? d.retry_delay_seconds,
+      d.max_concurrent_calls, d.calls_per_second,
+      d.batch_size, d.retry_interval_sec,
       d.max_attempts, d.campaign_timeout_min, d.recording_retention_hours,
       d.retry_failed_only, d.adaptive_throttling, d.campaign_priority, d.max_active_campaigns,
-      d.sip_gateway, d.sip_caller_id,
+      d.sip_gateway,
+      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
+      d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
+      d.mobile_prefix, d.mobile_suffix,
+      d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
       req.user.tenantId,
-      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });

@@ -211,19 +211,19 @@ export const ensLookup = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `SELECT ec.id AS configuration_id, ec.name,
-            ec.blast_clid, ec.reply_clid, ec.sip_caller_id, ec.sip_gateway,
+            ec.blast_clid, ec.reply_clid, ec.sip_gateway,
             ec.pin,
-            COALESCE(ec.max_concurrent_calls, ec.max_concurrent, 30)  AS max_concurrent_calls,
-            COALESCE(ec.calls_per_second, 2)                           AS calls_per_second,
-            COALESCE(ec.batch_size, 30)                                AS batch_size,
-            COALESCE(ec.max_attempts, ec.retry_count, 3)               AS max_attempts,
-            COALESCE(ec.retry_interval_sec, ec.retry_delay_seconds, 60) AS retry_interval_sec,
-            COALESCE(ec.campaign_timeout_min, 60)                      AS campaign_timeout_min,
-            COALESCE(ec.recording_retention_hours, 24)                 AS recording_retention_hours,
-            COALESCE(ec.campaign_priority, 5)                          AS campaign_priority,
-            COALESCE(ec.adaptive_throttling, false)                    AS adaptive_throttling,
-            COALESCE(ec.retry_failed_only, false)                      AS retry_failed_only,
-            ec.playback_number, ec.no_pending_msg, ec.expiry_announcement
+            COALESCE(ec.max_concurrent_calls, 30)     AS max_concurrent_calls,
+            COALESCE(ec.calls_per_second, 2)          AS calls_per_second,
+            COALESCE(ec.batch_size, 30)               AS batch_size,
+            COALESCE(ec.max_attempts, 3)              AS max_attempts,
+            COALESCE(ec.retry_interval_sec, 60)       AS retry_interval_sec,
+            COALESCE(ec.campaign_timeout_min, 60)     AS campaign_timeout_min,
+            COALESCE(ec.recording_retention_hours, 24) AS recording_retention_hours,
+            COALESCE(ec.campaign_priority, 5)         AS campaign_priority,
+            COALESCE(ec.adaptive_throttling, false)   AS adaptive_throttling,
+            COALESCE(ec.retry_failed_only, false)     AS retry_failed_only,
+            ec.no_pending_msg, ec.expiry_announcement
      FROM emergency_numbers en
      JOIN ens_configurations ec
        ON ec.id = en.ens_configuration_id
@@ -249,7 +249,7 @@ export const ensLookup = asyncHandler(async (req, res) => {
     data: {
       configuration_id:          cfg.configuration_id,
       name:                      cfg.name,
-      blast_clid:                cfg.blast_clid || cfg.sip_caller_id,
+      blast_clid:                cfg.blast_clid,
       reply_clid:                cfg.reply_clid,
       sip_gateway:               cfg.sip_gateway,
       // pin_required tells Lua to collect DTMF before recording.
@@ -265,7 +265,6 @@ export const ensLookup = asyncHandler(async (req, res) => {
       campaign_priority:         cfg.campaign_priority,
       adaptive_throttling:       cfg.adaptive_throttling,
       retry_failed_only:         cfg.retry_failed_only,
-      playback_number:           cfg.playback_number,
       no_pending_msg:            cfg.no_pending_msg,
       expiry_announcement:       cfg.expiry_announcement,
       contacts,
