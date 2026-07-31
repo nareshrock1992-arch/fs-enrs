@@ -19,7 +19,7 @@ export const NODE_DEFAULTS = {
   ers:               { ers_configuration_id: '' },
   hangup:            {},
   condition:         { variable: 'gather_result', operator: '==', expected_value: '', true_node: '', false_node: '' },
-  record_message:    { variable_name: 'recorded_file_path', max_seconds: 60, silence_threshold: 500, silence_hits: 3, prompt_text: 'Please record your message after the tone. Press pound when done.', next: '' },
+  record_message:    { variable_name: 'recorded_file_path', prompt_text: 'Please record your message after the tone. Press pound when done.', max_seconds: 60, silence_threshold: 500, silence_hits: 3, next: '' },
   set_variable:      { variable: '', value: '', next: '' },
   transfer:          { destination: '', dialplan: 'XML', context: 'default' },
   webhook:           { url: '', body_template: '', next: '' },

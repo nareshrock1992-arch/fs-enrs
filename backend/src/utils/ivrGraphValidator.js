@@ -191,6 +191,11 @@ export async function validateGraph(graph, tenantId) {
       }
     }
 
+    // Record Message: warn if next node is missing (recording completes with nowhere to go)
+    if (node.type === 'record_message' && !node.next) {
+      warnings.push(`Node "${nid}" (Record): Next Node not connected — caller will be disconnected after recording`);
+    }
+
     // ENS Blast Record: missing next node
     if (node.type === 'ens_blast_record' && !node.next) {
       warnings.push(`Node "${nid}" (ENS Blast Record): Next Node not connected`);

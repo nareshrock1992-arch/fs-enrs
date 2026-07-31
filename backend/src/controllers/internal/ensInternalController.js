@@ -179,7 +179,7 @@ export const startCampaign = asyncHandler(async (req, res) => {
       upsertRecordingStart({
         type:       'ENS',
         recPath:    recording_file,
-        campaignId: campaign.notification_uuid ?? null,
+        campaignId: campaign.id,
         createdBy:  'lua',
       }).then(row => {
         if (!row) return;
@@ -486,49 +486,54 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
 
   // Find ENS config by reply_clid
   const { rows: [cfg] } = await query(
-    `SELECT id, recording_retention_hours FROM ens_configurations
+    `SELECT id, COALESCE(recording_retention_hours, 24) AS recording_retention_hours
+     FROM ens_configurations
      WHERE reply_clid = $1 AND deleted_at IS NULL AND is_active = true LIMIT 1`,
     [replyCLID]
   );
 
   if (!cfg) return res.json({ authorized: false, reason: 'no_active_notification' });
 
-  // Find latest completed/in-progress notification within retention window
-  const { rows: [notif] } = await query(
-    `SELECT id, notification_uuid, recording_file
-     FROM ens_notifications
+  // Find the latest campaign with a recording within the retention window.
+  // Uses ens_campaigns (modern path). 'queued' is excluded — a recipient cannot
+  // have received a call from a campaign that has not started dialing. Callback
+  // authorization for a queued campaign is therefore always invalid.
+  const { rows: [campaign] } = await query(
+    `SELECT id AS campaign_id, recording_file
+     FROM ens_campaigns
      WHERE ens_configuration_id = $1
-       AND status IN ('IN_PROGRESS', 'COMPLETED')
-       AND deleted_at IS NULL
+       AND status IN ('running', 'completed')
+       AND recording_file IS NOT NULL
        AND created_at >= now() - ($2 || ' hours')::interval
      ORDER BY created_at DESC LIMIT 1`,
     [cfg.id, cfg.recording_retention_hours]
   );
 
-  if (!notif) return res.json({ authorized: false, reason: 'no_active_notification' });
+  if (!campaign) return res.json({ authorized: false, reason: 'no_active_notification' });
 
-  if (!notif.recording_file) {
+  if (!campaign.recording_file) {
     return res.json({ authorized: false, reason: 'recording_expired' });
   }
 
-  // Check last-9-digit match on contact_number in deliveries
+  // Verify caller was in the blast list via last-9-digit match on phone_number.
+  // ens_campaign_destinations.phone_number holds the dialed number (mobile or extension).
   const callerLast9 = caller.replace(/\D/g, '').slice(-9);
 
-  const { rows: [delivery] } = await query(
-    `SELECT id FROM ens_notification_deliveries
-     WHERE ens_notification_id = $1
-       AND RIGHT(REGEXP_REPLACE(contact_number, '[^0-9]', '', 'g'), 9) = $2
+  const { rows: [dest] } = await query(
+    `SELECT id FROM ens_campaign_destinations
+     WHERE campaign_id = $1
+       AND RIGHT(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g'), 9) = $2
      LIMIT 1`,
-    [notif.id, callerLast9]
+    [campaign.campaign_id, callerLast9]
   );
 
-  if (!delivery) return res.json({ authorized: false, reason: 'not_in_blast_list' });
+  if (!dest) return res.json({ authorized: false, reason: 'not_in_blast_list' });
 
   res.json({
     authorized:        true,
-    notification_uuid: notif.notification_uuid,
-    recording_file:    notif.recording_file,
-    delivery_id:       delivery.id,
+    notification_uuid: campaign.campaign_id,
+    recording_file:    campaign.recording_file,
+    delivery_id:       dest.id,
   });
 });
 
@@ -537,6 +542,14 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
 // GET /api/v1/internal/ens/campaigns/latest?configuration_id=<id>
 // Called by ens_playback_handler.lua to get the most recent recording to play back.
 // Returns: { status: "ACTIVE"|"EXPIRED"|"NO_CAMPAIGN", recording_file, campaign_id }
+//
+// Previous behaviour: queried ens_notifications (legacy table never written by
+//   the modern blast path) — always returned NO_CAMPAIGN for modern campaigns.
+//   Also included 'queued' status, exposing a campaign before dialing had started.
+//
+// New behaviour (Wave 1): queries ens_campaigns with status IN ('running','completed').
+//   'queued' is excluded — a campaign that has not yet started dialing is not
+//   considered active for playback purposes. ens_campaigns has no deleted_at column.
 export const ensLatestCampaign = asyncHandler(async (req, res) => {
   const configId = parseInt(req.query.configuration_id, 10);
   if (!configId) return res.status(400).json({ success: false, error: 'configuration_id required' });
@@ -549,14 +562,18 @@ export const ensLatestCampaign = asyncHandler(async (req, res) => {
   );
   if (!cfg) return res.status(404).json({ success: false, error: 'ENS configuration not found' });
 
+  // 'queued' excluded: notification process has not started for a queued campaign.
+  // 'completed' included: covers both normal completion and timeout (expireCampaign
+  //   sets status='completed', not 'expired' — the 'expired' value only applies to
+  //   individual ens_campaign_destinations rows).
   const { rows: [latest] } = await query(
     `SELECT id AS campaign_id, recording_file,
             status, created_at,
             created_at + ($2 || ' hours')::interval AS expires_at
-     FROM ens_notifications
+     FROM ens_campaigns
      WHERE ens_configuration_id = $1
-       AND deleted_at IS NULL
-       AND status IN ('IN_PROGRESS', 'COMPLETED')
+       AND status IN ('running', 'completed')
+       AND recording_file IS NOT NULL
      ORDER BY created_at DESC LIMIT 1`,
     [configId, cfg.retention_hours]
   );
@@ -587,21 +604,24 @@ export const ensLatestCampaign = asyncHandler(async (req, res) => {
 // ── Playback Log (called by ens_playback_handler.lua) ────────────────────────
 
 // GET /api/v1/internal/ens/campaigns/:id/playback-log?caller=<number>
+// campaign id is a UUID string — do not parseInt.
+//
+// Previous behaviour (broken): parseInt(req.params.id) on a UUID → NaN → 400.
+//   Also attempted UPDATE ens_campaigns SET updated_at (placeholder with no
+//   business value — ens_campaigns has no playback-specific counter columns).
+//
+// New behaviour (Wave 1): read-only. Validates parameters and returns { success: true }.
+//   Lua's ens_playback_handler.lua checks only the HTTP 200 status — the response
+//   body is ignored. No DB write is performed.
+//   Playback analytics (who played back which campaign and when) are a Wave 2+ item
+//   requiring a dedicated playback_log table.
 export const ensPlaybackLog = asyncHandler(async (req, res) => {
-  const campaignId = parseInt(req.params.id, 10);
+  const campaignId = String(req.params.id || '').trim();
   const caller     = String(req.query.caller || '').trim();
 
   if (!campaignId || !caller) {
     return res.status(400).json({ success: false, error: 'id and caller required' });
   }
-
-  // Increment playback counter (best-effort, non-critical)
-  await query(
-    `UPDATE ens_notifications
-     SET callback_count = callback_count + 1, updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL`,
-    [campaignId]
-  ).catch(() => {});
 
   res.json({ success: true });
 });

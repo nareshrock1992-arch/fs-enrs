@@ -34,6 +34,11 @@ const EMPTY = {
   // Announcements
   expiry_announcement:       '',
   no_pending_msg:            '',
+  // Dialing policy — ENS decides WHAT to dial; gateway decides HOW (migration 034)
+  routing_mode:    'auto',
+  dial_preference: 'extension_mobile',
+  fallback_mode:   'none',
+  skip_behavior:   'skip',
   // Responders
   group_ids:                 [],
   contact_ids:               [],
@@ -106,6 +111,10 @@ export default function EnsList() {
         max_active_campaigns:      Number(form.max_active_campaigns),
         group_ids:                 form.group_ids.map(Number),
         contact_ids:               form.contact_ids.map(Number),
+        routing_mode:    form.routing_mode,
+        dial_preference: form.dial_preference,
+        fallback_mode:   form.fallback_mode,
+        skip_behavior:   form.skip_behavior,
       };
       if (!modal.id) await api.ens.create(payload);
       else           await api.ens.update(modal.id, payload);
@@ -141,6 +150,10 @@ export default function EnsList() {
         max_active_campaigns:      full.max_active_campaigns     ?? 1,
         expiry_announcement:       full.expiry_announcement      ?? '',
         no_pending_msg:            full.no_pending_msg           ?? '',
+        routing_mode:    full.routing_mode    ?? 'auto',
+        dial_preference: full.dial_preference ?? 'extension_mobile',
+        fallback_mode:   full.fallback_mode   ?? 'none',
+        skip_behavior:   full.skip_behavior   ?? 'skip',
         group_ids:                 (full.groups   || []).map(g => g.responder_group_id ?? g.id),
         contact_ids:               (full.contacts || []).map(c => c.emergency_contact_id ?? c.id),
       });
@@ -405,6 +418,49 @@ export default function EnsList() {
                   <span className="text-sm text-text-primary">Adaptive Throttling</span>
                 </label>
               </div>
+            </section>
+
+            {/* ── Dialing Policy ── */}
+            <section>
+              <p className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-3">Dialing Policy</p>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="label">Routing Mode</label>
+                  <select className="input" value={form.routing_mode}
+                          onChange={e => f('routing_mode', e.target.value)}>
+                    <option value="auto">Auto</option>
+                    <option value="internal_only">Internal Only</option>
+                    <option value="gateway_only">Gateway Only</option>
+                  </select>
+                  <p className="text-[11px] text-text-muted mt-1">Auto uses gateway when configured</p>
+                </div>
+                <div>
+                  <label className="label">Dial Target Preference</label>
+                  <select className="input" value={form.dial_preference}
+                          onChange={e => f('dial_preference', e.target.value)}>
+                    <option value="extension_mobile">Extension → Mobile</option>
+                    <option value="mobile_extension">Mobile → Extension</option>
+                    <option value="extension_only">Extension Only</option>
+                    <option value="mobile_only">Mobile Only</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Skip Behaviour</label>
+                  <select className="input" value={form.skip_behavior}
+                          onChange={e => f('skip_behavior', e.target.value)}>
+                    <option value="skip">Skip Contact</option>
+                    <option value="warn">Warning Only</option>
+                    <option value="fail">Fail Campaign</option>
+                  </select>
+                  <p className="text-[11px] text-text-muted mt-1">When a contact cannot be dialed</p>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-text-muted mt-3">
+                Number formatting (strip leading zero, prefix, suffix) is configured
+                per-gateway in Settings → Telephony Gateways.
+              </p>
             </section>
 
             {/* ── Announcements ── */}

@@ -16,6 +16,17 @@ const GatewaySchema = z.object({
   caller_id_in_from:  z.boolean().default(false),
   is_default_outbound: z.boolean().default(false),
   is_active:          z.boolean().default(true),
+
+  // Dialing policy — gateway decides HOW to format and route (migration 035)
+  allow_mobile:              z.boolean().default(true),
+  allow_extension:           z.boolean().default(false),
+  mobile_normalize_enabled:  z.boolean().default(false),
+  mobile_strip_leading_zero: z.boolean().default(false),
+  mobile_prefix:             emptyToNull,
+  mobile_suffix:             emptyToNull,
+  ext_normalize_enabled:     z.boolean().default(false),
+  ext_prefix:                emptyToNull,
+  ext_suffix:                emptyToNull,
 });
 
 // GET /api/v1/gateways
@@ -23,6 +34,9 @@ export const listGateways = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT id, tenant_id, name, type, host, port, username, register,
             caller_id_in_from, is_default_outbound, is_active,
+            allow_mobile, allow_extension,
+            mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
+            ext_normalize_enabled, ext_prefix, ext_suffix,
             last_deployed_at, last_deployment_status, created_at, updated_at
      FROM sip_gateways
      WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -44,11 +58,17 @@ export const createGateway = asyncHandler(async (req, res) => {
     const { rows: [row] } = await tq(
       `INSERT INTO sip_gateways
          (tenant_id, name, type, host, port, username, password, register,
-          caller_id_in_from, is_default_outbound, is_active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          caller_id_in_from, is_default_outbound, is_active,
+          allow_mobile, allow_extension,
+          mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
+          ext_normalize_enabled, ext_prefix, ext_suffix)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING *`,
       [tenantId, d.name, d.type, d.host, d.port, d.username, d.password,
-       d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active]
+       d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active,
+       d.allow_mobile, d.allow_extension,
+       d.mobile_normalize_enabled, d.mobile_strip_leading_zero, d.mobile_prefix, d.mobile_suffix,
+       d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix]
     );
     return row;
   });
@@ -67,21 +87,33 @@ export const updateGateway = asyncHandler(async (req, res) => {
     }
     const { rows: [row] } = await tq(
       `UPDATE sip_gateways SET
-         name               = COALESCE($3, name),
-         type               = COALESCE($4, type),
-         host               = COALESCE($5, host),
-         port               = COALESCE($6, port),
-         username           = COALESCE($7, username),
-         password           = COALESCE($8, password),
-         register           = COALESCE($9, register),
-         caller_id_in_from  = COALESCE($10, caller_id_in_from),
-         is_default_outbound = COALESCE($11, is_default_outbound),
-         is_active          = COALESCE($12, is_active),
-         updated_at         = now()
+         name                      = COALESCE($3,  name),
+         type                      = COALESCE($4,  type),
+         host                      = COALESCE($5,  host),
+         port                      = COALESCE($6,  port),
+         username                  = COALESCE($7,  username),
+         password                  = COALESCE($8,  password),
+         register                  = COALESCE($9,  register),
+         caller_id_in_from         = COALESCE($10, caller_id_in_from),
+         is_default_outbound       = COALESCE($11, is_default_outbound),
+         is_active                 = COALESCE($12, is_active),
+         allow_mobile              = COALESCE($13, allow_mobile),
+         allow_extension           = COALESCE($14, allow_extension),
+         mobile_normalize_enabled  = COALESCE($15, mobile_normalize_enabled),
+         mobile_strip_leading_zero = COALESCE($16, mobile_strip_leading_zero),
+         mobile_prefix             = COALESCE($17, mobile_prefix),
+         mobile_suffix             = COALESCE($18, mobile_suffix),
+         ext_normalize_enabled     = COALESCE($19, ext_normalize_enabled),
+         ext_prefix                = COALESCE($20, ext_prefix),
+         ext_suffix                = COALESCE($21, ext_suffix),
+         updated_at                = now()
        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
        RETURNING *`,
       [req.params.id, tenantId, d.name, d.type, d.host, d.port, d.username,
-       d.password, d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active]
+       d.password, d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active,
+       d.allow_mobile, d.allow_extension,
+       d.mobile_normalize_enabled, d.mobile_strip_leading_zero, d.mobile_prefix, d.mobile_suffix,
+       d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix]
     );
     return row;
   });

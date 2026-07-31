@@ -400,39 +400,101 @@ end`,
     icon: '⏺',
     bg: '#2a1e2a', border: '#6a2a6a', color: '#e9d5ff',
     category: 'Recording',
-    description: 'Play a prompt audio file. Recording is not yet active — the node advances to the next node after playback.',
+    description: 'Record caller audio. Stops on silence or # key. Stores the file path in a session variable for downstream ENS or playback nodes.',
     ports: 'next',
     summaryTemplate: '→ ${variable_name} · max ${max_seconds}s',
     configSchema: [
-      { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session var that will store the recorded file path (used when recording is enabled)' },
-      { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Audio file played before recording starts' },
+      { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session variable that stores the recorded file path — read by downstream ENS node' },
+      { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Played before recording starts. Takes priority over prompt text.' },
+      { key: 'prompt_text', label: 'Prompt text (TTS fallback)', fieldType: 'textarea', placeholder: 'Please record your message after the tone. Press pound when done.', hint: 'Spoken when no prompt audio file is configured' },
       { key: 'max_seconds', label: 'Max seconds', fieldType: 'number', min: 1, max: 300 },
-      { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Audio level below which is considered silence' },
-      { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'How many silence chunks before stopping' },
-      { key: 'record_dir', label: 'Record directory', fieldType: 'mono_text', placeholder: '(uses FS_RECORDING_DIR/ivr by default)', hint: 'Leave blank to use FS_RECORDING_DIR/ivr configured in .env' },
-      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after recording' },
+      { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Audio energy level below which is considered silence' },
+      { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'Consecutive silence chunks required before auto-stopping' },
+      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after a successful recording (e.g. ENS trigger)' },
     ],
     luaHandler: `
 local function exec_record_message(s, node)
-  -- Phase: prompt audio playback only.
-  -- TTS is not implemented. Recording is not yet active.
-  -- This node plays the configured audio file and advances to the next node.
+  freeswitch.consoleLog("INFO", "[ivr_executor] record_message: started\\n")
+
+  -- Resolve recordings directory from FreeSWITCH runtime (never hardcode paths)
+  -- recordings_dir is always set by FreeSWITCH's built-in default_vars.conf.xml
+  local rec_base = _api:execute("global_getvar", "recordings_dir")
+  if not rec_base or rec_base == "" then
+    rec_base = "/var/lib/freeswitch/recordings"
+  end
+  local rec_dir = rec_base .. "/ivr"
+  freeswitch.consoleLog("DEBUG", "[ivr_executor] record_message: rec_dir=" .. rec_dir .. "\\n")
+
+  -- Auto-create IVR recording directory (deploymentEngine creates at deploy time;
+  -- this handles fresh installs or directory removal without redeployment)
+  os.execute("mkdir -p '" .. rec_dir .. "'")
+
+  -- Unique filename: ivr_<call-uuid>_<unix-timestamp>.wav (no collisions)
+  local call_uuid = s:getVariable("uuid") or "unknown"
+  local fpath = rec_dir .. "/ivr_" .. call_uuid .. "_" .. os.time() .. ".wav"
+  freeswitch.consoleLog("INFO", "[ivr_executor] record_message: path=" .. fpath .. "\\n")
+
+  -- Play prompt before recording (audio file takes priority; TTS spoken as fallback)
   local pf = resolve_audio(node.prompt_audio_url)
   if pf and pf ~= "" then
+    freeswitch.consoleLog("INFO", "[ivr_executor] record_message: playing prompt file\\n")
     s:streamFile(pf)
+  elseif node.prompt_text and node.prompt_text ~= "" then
+    freeswitch.consoleLog("INFO", "[ivr_executor] record_message: speaking prompt (TTS)\\n")
+    speak(s, interp(s, node.prompt_text))
   end
 
-  -- TODO(recording-phase): when recording is enabled, add the following steps here:
-  --   local rec_dir = node.record_dir
-  --   if not rec_dir or rec_dir == "" then
-  --     rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
-  --     rec_dir = rec_dir .. "/ivr"
-  --   end
-  --   local fpath = rec_dir .. "/ivr_" .. s:getVariable("uuid") .. "_" .. os.time() .. ".wav"
-  --   s:execute("playback", "tone_stream://%(500,0,640)")
-  --   s:recordFile(fpath, node.max_seconds or 60, node.silence_threshold or 500, node.silence_hits or 3)
-  --   s:setVariable(node.variable_name or "recorded_file_path", fpath)
+  -- Abort if caller disconnected during prompt playback
+  if not s:ready() then
+    freeswitch.consoleLog("WARN", "[ivr_executor] record_message: caller disconnected before recording\\n")
+    return nil
+  end
 
+  -- Play beep — always, gives caller a clear start signal
+  s:execute("playback", "tone_stream://%(500,0,640)")
+  s:sleep(100)
+
+  -- Record audio — stops when caller presses # OR silence is detected
+  local max_sec  = node.max_seconds       or 60
+  local sil_thr  = node.silence_threshold or 500
+  local sil_hits = node.silence_hits      or 3
+  freeswitch.consoleLog("INFO",
+    "[ivr_executor] record_message: recording max_sec=" .. max_sec ..
+    " silence_threshold=" .. sil_thr .. " silence_hits=" .. sil_hits .. "\\n")
+  s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits .. " #")
+  s:sleep(200)
+
+  -- Handle caller hangup during recording
+  if not s:ready() then
+    freeswitch.consoleLog("WARN", "[ivr_executor] record_message: caller disconnected during recording\\n")
+    return nil
+  end
+
+  -- Verify recording has meaningful audio content (guards against silence-only captures)
+  local rec_size = 0
+  local fh = io.open(fpath, "rb")
+  if fh then
+    rec_size = fh:seek("end") or 0
+    fh:close()
+  end
+  freeswitch.consoleLog("INFO",
+    "[ivr_executor] record_message: file=" .. fpath .. " bytes=" .. rec_size .. "\\n")
+
+  if rec_size < 2000 then
+    freeswitch.consoleLog("ERR",
+      "[ivr_executor] record_message: recording too short or empty (bytes=" .. rec_size ..
+      ") — not proceeding to next node\\n")
+    speak(s, "We could not capture your recording. Please try again.")
+    return nil
+  end
+
+  -- Store file path in session variable — downstream ENS node reads this
+  local var_name = node.variable_name or "recorded_file_path"
+  s:setVariable(var_name, fpath)
+  freeswitch.consoleLog("INFO",
+    "[ivr_executor] record_message: stored " .. var_name .. "=" .. fpath .. "\\n")
+
+  freeswitch.consoleLog("INFO", "[ivr_executor] record_message: completed, proceeding to next node\\n")
   return node.next
 end`,
     apiEndpoint: null,

@@ -36,6 +36,12 @@ const EnsConfigSchema = z.object({
   sip_gateway:               emptyToNull,
   sip_caller_id:             emptyToNull,
 
+  // Dialing policy — ENS decides WHAT to dial; gateway decides HOW (migration 034)
+  routing_mode:    z.enum(['auto','internal_only','gateway_only']).default('auto'),
+  dial_preference: z.enum(['extension_only','mobile_only','extension_mobile','mobile_extension']).default('extension_mobile'),
+  fallback_mode:   z.enum(['none','extension_mobile','mobile_extension']).default('none'),
+  skip_behavior:   z.enum(['skip','fail','warn']).default('skip'),
+
   // Messages
   no_pending_msg:            emptyToNull,
   expiry_announcement:       emptyToNull,
@@ -158,10 +164,12 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        retry_failed_only, adaptive_throttling, campaign_priority, max_active_campaigns,
        sip_gateway, sip_caller_id,
        no_pending_msg, expiry_announcement,
-       is_active
+       is_active,
+       routing_mode, dial_preference, fallback_mode, skip_behavior
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-       $18,$19,$20,$21,$22,$23,$24,$25,$26
+       $18,$19,$20,$21,$22,$23,$24,$25,$26,
+       $27,$28,$29,$30
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -175,6 +183,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.sip_gateway, d.sip_caller_id,
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
+      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
     ]
   );
   const cfg = rows[0];
@@ -220,7 +229,11 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        expiry_announcement       = COALESCE($24, expiry_announcement),
        is_active                 = COALESCE($25, is_active),
        tenant_id                 = COALESCE(tenant_id, $26),
-       updated_at                = now()
+       routing_mode    = COALESCE($27, routing_mode),
+       dial_preference = COALESCE($28, dial_preference),
+       fallback_mode   = COALESCE($29, fallback_mode),
+       skip_behavior   = COALESCE($30, skip_behavior),
+       updated_at      = now()
      WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $26 RETURNING *`,
     [
       req.params.id,
@@ -237,6 +250,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
       req.user.tenantId,
+      d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });

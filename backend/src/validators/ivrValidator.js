@@ -92,14 +92,17 @@ const ConditionNodeSchema = z.object({
   false_node:     nodeId,
 });
 
-// ── NEW: record_message node ──────────────────────────────────────────────────
+// ── record_message node ───────────────────────────────────────────────────────
 // Records caller audio until # pressed or silence detected.
 // Saves file path into variable_name for use by downstream ens node.
+// The executor resolves the recording directory from FreeSWITCH's recordings_dir
+// global variable at call time — record_dir is kept only for backward compatibility
+// with pre-existing saved flows and is silently ignored by the executor.
 
 const RecordMessageNodeSchema = z.object({
   type:               z.literal('record_message'),
-  variable_name:      varName,                              // session var to store recording path
-  record_dir:         z.string().max(512).optional(),       // defaults to FS_RECORDING_DIR/ivr
+  variable_name:      varName,
+  record_dir:         z.string().max(512).optional(),  // ignored — path resolved from FS global var
   max_seconds:        z.number().int().min(1).max(300).optional().default(60),
   silence_threshold:  z.number().int().min(10).max(2000).optional().default(500),
   silence_hits:       z.number().int().min(1).max(10).optional().default(3),

@@ -12,6 +12,16 @@ const EMPTY = {
   name: '', type: 'generic_sip', host: '', port: 5060,
   username: '', password: '', register: true, caller_id_in_from: false,
   is_default_outbound: false, is_active: true,
+  // Dialing policy (migration 035)
+  allow_mobile:              true,
+  allow_extension:           false,
+  mobile_normalize_enabled:  false,
+  mobile_strip_leading_zero: false,
+  mobile_prefix:             '',
+  mobile_suffix:             '',
+  ext_normalize_enabled:     false,
+  ext_prefix:                '',
+  ext_suffix:                '',
 };
 
 const TYPE_LABELS = { avaya: 'Avaya Aura', cisco: 'Cisco UC', generic_sip: 'Generic SIP', other: 'Other' };
@@ -37,7 +47,14 @@ export default function TelephonyGateways() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      const payload = { ...form, port: Number(form.port) || 5060 };
+      const payload = {
+        ...form,
+        port:         Number(form.port) || 5060,
+        mobile_prefix: form.mobile_prefix || null,
+        mobile_suffix: form.mobile_suffix || null,
+        ext_prefix:    form.ext_prefix    || null,
+        ext_suffix:    form.ext_suffix    || null,
+      };
       if (!modal.id) await api.gateways.create(payload);
       else           await api.gateways.update(modal.id, payload);
       setModal(null); load();
@@ -51,6 +68,15 @@ export default function TelephonyGateways() {
       username: r.username || '', password: '', // never pre-fill password from a masked read
       register: r.register, caller_id_in_from: r.caller_id_in_from,
       is_default_outbound: r.is_default_outbound, is_active: r.is_active,
+      allow_mobile:              r.allow_mobile              ?? true,
+      allow_extension:           r.allow_extension           ?? false,
+      mobile_normalize_enabled:  r.mobile_normalize_enabled  ?? false,
+      mobile_strip_leading_zero: r.mobile_strip_leading_zero ?? false,
+      mobile_prefix:             r.mobile_prefix             ?? '',
+      mobile_suffix:             r.mobile_suffix             ?? '',
+      ext_normalize_enabled:     r.ext_normalize_enabled     ?? false,
+      ext_prefix:                r.ext_prefix                ?? '',
+      ext_suffix:                r.ext_suffix                ?? '',
     });
     setModal(r); setError('');
   }
@@ -158,6 +184,90 @@ export default function TelephonyGateways() {
               <input type="checkbox" checked={form.is_active} onChange={e => f('is_active', e.target.checked)} />
               Active
             </label>
+
+            {/* ── Dialing Rules ── */}
+            <div className="border-t border-border pt-3 space-y-3">
+              <p className="text-xs font-bold text-text-secondary uppercase tracking-wider">Dialing Rules</p>
+              <p className="text-[11px] text-text-muted">
+                Controls which number types this gateway accepts and how they are formatted before dialing.
+              </p>
+
+              <div className="flex gap-5">
+                <label className="flex items-center gap-2 cursor-pointer text-sm text-text-primary">
+                  <input type="checkbox" checked={form.allow_mobile}
+                         onChange={e => f('allow_mobile', e.target.checked)} />
+                  Allow Mobile Numbers
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer text-sm text-text-primary">
+                  <input type="checkbox" checked={form.allow_extension}
+                         onChange={e => f('allow_extension', e.target.checked)} />
+                  Allow Extensions
+                </label>
+              </div>
+
+              {/* Mobile formatting */}
+              <div className="border border-border rounded-lg p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={form.mobile_normalize_enabled}
+                         onChange={e => f('mobile_normalize_enabled', e.target.checked)} />
+                  <span className="text-sm font-medium text-text-primary">Mobile Formatting</span>
+                </label>
+                {form.mobile_normalize_enabled && (
+                  <div className="mt-3 pl-6 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={form.mobile_strip_leading_zero}
+                             onChange={e => f('mobile_strip_leading_zero', e.target.checked)} />
+                      <span className="text-sm text-text-primary">Strip Leading Zero</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="label text-xs">Prefix</label>
+                        <input className="input font-mono text-xs" value={form.mobile_prefix}
+                               onChange={e => f('mobile_prefix', e.target.value)}
+                               placeholder="e.g. +966, 966, 9" />
+                      </div>
+                      <div>
+                        <label className="label text-xs">Suffix</label>
+                        <input className="input font-mono text-xs" value={form.mobile_suffix}
+                               onChange={e => f('mobile_suffix', e.target.value)}
+                               placeholder="e.g. # (rare)" />
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-text-muted">
+                      Example: 0507221769 → strip 0 → 507221769 → add +966 → +966507221769
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Extension formatting */}
+              <div className="border border-border rounded-lg p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={form.ext_normalize_enabled}
+                         onChange={e => f('ext_normalize_enabled', e.target.checked)} />
+                  <span className="text-sm font-medium text-text-primary">Extension Formatting</span>
+                </label>
+                {form.ext_normalize_enabled && (
+                  <div className="mt-3 pl-6 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label text-xs">Prefix</label>
+                      <input className="input font-mono text-xs" value={form.ext_prefix}
+                             onChange={e => f('ext_prefix', e.target.value)}
+                             placeholder="e.g. 8" />
+                    </div>
+                    <div>
+                      <label className="label text-xs">Suffix</label>
+                      <input className="input font-mono text-xs" value={form.ext_suffix}
+                             onChange={e => f('ext_suffix', e.target.value)}
+                             placeholder="e.g. #" />
+                    </div>
+                    <p className="text-[11px] text-text-muted col-span-2">
+                      Example: 1001 → add prefix 8 → 81001
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
               <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>
