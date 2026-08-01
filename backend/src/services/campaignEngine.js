@@ -308,6 +308,9 @@ async function processAllCampaigns() {
 }
 
 async function processCampaign(campaign) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][processCampaign:ENTER] ts=${_ts()} campaignId=${campaign.id} status=${campaign.status}`);
+
   // Transition queued → running (idempotent via WHERE status='queued')
   if (campaign.status === 'queued') {
     const { rows: [started] } = await query(
@@ -343,6 +346,20 @@ async function processCampaign(campaign) {
 
   const { dialing, ready } = counts;
 
+  // FORENSIC: dump live counts + full destination snapshot before every completion gate evaluation
+  {
+    const { rows: _dests } = await query(
+      `SELECT id, status, attempt_count, call_uuid, hangup_cause,
+              next_attempt_at, completed_at
+       FROM ens_campaign_destinations WHERE campaign_id = $1 ORDER BY id`,
+      [campaign.id]
+    );
+    console.log(`[FOREN][COMPLETION_GATE] ts=${_ts()} campaignId=${campaign.id} dialing=${dialing} ready=${ready} gate=${ready===0&&dialing===0}`);
+    for (const d of _dests) {
+      console.log(`[FOREN][DEST_SNAPSHOT]   ts=${_ts()} campaignId=${campaign.id} destId=${d.id} status=${d.status} attempt=${d.attempt_count} call_uuid=${d.call_uuid} hangup=${d.hangup_cause} next_at=${d.next_attempt_at} completed_at=${d.completed_at}`);
+    }
+  }
+
   // Update peak concurrent
   if (dialing > campaign.peak_concurrent) {
     await query(
@@ -354,9 +371,11 @@ async function processCampaign(campaign) {
 
   // No work to do
   if (ready === 0 && dialing === 0) {
+    console.log(`[FOREN][COMPLETION_GATE:PASS] ts=${_ts()} campaignId=${campaign.id} → calling completeCampaign()`);
     await completeCampaign(campaign.id);
     return;
   }
+  console.log(`[FOREN][COMPLETION_GATE:BLOCKED] ts=${_ts()} campaignId=${campaign.id} dialing=${dialing} ready=${ready} — gate not satisfied, continuing`);
 
   const availableSlots = Math.max(0, campaign.max_concurrent - dialing);
   if (availableSlots === 0) return;
@@ -394,6 +413,11 @@ async function processCampaign(campaign) {
 
   if (destinations.length === 0) return;
 
+  // FORENSIC: log every queued→dialing transition
+  for (const d of destinations) {
+    console.log(`[FOREN][STATUS_CHANGE] ts=${_ts()} campaignId=${campaign.id} destId=${d.id} prev=queued new=dialing attempt=${d.attempt_count} max_attempts=${d.max_attempts} gateway=${d.gateway_name} phone=${d.phone_number} trigger=processCampaign:claim`);
+  }
+
   // Update campaign counters
   await query(
     `UPDATE ens_campaigns
@@ -425,11 +449,15 @@ async function processCampaign(campaign) {
 }
 
 async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][originateDestination:ENTER] ts=${_ts()} campaignId=${campaign.id} destId=${dest.id} callUuid=${callUuid} gatewayName=${gatewayName} phone=${dest.phone_number} playbackFile=${playbackFile||'null'}`);
+
   // Assign UUID to destination row first so ESL CHANNEL_HANGUP can find it
   await query(
     `UPDATE ens_campaign_destinations SET call_uuid = $2, updated_at = now() WHERE id = $1`,
     [dest.id, callUuid]
   );
+  console.log(`[FOREN][originateDestination] ts=${_ts()} campaignId=${campaign.id} destId=${dest.id} call_uuid written to DB`);
 
   try {
     await originateCampaignCall({
@@ -443,15 +471,20 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
       playbackFile: playbackFile || null,
       timeout:      ORIGINATE_TIMEOUT,
     });
+    console.log(`[FOREN][originateDestination] ts=${_ts()} campaignId=${campaign.id} destId=${dest.id} originateCampaignCall returned NORMALLY (no throw)`);
   } catch (e) {
+    console.log(`[FOREN][originateDestination:CATCH] ts=${_ts()} campaignId=${campaign.id} destId=${dest.id} exception="${e.message}" → calling handleDestFailed`);
     await handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message);
   }
+  console.log(`[FOREN][originateDestination:EXIT] ts=${_ts()} campaignId=${campaign.id} destId=${dest.id}`);
 }
 
 // ── ESL Event Handlers ────────────────────────────────────────────────────────
 
 // Called from eslService via eslEvents EventEmitter
 export async function onCallAnswer(callUuid) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][onCallAnswer:ENTER] ts=${_ts()} callUuid=${callUuid}`);
   const { rows: [dest] } = await query(
     `UPDATE ens_campaign_destinations
      SET status = 'answered', answered_at = now(), updated_at = now()
@@ -459,7 +492,11 @@ export async function onCallAnswer(callUuid) {
      RETURNING id, campaign_id`,
     [callUuid]
   );
-  if (!dest) return;
+  if (!dest) {
+    console.log(`[FOREN][onCallAnswer:EARLY_EXIT] ts=${_ts()} callUuid=${callUuid} — no matching row (uuid not found or status≠dialing)`);
+    return;
+  }
+  console.log(`[FOREN][STATUS_CHANGE] ts=${_ts()} campaignId=${dest.campaign_id} destId=${dest.id} prev=dialing new=answered call_uuid=${callUuid} trigger=onCallAnswer`);
 
   await query(
     `UPDATE ens_campaigns
@@ -477,15 +514,22 @@ export async function onCallAnswer(callUuid) {
 }
 
 export async function onCallHangup(callUuid, cause) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][onCallHangup:ENTER] ts=${_ts()} callUuid=${callUuid} cause=${cause}`);
   const { rows: [dest] } = await query(
     `SELECT id, campaign_id, answered_at, attempt_count, max_attempts, status
      FROM ens_campaign_destinations WHERE call_uuid = $1`,
     [callUuid]
   );
-  if (!dest) return; // not a campaign call
+  if (!dest) {
+    console.log(`[FOREN][onCallHangup:EARLY_EXIT] ts=${_ts()} callUuid=${callUuid} cause=${cause} — WHERE call_uuid=$1 returned 0 rows (uuid not in DB or already nulled)`);
+    return; // not a campaign call
+  }
+  console.log(`[FOREN][onCallHangup] ts=${_ts()} callUuid=${callUuid} cause=${cause} destId=${dest.id} campaignId=${dest.campaign_id} dest.status=${dest.status} attempt=${dest.attempt_count} max=${dest.max_attempts} answered_at=${dest.answered_at}`);
 
   const state       = getOrCreateState(dest.campaign_id);
   const wasAnswered = dest.answered_at != null || dest.status === 'answered';
+  console.log(`[FOREN][onCallHangup] ts=${_ts()} destId=${dest.id} wasAnswered=${wasAnswered} retryable=${RETRYABLE_CAUSES.has(cause)} attemptsLeft=${dest.max_attempts - dest.attempt_count}`);
 
   if (wasAnswered) {
     // Successfully delivered
@@ -503,6 +547,7 @@ export async function onCallHangup(callUuid, cause) {
        WHERE id = $1`,
       [dest.campaign_id]
     );
+    console.log(`[FOREN][STATUS_CHANGE] ts=${_ts()} campaignId=${dest.campaign_id} destId=${dest.id} prev=answered new=completed hangup_cause=${cause} trigger=onCallHangup:wasAnswered`);
     state.callTotal  = (state.callTotal  || 0) + 1;
   } else if (RETRYABLE_CAUSES.has(cause) && dest.attempt_count < dest.max_attempts) {
     // Schedule retry
@@ -520,6 +565,7 @@ export async function onCallHangup(callUuid, cause) {
        WHERE id = $1`,
       [dest.id, cause, delay]
     );
+    console.log(`[FOREN][STATUS_CHANGE] ts=${_ts()} campaignId=${dest.campaign_id} destId=${dest.id} prev=dialing new=queued(retry) hangup_cause=${cause} delay=${delay}s attempt=${dest.attempt_count}/${dest.max_attempts} trigger=onCallHangup:retry`);
 
     const busyCol = BUSY_CAUSES.has(cause) ? 'busy_count' : 'no_answer_count';
     await query(
@@ -536,6 +582,7 @@ export async function onCallHangup(callUuid, cause) {
     state.callTotal = (state.callTotal || 0) + 1;
   } else {
     // Failed / max retries exhausted
+    console.log(`[FOREN][onCallHangup] ts=${_ts()} destId=${dest.id} → branch: failed/exhausted (wasAnswered=${wasAnswered} retryable=${RETRYABLE_CAUSES.has(cause)} attempt=${dest.attempt_count} max=${dest.max_attempts}) → calling handleDestFailed`);
     await handleDestFailed(dest.id, dest.campaign_id, cause, null);
   }
 
@@ -548,6 +595,8 @@ export async function onCallHangup(callUuid, cause) {
 }
 
 async function handleDestFailed(destId, campaignId, cause, errorMsg) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][handleDestFailed:ENTER] ts=${_ts()} campaignId=${campaignId} destId=${destId} cause=${cause} errorMsg=${errorMsg}`);
   await query(
     `UPDATE ens_campaign_destinations
      SET status = 'failed', hangup_cause = $2, error_message = $3,
@@ -555,6 +604,7 @@ async function handleDestFailed(destId, campaignId, cause, errorMsg) {
      WHERE id = $1`,
     [destId, cause, errorMsg]
   );
+  console.log(`[FOREN][STATUS_CHANGE] ts=${_ts()} campaignId=${campaignId} destId=${destId} prev=dialing new=failed hangup_cause=${cause} call_uuid=null trigger=handleDestFailed`);
   await query(
     `UPDATE ens_campaigns
      SET failed_count  = failed_count + 1,
@@ -563,11 +613,14 @@ async function handleDestFailed(destId, campaignId, cause, errorMsg) {
      WHERE id = $1`,
     [campaignId]
   );
+  console.log(`[FOREN][handleDestFailed:EXIT] ts=${_ts()} campaignId=${campaignId} destId=${destId}`);
 }
 
 // ── Campaign lifecycle helpers ────────────────────────────────────────────────
 
 async function completeCampaign(campaignId) {
+  const _ts = () => new Date().toISOString();
+  console.log(`[FOREN][completeCampaign:ENTER] ts=${_ts()} campaignId=${campaignId}`);
   const { rows: [c] } = await query(
     `UPDATE ens_campaigns
      SET status = 'completed', completed_at = now(), updated_at = now(),
@@ -577,10 +630,16 @@ async function completeCampaign(campaignId) {
     [campaignId]
   );
   if (c) {
+    console.log(`[FOREN][completeCampaign] ts=${_ts()} campaignId=${campaignId} UPDATE returned row → answered=${c.answered_count} failed=${c.failed_count} total=${c.total_destinations}`);
     campaignState.delete(campaignId);
+    console.log(`[FOREN][completeCampaign] ts=${_ts()} campaignId=${campaignId} campaignState.delete() called`);
     emitInternal('enrs::campaign_completed', { campaign_id: campaignId, stats: c });
+    console.log(`[FOREN][completeCampaign] ts=${_ts()} campaignId=${campaignId} WebSocket enrs::campaign_completed emitted`);
     logger.info({ module: 'campaignEngine', campaignId }, 'Campaign completed');
+  } else {
+    console.log(`[FOREN][completeCampaign:NO_ROW] ts=${_ts()} campaignId=${campaignId} UPDATE returned 0 rows — campaign not in status=running (already completed/cancelled/expired?)`);
   }
+  console.log(`[FOREN][completeCampaign:EXIT] ts=${_ts()} campaignId=${campaignId}`);
 }
 
 async function expireCampaign(campaignId) {

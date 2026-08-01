@@ -220,7 +220,16 @@ function eslCommandTimeout(cmd, timeoutMs = 5000) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(res?.getBody?.() || '');
+      const body = res?.getBody?.() || '';
+      const isEnsOriginate = cmd.includes('enrs_campaign_id');
+      if (isEnsOriginate) {
+        const isErr = String(body).trimStart().startsWith('-ERR') || String(body).trimStart().startsWith('-USAGE');
+        console.log(`[FOREN][eslCommandTimeout:BGAPI_RESULT] ts=${new Date().toISOString()} isErr=${isErr} body="${String(body).trim().slice(0, 200)}" cmd="${cmd.slice(0, 300)}"`);
+        if (isErr) {
+          console.log(`[FOREN][eslCommandTimeout:CRITICAL] ts=${new Date().toISOString()} FreeSWITCH returned -ERR but promise will RESOLVE (not throw). catch() in originateDestination will NOT fire. No CHANNEL_HANGUP expected. Destination will remain dialing indefinitely.`);
+        }
+      }
+      resolve(body);
     });
   });
 }
@@ -994,8 +1003,11 @@ async function handleEvent(evt) {
     const uuid      = evt.getHeader('Unique-ID');
     const cause     = evt.getHeader('Hangup-Cause');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
+    const _cid      = evt.getHeader('variable_enrs_campaign_id');
+    const _did      = evt.getHeader('variable_enrs_dest_id');
     // DEBUG-PROBE: ENS campaign
-    { const _cid = evt.getHeader('variable_enrs_campaign_id'); if (_cid) console.log(`[ENS-DEBUG][CHANNEL_HANGUP] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} cause=${cause} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`); }
+    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_HANGUP] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${_did} cause=${cause} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`);
+    console.log(`[FOREN][ESL_EVENT:CHANNEL_HANGUP] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid||'none'} destId=${_did||'none'} cause=${cause} — emitting CHANNEL_HANGUP to eslEvents → onCallHangup will be called`);
     emit('channel.hangup', { uuid, cause, callerNum });
     eslEvents.emit('CHANNEL_HANGUP', { uuid, cause, callerNum });
 
@@ -1060,8 +1072,11 @@ async function handleEvent(evt) {
   if (name === 'CHANNEL_ANSWER') {
     const uuid      = evt.getHeader('Unique-ID');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
+    const _cid      = evt.getHeader('variable_enrs_campaign_id');
+    const _did      = evt.getHeader('variable_enrs_dest_id');
     // DEBUG-PROBE: ENS campaign
-    { const _cid = evt.getHeader('variable_enrs_campaign_id'); if (_cid) console.log(`[ENS-DEBUG][CHANNEL_ANSWER] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`); }
+    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_ANSWER] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${_did} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`);
+    console.log(`[FOREN][ESL_EVENT:CHANNEL_ANSWER] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid||'none'} destId=${_did||'none'} — emitting CHANNEL_ANSWER to eslEvents → onCallAnswer will be called`);
     emit('channel.answer', { uuid, callerNum });
     eslEvents.emit('CHANNEL_ANSWER', { uuid, callerNum });
     return;
@@ -1137,7 +1152,9 @@ async function handleEvent(evt) {
       const body    = (evt.getBody ? evt.getBody() : '') || '';
       const isEns   = jobArg.includes('enrs_campaign_id');
       if (isEns) {
+        const isErr = String(body).trimStart().startsWith('-ERR') || String(body).trimStart().startsWith('-USAGE');
         console.log(`[ENS-DEBUG][BACKGROUND_JOB] ts=${new Date().toISOString()} jobUuid=${jobUuid} result="${String(body).trim().slice(0, 300)}" cmdArg="${jobArg.slice(0, 300)}"`);
+        console.log(`[FOREN][ESL_EVENT:BACKGROUND_JOB] ts=${new Date().toISOString()} isErr=${isErr} result="${String(body).trim().slice(0,200)}" — NOTE: this handler does return immediately with no DB update and no eslEvents emit regardless of result`);
       }
     }
     return;
@@ -1155,6 +1172,7 @@ async function handleEvent(evt) {
     const _ser = (() => { try { return typeof evt.serialize === 'function' ? evt.serialize() : null; } catch { return null; } })();
     const _enrsVars = _ser ? _ser.split('\n').filter(l => l.toLowerCase().includes('enrs_') || l.toLowerCase().includes('variable_enrs')).join(' | ') : '(serialize unavailable)';
     console.log(`[ENS-DEBUG][CHANNEL_ORIGINATE] ts=${new Date().toISOString()} uuid=${uuid} caller=${callerNum} dest=${destNum} variable_enrs_campaign_id=${_cid ?? 'MISSING'} variable_enrs_dest_id=${_did ?? 'MISSING'} | all_enrs_vars: ${_enrsVars || 'NONE FOUND'}`);
+    if (_cid) console.log(`[FOREN][ESL_EVENT:CHANNEL_ORIGINATE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${_did} — channel created by FreeSWITCH`);
     return;
   }
 
@@ -1162,7 +1180,10 @@ async function handleEvent(evt) {
   if (name === 'CHANNEL_PROGRESS') {
     const uuid  = evt.getHeader('Unique-ID');
     const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_PROGRESS] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} dest=${evt.getHeader('Caller-Destination-Number')}`);
+    if (_cid) {
+      console.log(`[ENS-DEBUG][CHANNEL_PROGRESS] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} dest=${evt.getHeader('Caller-Destination-Number')}`);
+      console.log(`[FOREN][ESL_EVENT:CHANNEL_PROGRESS] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} — remote is ringing (no campaign handler invoked for this event)`);
+    }
     return;
   }
 
@@ -1207,6 +1228,7 @@ async function handleEvent(evt) {
       const cause    = evt.getHeader('Hangup-Cause');
       const answered = evt.getHeader('variable_answered') || evt.getHeader('variable_endpoint_disposition') || '';
       console.log(`[ENS-DEBUG][CHANNEL_HANGUP_COMPLETE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} cause=${cause} answered="${answered}" dest=${evt.getHeader('Caller-Destination-Number')}`);
+      console.log(`[FOREN][ESL_EVENT:CHANNEL_HANGUP_COMPLETE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} cause=${cause} — NOTE: this event is NOT forwarded to eslEvents; no campaign handler is called here`);
     }
     return;
   }
