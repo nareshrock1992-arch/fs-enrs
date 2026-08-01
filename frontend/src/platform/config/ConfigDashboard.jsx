@@ -7,6 +7,7 @@ import {
 import { api } from '../../api/client.js';
 import { useConfigChangesStore } from './stores/configChangesStore.js';
 import StatusBadge from './StatusBadge.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -326,16 +327,15 @@ export default function ConfigDashboard() {
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-bold text-text-primary">Configuration Dashboard</h1>
-        <p className="text-xs text-text-muted mt-0.5">
-          Enterprise configuration overview — platform health, pending changes, and deployment status.
-        </p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Configuration Dashboard"
+        description="Enterprise configuration overview — platform health, pending changes, and deployment status."
+        icon={Layers}
+      />
 
       {/* Two-column grid on wide screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <PlatformHealthSection  status={status} />
         <PendingChangesSection />
         <ConfigSummarySection   summary={summary} />

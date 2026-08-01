@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 // ── Static maps ───────────────────────────────────────────────────────────────
 
@@ -437,25 +438,22 @@ export default function ServiceRegistry() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">Service Registry</h1>
-          <p className="text-sm text-text-muted mt-0.5">All registered emergency trigger numbers</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={load} disabled={loading} className="btn-ghost flex items-center gap-1.5">
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
-          <button onClick={() => setEditRow({})} className="btn-primary flex items-center gap-1.5">
-            <Plus size={15} /> Register Number
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Service Registry"
+        description="All registered emergency trigger numbers"
+        icon={ShieldAlert}
+      >
+        <button onClick={load} disabled={loading} className="btn-ghost">
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
+        <button onClick={() => setEditRow({})} className="btn-primary">
+          <Plus size={15} /> Register Number
+        </button>
+      </PageHeader>
 
       {/* Summary bar */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-4 gap-3">
         {[
           { label: 'Total Services', value: services.length, icon: ShieldAlert },
           { label: 'ENS Services',   value: ensCount,  icon: Bell,     sub: activeEns > 0 ? `${activeEns} active` : null, warn: activeEns > 0 },

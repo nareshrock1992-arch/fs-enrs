@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { RefreshCw, ChevronDown, ChevronRight, Radio } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 
 // Phase 5 C4 — full ENS broadcast detail: per-contact delivery status
@@ -39,19 +40,23 @@ export default function ReportEnsBroadcasts() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">ENS Broadcast Report</h1>
-          <p className="text-xs text-text-muted mt-0.5">Per-contact delivery status + playback access log</p>
-        </div>
-        <div className="flex items-end gap-2">
-          <div><label className="label">From</label>
-            <input type="date" className="input" value={filters.from} onChange={e => setFilters(f => ({ ...f, from: e.target.value }))} /></div>
-          <div><label className="label">To</label>
-            <input type="date" className="input" value={filters.to} onChange={e => setFilters(f => ({ ...f, to: e.target.value }))} /></div>
-          <button onClick={load} disabled={loading} className="btn-primary flex items-center gap-1.5">
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
+      <PageHeader
+        title="ENS Broadcast Report"
+        description="Per-contact delivery status + playback access log"
+        icon={Radio}
+      >
+        <button onClick={load} disabled={loading} className="btn-primary">
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
+      </PageHeader>
+
+      <div className="filter-bar">
+        <div className="flex flex-col gap-1"><label className="label">From</label>
+          <input type="date" className="input-sm" value={filters.from} onChange={e => setFilters(f => ({ ...f, from: e.target.value }))} /></div>
+        <div className="flex flex-col gap-1"><label className="label">To</label>
+          <input type="date" className="input-sm" value={filters.to} onChange={e => setFilters(f => ({ ...f, to: e.target.value }))} /></div>
+        <div className="flex items-end">
+          <button onClick={load} disabled={loading} className="btn-secondary">Apply</button>
         </div>
       </div>
 

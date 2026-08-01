@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useCallback } from 'react';
 import { PhoneIncoming, Clock, CheckCircle2, User, ShieldAlert } from 'lucide-react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useSocketEvent } from '../../hooks/useSocketEvent.js';
 import { useLiveDuration } from '../../hooks/useLiveDuration.js';
@@ -206,13 +207,15 @@ export default function ErsLive() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <ShieldAlert size={20} className="text-red-500" />
-        <h1 className="text-xl font-bold text-text-primary">ERS Live View</h1>
+      <PageHeader
+        title="ERS Live View"
+        description="Real-time emergency response monitoring"
+        icon={ShieldAlert}
+      >
         {incidents.length > 0 && (
           <span className="badge bg-red-500/15 text-red-500">{incidents.length} active</span>
         )}
-      </div>
+      </PageHeader>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Active incidents */}
@@ -246,7 +249,7 @@ export default function ErsLive() {
           </h2>
           <Table>
             <thead>
-              <tr className="bg-surface-hover">
+              <tr>
                 <Th>#</Th>
                 <Th>Caller</Th>
                 <Th>ERS</Th>

@@ -11,6 +11,7 @@ import {
 import { api } from '../api/client.js';
 import { useSocketEvent } from '../hooks/useSocketEvent.js';
 import StatCard from '../components/ui/StatCard.jsx';
+import PageHeader from '../components/ui/PageHeader.jsx';
 import EslStatusBanner from '../components/dashboard/EslStatusBanner.jsx';
 import ENSBlastPanel from '../components/dashboard/ENSBlastPanel.jsx';
 import ErsActivePanel from '../components/dashboard/ErsActivePanel.jsx';
@@ -299,20 +300,19 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Page title + ESL banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex-1">
-          <h1 className="text-xl font-bold text-text-primary">Dashboard</h1>
-          <p className="text-xs text-text-muted mt-0.5">Real-time emergency activity</p>
-        </div>
+      <PageHeader
+        title="Dashboard"
+        description="Real-time emergency activity"
+        icon={ShieldAlert}
+      >
         <EslStatusBanner
           initialConnected={esl.connected}
           host={esl.host}
           port={esl.port}
         />
-      </div>
+      </PageHeader>
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

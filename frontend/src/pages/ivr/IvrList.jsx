@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Workflow, Plus, Pencil, Trash2, Search, Phone, LayoutTemplate } from 'lucide-react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -84,32 +85,27 @@ export default function IvrList() {
   }
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Workflow size={20} className="text-brand" />
-        <div className="flex-1">
-          <h1 className="text-xl font-bold text-text-primary">IVR Flows</h1>
-          <p className="text-xs text-text-muted">{total} flow{total !== 1 ? 's' : ''} configured</p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="IVR Flows"
+        description={`${total} flow${total !== 1 ? 's' : ''} configured`}
+        icon={Workflow}
+      >
         {canEdit && (
-          <button onClick={createFlow}
-                  className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
-                             bg-brand text-white hover:bg-brand/90 font-medium transition-colors">
+          <button onClick={createFlow} className="btn-primary">
             <Plus size={14} /> New Flow
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {/* Search */}
       <div className="relative max-w-xs">
-        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search flows…"
-          className="w-full pl-8 pr-3 py-2 bg-surface border border-surface-border rounded-lg
-                     text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-brand"
+          className="input-sm pl-8"
         />
       </div>
 

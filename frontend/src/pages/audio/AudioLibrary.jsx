@@ -3,6 +3,7 @@ import {
   Music, Upload, Trash2, Play, Square, CheckCircle, AlertCircle,
   Clock, Search, Tag, RefreshCw, HardDrive, X
 } from 'lucide-react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 
@@ -321,41 +322,34 @@ export default function AudioLibrary() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {showUpload && (
         <UploadModal onClose={() => setShowUpload(false)} onSuccess={load} />
       )}
 
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <Music size={20} className="text-brand" />
-        <div className="flex-1">
-          <h1 className="text-xl font-bold text-text-primary">Audio Library</h1>
-          <p className="text-xs text-text-muted">{total} file{total !== 1 ? 's' : ''} — audio deployed to FreeSWITCH sound directory</p>
-        </div>
+      <PageHeader
+        title="Audio Library"
+        description={`${total} file${total !== 1 ? 's' : ''} — audio deployed to FreeSWITCH sound directory`}
+        icon={Music}
+      >
         {canEdit && (
           <button
             onClick={() => handleScan()}
             disabled={scanning}
             title="Scan FreeSWITCH sound directory for existing files"
-            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
-                       bg-surface border border-surface-border text-text-muted
-                       hover:text-brand hover:border-brand/50 font-medium transition-colors disabled:opacity-50"
+            className="btn-secondary disabled:opacity-50"
           >
             <HardDrive size={14} className={scanning ? 'animate-pulse' : ''} />
             {scanning ? 'Scanning…' : 'Scan FS'}
           </button>
         )}
         {canEdit && (
-          <button
-            onClick={() => setShowUpload(true)}
-            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
-                       bg-brand text-white hover:bg-brand/90 font-medium transition-colors"
-          >
+          <button onClick={() => setShowUpload(true)} className="btn-primary">
             <Upload size={14} /> Upload
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {/* Scan result banner */}
       {scanResult && (
@@ -384,13 +378,12 @@ export default function AudioLibrary() {
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search files…"
-            className="w-full pl-8 pr-3 py-2 bg-surface border border-surface-border rounded-lg
-                       text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-brand"
+            className="input-sm pl-8"
           />
         </div>
         <div className="flex items-center gap-2">

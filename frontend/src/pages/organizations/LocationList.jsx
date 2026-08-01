@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 const EMPTY = { organization_id: '', name: '', address: '', floor_plan_url: '' };
 
@@ -54,13 +55,12 @@ export default function LocationList() {
   const orgName = id => orgs.find(o => o.id === id)?.name || id;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Locations</h1>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-1.5"><Plus size={15} /> Add Location</button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader title="Locations">
+        <button onClick={openCreate} className="btn-primary"><Plus size={15} /> Add Location</button>
+      </PageHeader>
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th><Th>Organization</Th><Th>Address</Th><Th></Th>
         </tr></thead>
         <tbody>

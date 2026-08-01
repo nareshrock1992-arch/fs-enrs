@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Bell } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
 
@@ -39,33 +40,30 @@ export default function ReportNotifications() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Notification Report</h1>
-        <button onClick={exportCsv} className="btn-secondary flex items-center gap-1.5">
+    <div className="space-y-6">
+      <PageHeader title="Notification Report" icon={Bell}>
+        <button onClick={exportCsv} className="btn-secondary">
           <Download size={14} /> Export CSV
         </button>
-      </div>
+      </PageHeader>
 
-      <div className="card flex flex-wrap gap-3">
-        <div>
+      <div className="filter-bar">
+        <div className="flex flex-col gap-1">
           <label className="label">Status</label>
-          <select className="input py-1.5 text-sm" value={filters.status} onChange={e => f('status', e.target.value)}>
+          <select className="input-sm" value={filters.status} onChange={e => f('status', e.target.value)}>
             {STATUSES.map(s => <option key={s} value={s}>{s || 'All'}</option>)}
           </select>
         </div>
-        <div>
+        <div className="flex flex-col gap-1">
           <label className="label">From</label>
-          <input type="date" className="input py-1.5 text-sm" value={filters.from}
-                 onChange={e => f('from', e.target.value)} />
+          <input type="date" className="input-sm" value={filters.from} onChange={e => f('from', e.target.value)} />
         </div>
-        <div>
+        <div className="flex flex-col gap-1">
           <label className="label">To</label>
-          <input type="date" className="input py-1.5 text-sm" value={filters.to}
-                 onChange={e => f('to', e.target.value)} />
+          <input type="date" className="input-sm" value={filters.to} onChange={e => f('to', e.target.value)} />
         </div>
         <div className="flex items-end">
-          <button onClick={load} className="btn-primary py-1.5">Apply</button>
+          <button onClick={load} className="btn-primary">Apply</button>
         </div>
       </div>
 
@@ -73,7 +71,7 @@ export default function ReportNotifications() {
         <p className="text-sm text-text-muted">Loading…</p>
       ) : (
         <Table>
-          <thead><tr className="bg-surface-hover">
+          <thead><tr>
             <Th>ENS Name</Th><Th>Status</Th><Th>Targets</Th><Th>Answered</Th><Th>Created</Th>
           </tr></thead>
           <tbody>

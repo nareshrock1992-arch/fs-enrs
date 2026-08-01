@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 function fmtSize(bytes) {
   const n = Number(bytes);
@@ -493,7 +494,7 @@ export default function Recordings() {
   const completed = recordings.filter(r => r.status === 'COMPLETED').length;
 
   return (
-    <div className="space-y-5 relative">
+    <div className="space-y-6 relative">
       {detail && (
         <RecordingDetail
           rec={detail}
@@ -504,22 +505,15 @@ export default function Recordings() {
         />
       )}
 
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20
-                        flex items-center justify-center shrink-0">
-          <Headphones size={18} className="text-red-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-text-primary">Recordings</h1>
-          <p className="text-xs text-text-muted">{total} recording{total !== 1 ? 's' : ''} total</p>
-        </div>
-        <button onClick={load}
-          className="p-2 rounded-lg text-text-muted hover:text-brand hover:bg-surface-hover transition-colors"
-          title="Refresh">
+      <PageHeader
+        title="Recordings"
+        description={`${total} recording${total !== 1 ? 's' : ''} total`}
+        icon={Headphones}
+      >
+        <button onClick={load} className="btn-icon" title="Refresh">
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
-      </div>
+      </PageHeader>
 
       {/* Module type tabs */}
       <div className="flex items-center gap-1 border-b border-surface-border pb-0 -mb-1 overflow-x-auto">
@@ -579,21 +573,18 @@ export default function Recordings() {
       {/* Filters */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1 max-w-xs">
-          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search room, file, notes…"
-            className="w-full pl-8 pr-3 py-2 bg-surface border border-surface-border rounded-lg
-                       text-xs text-text-primary placeholder:text-text-muted focus:outline-none
-                       focus:border-brand transition-colors"
+            className="input-sm pl-8 w-full"
           />
         </div>
         <select
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
-          className="bg-surface border border-surface-border rounded-lg px-2.5 py-2 text-xs
-                     text-text-primary focus:outline-none focus:border-brand transition-colors">
+          className="input-sm">
           <option value="">All statuses</option>
           {Object.entries(STATUS).map(([k, v]) => (
             <option key={k} value={k}>{v.label}</option>

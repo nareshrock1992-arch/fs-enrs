@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Users } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
 export default function ReportContactUsage() {
@@ -29,13 +30,12 @@ export default function ReportContactUsage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Contact Usage Report</h1>
-        <button onClick={exportCsv} className="btn-secondary flex items-center gap-1.5"><Download size={14} /> Export CSV</button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader title="Contact Usage Report" icon={Users}>
+        <button onClick={exportCsv} className="btn-secondary"><Download size={14} /> Export CSV</button>
+      </PageHeader>
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th><Th>Mobile</Th><Th>Organization</Th><Th>ENS (Direct)</Th><Th>ENS (Group)</Th><Th>ERS Incidents</Th>
         </tr></thead>
         <tbody>

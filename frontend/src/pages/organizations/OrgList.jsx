@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 const EMPTY = { name: '', code: '', address: '', phone: '', email: '' };
 
@@ -45,16 +46,15 @@ export default function OrgList() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Organizations</h1>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-1.5">
+    <div className="space-y-6">
+      <PageHeader title="Organizations">
+        <button onClick={openCreate} className="btn-primary">
           <Plus size={15} /> Add Organization
         </button>
-      </div>
+      </PageHeader>
 
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th><Th>Code</Th><Th>Phone</Th><Th>Contacts</Th><Th></Th>
         </tr></thead>
         <tbody>

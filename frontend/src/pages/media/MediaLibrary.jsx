@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 const CATEGORIES = [
   'system_prompt','emergency_prompt','ivr_prompt','tts_generated',
@@ -790,7 +791,7 @@ function MediaLibraryInner() {
   const pending  = files.filter(f => !f.is_deployed).length;
 
   return (
-    <div className="space-y-5 relative">
+    <div className="space-y-6 relative">
       {player && <AudioPlayer file={player} onClose={() => setPlayer(null)} />}
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onSuccess={load} />}
       {detail && (
@@ -806,38 +807,23 @@ function MediaLibraryInner() {
         />
       )}
 
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-brand/10 border border-brand/20
-                        flex items-center justify-center shrink-0">
-          <Library size={18} className="text-brand" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-text-primary">Media Library</h1>
-          <p className="text-xs text-text-muted">
-            {total} file{total !== 1 ? 's' : ''} · {deployed} deployed · {pending} pending
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {canEdit && (
-            <button onClick={handleScan} disabled={scanning}
-              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg
-                         bg-surface border border-surface-border text-text-muted
-                         hover:text-text-primary hover:border-primary/30 font-medium
-                         transition-colors disabled:opacity-50">
-              <HardDrive size={13} className={scanning ? 'animate-pulse text-brand' : ''} />
-              {scanning ? 'Scanning…' : 'Scan FS'}
-            </button>
-          )}
-          {canEdit && (
-            <button onClick={() => setShowUpload(true)}
-              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
-                         bg-brand text-white hover:bg-brand/90 font-medium transition-colors">
-              <Upload size={13} /> Upload
-            </button>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        title="Media Library"
+        description={`${total} file${total !== 1 ? 's' : ''} · ${deployed} deployed · ${pending} pending`}
+        icon={Library}
+      >
+        {canEdit && (
+          <button onClick={handleScan} disabled={scanning} className="btn-secondary">
+            <HardDrive size={13} className={scanning ? 'animate-pulse text-brand' : ''} />
+            {scanning ? 'Scanning…' : 'Scan FS'}
+          </button>
+        )}
+        {canEdit && (
+          <button onClick={() => setShowUpload(true)} className="btn-primary">
+            <Upload size={13} /> Upload
+          </button>
+        )}
+      </PageHeader>
 
       {/* Scan result */}
       {scanResult && (
@@ -892,26 +878,23 @@ function MediaLibraryInner() {
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search by name, description or tag…"
-            className="w-full pl-8 pr-3 py-2 bg-surface border border-surface-border rounded-lg
-                       text-xs text-text-primary placeholder:text-text-muted focus:outline-none
-                       focus:border-brand transition-colors"
+            className="input-sm pl-8 w-full"
           />
         </div>
         <select
           value={catFilter}
           onChange={e => setCatFilter(e.target.value)}
-          className="bg-surface border border-surface-border rounded-lg px-2.5 py-2 text-xs
-                     text-text-primary focus:outline-none focus:border-brand transition-colors">
+          className="input-sm">
           <option value="">All categories</option>
           {categories.map(c => <option key={c} value={c}>{CAT_LABELS[c] || c}</option>)}
         </select>
         <button onClick={load}
-          className="p-2 text-text-muted hover:text-brand transition-colors rounded-lg hover:bg-surface-hover"
+          className="btn-icon"
           title="Refresh">
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>

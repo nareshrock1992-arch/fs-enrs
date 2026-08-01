@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useCallback, useState } from 'react'; // useCallback kept for reload
-import { History, ShieldCheck, Loader2, AlertCircle } from 'lucide-react';
+import { History, ShieldCheck, Loader2, AlertCircle, Settings2 } from 'lucide-react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { useConfigProvider }     from './hooks/useConfigProvider.js';
 import { useDeployment }         from './hooks/useDeployment.js';
 import { useConfigChangesStore } from './stores/configChangesStore.js';
@@ -122,7 +123,7 @@ export default function ConfigPage({ providerId, title, subtitle, docType = 'fla
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
 
       {/* Sticky changes bar */}
       <ChangesBar
@@ -133,53 +134,36 @@ export default function ConfigPage({ providerId, title, subtitle, docType = 'fla
         onDiscard={() => clearProvider(providerId)}
       />
 
-      {/* Page header */}
-      <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-text-primary">{title}</h1>
-          <p className="text-xs text-text-muted mt-0.5">{subtitle ?? filePath}</p>
-          {parsedAt && (
-            <p className="text-[11px] text-text-muted mt-0.5">
-              Read at {new Date(parsedAt).toLocaleTimeString()}
-            </p>
-          )}
-        </div>
+      <PageHeader title={title} description={subtitle ?? filePath} icon={Settings2}>
+        <button
+          onClick={() => setPanel(p => p === 'audit' ? null : 'audit')}
+          className={`btn-secondary btn-sm ${panel === 'audit' ? 'bg-surface-border' : ''}`}>
+          <ShieldCheck size={13} /> Audit
+        </button>
+        <button
+          onClick={() => setPanel(p => p === 'history' ? null : 'history')}
+          className={`btn-secondary btn-sm ${panel === 'history' ? 'bg-surface-border' : ''}`}>
+          <History size={13} /> History
+        </button>
+      </PageHeader>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setPanel(p => p === 'audit' ? null : 'audit')}
-            className={`btn-ghost flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg
-              ${panel === 'audit' ? 'bg-surface-border' : ''}`}>
-            <ShieldCheck size={14} />
-            Audit
-          </button>
-          <button
-            onClick={() => setPanel(p => p === 'history' ? null : 'history')}
-            className={`btn-ghost flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg
-              ${panel === 'history' ? 'bg-surface-border' : ''}`}>
-            <History size={14} />
-            History
-          </button>
-        </div>
-      </div>
+      {parsedAt && (
+        <p className="text-xs text-text-muted -mt-4">
+          Read at {new Date(parsedAt).toLocaleTimeString()}
+        </p>
+      )}
 
       {/* Drift banner — file changed on disk since page load */}
       {isDrift && (
-        <div className="rounded-xl border border-amber-200 dark:border-amber-800
-                        bg-amber-50 dark:bg-amber-950 p-4 flex gap-3 items-start">
-          <AlertCircle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+        <div className="alert alert-warning">
+          <AlertCircle size={16} className="shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
-              Configuration changed outside the UI
-            </p>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+            <p className="text-sm font-semibold">Configuration changed outside the UI</p>
+            <p className="text-xs mt-0.5 opacity-80">
               The file was edited directly on disk since you loaded this page. Reload to fetch the latest version.
             </p>
           </div>
-          <button
-            onClick={reload}
-            className="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300
-                       underline hover:no-underline">
+          <button onClick={reload} className="shrink-0 text-xs font-medium underline hover:no-underline">
             Reload
           </button>
         </div>
@@ -187,12 +171,11 @@ export default function ConfigPage({ providerId, title, subtitle, docType = 'fla
 
       {/* Deploy error banner — shown when modal is closed */}
       {deployError && !isDrift && !showDeploy && (
-        <div className="rounded-xl border border-red-200 dark:border-red-800
-                        bg-red-50 dark:bg-red-950 p-4 flex gap-3 items-start">
-          <AlertCircle size={16} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+        <div className="alert alert-danger">
+          <AlertCircle size={16} className="shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-semibold text-red-700 dark:text-red-300">Deploy failed</p>
-            <p className="text-xs text-red-600 dark:text-red-400 mt-0.5">{deployError}</p>
+            <p className="text-sm font-semibold">Deploy failed</p>
+            <p className="text-xs mt-0.5 opacity-80">{deployError}</p>
           </div>
         </div>
       )}

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Plus, Pencil, Trash2, Upload, CheckCircle2, XCircle } from 'lucide-react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
@@ -86,27 +87,30 @@ export default function ContactList() {
   const orgName = id => orgs.find(o => o.id === id)?.name || '—';
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Emergency Contacts</h1>
-        <div className="flex items-center gap-2">
-          <select className="input py-1.5 text-sm w-44" value={orgFilter}
+    <div className="space-y-6">
+      <PageHeader title="Emergency Contacts">
+        <button onClick={() => { setCsvModal(true); setCsvResult(null); setCsvOrg(''); }}
+                className="btn-secondary">
+          <Upload size={14} /> CSV Upload
+        </button>
+        <button onClick={openCreate} className="btn-primary">
+          <Plus size={15} /> Add Contact
+        </button>
+      </PageHeader>
+
+      <div className="filter-bar">
+        <div className="flex flex-col gap-1">
+          <label className="label">Organization</label>
+          <select className="input-sm w-52" value={orgFilter}
                   onChange={e => setOrgFilter(e.target.value)}>
             <option value="">All Organizations</option>
             {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
-          <button onClick={() => { setCsvModal(true); setCsvResult(null); setCsvOrg(''); }}
-                  className="btn-secondary flex items-center gap-1.5">
-            <Upload size={14} /> CSV Upload
-          </button>
-          <button onClick={openCreate} className="btn-primary flex items-center gap-1.5">
-            <Plus size={15} /> Add Contact
-          </button>
         </div>
       </div>
 
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th><Th>Mobile</Th><Th>Role</Th><Th>Organization</Th><Th></Th>
         </tr></thead>
         <tbody>

@@ -462,7 +462,7 @@ export default function EnsReport() {
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <PageHeader
         title="ENS Reports"
         description="Emergency Notification System broadcast history with per-contact delivery tracking and recording access."

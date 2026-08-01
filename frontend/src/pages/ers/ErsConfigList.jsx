@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import {
   Plus, Pencil, Trash2, ToggleLeft, ToggleRight,
   Users, Shield, ChevronDown, ChevronRight,
@@ -295,16 +296,15 @@ export default function ErsConfigList() {
   const orgName = id => orgs.find(o => o.id === id)?.name || '—';
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">ERS Configurations</h1>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-1.5">
+    <div className="space-y-6">
+      <PageHeader title="ERS Configurations">
+        <button onClick={openCreate} className="btn-primary">
           <Plus size={15} /> Add ERS
         </button>
-      </div>
+      </PageHeader>
 
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th>
           <Th>Organization</Th>
           <Th>Bridges</Th>

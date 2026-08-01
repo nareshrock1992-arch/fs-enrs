@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, ShieldAlert } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
 
@@ -44,27 +45,26 @@ export default function ReportIncidents() {
   const STATUSES = ['', 'ACTIVE', 'COMPLETED', 'CANCELLED', 'QUEUED'];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">Incident Report</h1>
-        <button onClick={exportCsv} className="btn-secondary flex items-center gap-1.5"><Download size={14} /> Export CSV</button>
-      </div>
-      <div className="card flex flex-wrap gap-3">
-        <div>
+    <div className="space-y-6">
+      <PageHeader title="Incident Report" icon={ShieldAlert}>
+        <button onClick={exportCsv} className="btn-secondary"><Download size={14} /> Export CSV</button>
+      </PageHeader>
+      <div className="filter-bar">
+        <div className="flex flex-col gap-1">
           <label className="label">Status</label>
-          <select className="input py-1.5 text-sm" value={filters.status} onChange={e => f('status', e.target.value)}>
+          <select className="input-sm" value={filters.status} onChange={e => f('status', e.target.value)}>
             {STATUSES.map(s => <option key={s} value={s}>{s || 'All'}</option>)}
           </select>
         </div>
-        <div><label className="label">From</label>
-          <input type="date" className="input py-1.5 text-sm" value={filters.from} onChange={e => f('from', e.target.value)} /></div>
-        <div><label className="label">To</label>
-          <input type="date" className="input py-1.5 text-sm" value={filters.to} onChange={e => f('to', e.target.value)} /></div>
-        <div className="flex items-end"><button onClick={load} className="btn-primary py-1.5">Apply</button></div>
+        <div className="flex flex-col gap-1"><label className="label">From</label>
+          <input type="date" className="input-sm" value={filters.from} onChange={e => f('from', e.target.value)} /></div>
+        <div className="flex flex-col gap-1"><label className="label">To</label>
+          <input type="date" className="input-sm" value={filters.to} onChange={e => f('to', e.target.value)} /></div>
+        <div className="flex items-end"><button onClick={load} className="btn-primary">Apply</button></div>
       </div>
       {loading ? <p className="text-sm text-text-muted">Loading…</p> : (
         <Table>
-          <thead><tr className="bg-surface-hover"><Th>ID</Th><Th>Status</Th><Th>Started</Th><Th>Duration</Th></tr></thead>
+          <thead><tr><Th>ID</Th><Th>Status</Th><Th>Started</Th><Th>Duration</Th></tr></thead>
           <tbody>
             {rows.length === 0 ? <EmptyRow cols={4} /> : rows.map(r => (
               <Tr key={r.id}>

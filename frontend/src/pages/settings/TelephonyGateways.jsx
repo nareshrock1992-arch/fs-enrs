@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, Trash2, UploadCloud, CheckCircle, XCircle, Star } from 'lucide-react';
+import { Plus, Pencil, Trash2, UploadCloud, CheckCircle, XCircle, Star, Network } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
@@ -68,20 +69,17 @@ export default function TelephonyGateways() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">Telephony Gateways</h1>
-          <p className="text-xs text-text-muted mt-0.5">
-            Connect a real Avaya/Cisco/SIP trunk — with none configured, every
-            call defaults to internal SIP extensions automatically.
-          </p>
-        </div>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-1.5"><Plus size={15} /> Add Gateway</button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Telephony Gateways"
+        description="Connect a real Avaya/Cisco/SIP trunk — with none configured, every call defaults to internal SIP extensions automatically."
+        icon={Network}
+      >
+        <button onClick={openCreate} className="btn-primary"><Plus size={15} /> Add Gateway</button>
+      </PageHeader>
 
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th><Th>Type</Th><Th>Host</Th><Th>Default</Th><Th>Deploy Status</Th><Th></Th>
         </tr></thead>
         <tbody>

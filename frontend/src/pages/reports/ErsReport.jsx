@@ -579,7 +579,7 @@ export default function ErsReport() {
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <PageHeader
         title="ERS Reports"
         description="Emergency Response System incident history with responder detail, timeline, and recording information."

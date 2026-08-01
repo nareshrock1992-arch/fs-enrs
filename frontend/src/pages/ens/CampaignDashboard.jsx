@@ -5,6 +5,7 @@ import {
   Activity, PhoneOff, PhoneMissed, SkipForward
 } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ function DestinationPanel({ campaignId }) {
           <select
             value={statusFilter}
             onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-            className="input-field text-xs py-1 px-2 pr-6"
+            className="input-sm pr-6"
           >
             {statuses.map(s => (
               <option key={s} value={s}>{s || 'All statuses'}</option>
@@ -396,39 +397,31 @@ export default function CampaignDashboard() {
   const activeCampaigns = campaigns.filter(c => c.status === 'running' || c.status === 'queued').length;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary flex items-center gap-2">
-            <Bell size={20} className="text-brand" />
-            ENS Campaigns
-          </h1>
-          <p className="text-sm text-text-muted mt-0.5">
-            Outbound blast campaign management
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {engineStats && (
-            <div className={`
-              flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border
-              ${engineStats.active_campaigns > 0
-                ? 'border-green-500/30 bg-green-500/10 text-green-400'
-                : 'border-surface-border bg-surface-raised text-text-muted'}
-            `}>
-              <Activity size={11} />
-              Engine: {engineStats.active_campaigns} active
-            </div>
-          )}
-          <button onClick={load} disabled={loading} className="btn-ghost flex items-center gap-1.5">
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="ENS Campaigns"
+        description="Outbound blast campaign management"
+        icon={Bell}
+      >
+        {engineStats && (
+          <div className={`
+            flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border
+            ${engineStats.active_campaigns > 0
+              ? 'border-green-500/30 bg-green-500/10 text-green-400'
+              : 'border-surface-border bg-surface-raised text-text-muted'}
+          `}>
+            <Activity size={11} />
+            Engine: {engineStats.active_campaigns} active
+          </div>
+        )}
+        <button onClick={load} disabled={loading} className="btn-ghost">
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </PageHeader>
 
       {/* Summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: 'Total Campaigns', value: total,           icon: Bell },
           { label: 'Active',          value: activeCampaigns, icon: Activity, warn: activeCampaigns > 0 },
@@ -450,7 +443,7 @@ export default function CampaignDashboard() {
       </div>
 
       {/* Status filter */}
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2">
         <div className="flex gap-1 bg-surface-raised rounded-lg p-1">
           {STATUS_FILTERS.map(f => (
             <button

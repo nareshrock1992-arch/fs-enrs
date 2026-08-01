@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 // ── Status Chips ──────────────────────────────────────────────────────────────
 
@@ -399,15 +400,12 @@ export default function DeploymentDashboard() {
   ];
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Rocket size={20} className="text-brand" />
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">Deployment Dashboard</h1>
-          <p className="text-xs text-text-muted">Deploy IVR flows to FreeSWITCH and verify integration</p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Deployment Dashboard"
+        description="Deploy IVR flows to FreeSWITCH and verify integration"
+        icon={Rocket}
+      />
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-surface-border">

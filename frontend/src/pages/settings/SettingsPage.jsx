@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Save, Wifi, WifiOff, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Save, Wifi, WifiOff, ToggleLeft, ToggleRight, Settings2 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Badge from '../../components/ui/Badge.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState([]);
@@ -46,7 +47,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <h1 className="text-xl font-bold text-text-primary">Settings</h1>
+      <PageHeader title="Settings" icon={Settings2} />
 
       {/* ESL Status */}
       <div className="card flex items-center gap-4">

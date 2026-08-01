@@ -1160,7 +1160,7 @@ export default function Monitoring() {
             <Monitor size={17} className="text-emerald-500" />
           </div>
           <div>
-            <h1 className="text-base font-bold text-text-primary leading-tight">
+            <h1 className="page-title leading-tight">
               Conference Operations Center
             </h1>
             <p className="text-[10px] text-text-muted">

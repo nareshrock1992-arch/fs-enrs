@@ -94,6 +94,9 @@
   .btn-ghost {
     @apply btn text-text-secondary hover:bg-surface-raised hover:text-text-primary;
   }
+  .btn-success {
+    @apply btn bg-success text-white hover:bg-green-700 active:scale-[0.98];
+  }
   .btn-sm {
     @apply px-2.5 py-1.5 text-xs gap-1.5;
   }
@@ -202,11 +205,11 @@
 
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
-    @apply flex flex-col sm:flex-row sm:items-start gap-3 pb-4 mb-2
+    @apply flex flex-col sm:flex-row sm:items-start gap-3 pb-4 mb-4
            border-b border-surface-border;
   }
-  .page-title       { @apply text-xl font-bold text-text-primary tracking-tight; }
-  .page-description { @apply text-sm text-text-muted mt-0.5 leading-relaxed; }
+  .page-title       { @apply text-2xl font-semibold text-text-primary tracking-tight; }
+  .page-description { @apply text-sm text-text-secondary mt-1 leading-relaxed; }
 
   /* ── Section header ────────────────────────────────────────── */
   .section-header {

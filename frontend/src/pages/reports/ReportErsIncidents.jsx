@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, Download, ChevronDown, ChevronRight } from 'lucide-react';
+import { RefreshCw, Download, ChevronDown, ChevronRight, ShieldAlert } from 'lucide-react';
 import { api } from '../../api/client.js';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 
 // Phase 5 C4 — full ERS incident detail: timestamps, every participant's
@@ -31,20 +32,24 @@ export default function ReportErsIncidents() {
   const dur = s => s >= 3600 ? `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m` : s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">ERS Incident Report</h1>
-          <p className="text-xs text-text-muted mt-0.5">Full participant detail — join, leave, and rejoin per responder</p>
-        </div>
-        <div className="flex items-end gap-2">
-          <div><label className="label">From</label>
-            <input type="date" className="input" value={filters.from} onChange={e => setFilters(f => ({ ...f, from: e.target.value }))} /></div>
-          <div><label className="label">To</label>
-            <input type="date" className="input" value={filters.to} onChange={e => setFilters(f => ({ ...f, to: e.target.value }))} /></div>
-          <button onClick={load} disabled={loading} className="btn-primary flex items-center gap-1.5">
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
+    <div className="space-y-6">
+      <PageHeader
+        title="ERS Incident Report"
+        description="Full participant detail — join, leave, and rejoin per responder"
+        icon={ShieldAlert}
+      >
+        <button onClick={load} disabled={loading} className="btn-primary">
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
+      </PageHeader>
+
+      <div className="filter-bar">
+        <div className="flex flex-col gap-1"><label className="label">From</label>
+          <input type="date" className="input-sm" value={filters.from} onChange={e => setFilters(f => ({ ...f, from: e.target.value }))} /></div>
+        <div className="flex flex-col gap-1"><label className="label">To</label>
+          <input type="date" className="input-sm" value={filters.to} onChange={e => setFilters(f => ({ ...f, to: e.target.value }))} /></div>
+        <div className="flex items-end">
+          <button onClick={load} disabled={loading} className="btn-secondary">Apply</button>
         </div>
       </div>
 

@@ -5,12 +5,13 @@ import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import ContactPicker from '../../components/ui/ContactPicker.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
 
 // ── Collapsible section wrapper ───────────────────────────────────────────────
 
 function Section({ id, title, open, onToggle, children }) {
   return (
-    <div className="border border-border rounded-lg overflow-hidden">
+    <div className="border border-surface-border rounded-lg overflow-hidden">
       <button
         type="button"
         onClick={() => onToggle(id)}
@@ -267,16 +268,15 @@ export default function EnsList() {
   const orgName = id => orgs.find(o => o.id === id)?.name || '—';
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-text-primary">ENS Configurations</h1>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-1.5">
+    <div className="space-y-6">
+      <PageHeader title="ENS Configurations">
+        <button onClick={openCreate} className="btn-primary">
           <Plus size={15} /> Add ENS
         </button>
-      </div>
+      </PageHeader>
 
       <Table>
-        <thead><tr className="bg-surface-hover">
+        <thead><tr>
           <Th>Name</Th>
           <Th>Organization</Th>
           <Th>Trigger / Playback</Th>
