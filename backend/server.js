@@ -146,11 +146,11 @@ async function ensureAdminUser() {
       console.log(`[boot] Admin user created: ${email} (change password after first login)`);
     }
 
-    // Default organization
+    // Default organization — conflict on is_system, not on the editable code field
     await query(
-      `INSERT INTO organizations (tenant_id, name, code, description)
-       VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically')
-       ON CONFLICT (code) DO NOTHING`,
+      `INSERT INTO organizations (tenant_id, name, code, description, is_system)
+       VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically', true)
+       ON CONFLICT (is_system) WHERE is_system = true DO NOTHING`,
       [tenant.id]
     );
 

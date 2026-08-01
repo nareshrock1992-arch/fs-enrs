@@ -1,23 +1,24 @@
 -- Cleanup: Duplicate Default Organization rows
 --
--- Run this BEFORE migration 037. The unique index in 037 will fail to
--- create if duplicate live rows still exist.
+-- Run this BEFORE migration 037 (037_organizations_is_system.sql).
+-- The partial unique index added by 037 will fail if more than one live row
+-- has is_system = true.
 --
 -- Safe execution order:
---   1. Run this script (removes phantom duplicates)
---   2. Run: cd backend && npm run migrate  (applies 037)
---   3. Restart PM2
+--   1. Run this script  →  psql -U enrs -d enrs_db -f backend/scripts/cleanup_duplicate_orgs.sql
+--   2. Run migrations   →  cd backend && npm run migrate
+--   3. Restart PM2      →  pm2 restart enrs-backend
 --
 -- This script:
 --   • Never hard-deletes — uses soft-delete (deleted_at = now())
---   • Keeps the LOWEST id (the original row)
---   • Re-points any child records from phantom ids to the surviving id
+--   • Keeps the LOWEST id among duplicate DEFAULT-ORG rows (the original)
+--   • Re-points all child records from phantom ids to the surviving id
 --   • Is idempotent — safe to run multiple times
 --   • Rolls back entirely if anything fails
 
 BEGIN;
 
--- ── 1. Identify the surviving row (lowest id per code group) ──────────────────
+-- ── 1. Identify the surviving row (lowest id with code='DEFAULT-ORG') ────────
 
 CREATE TEMP TABLE _org_survivors AS
 SELECT DISTINCT ON (code)
@@ -123,7 +124,7 @@ SET deleted_at = now(), updated_at = now()
 FROM _org_phantoms p
 WHERE organizations.id = p.phantom_id;
 
--- ── 6. Verify: should be zero after cleanup ───────────────────────────────────
+-- ── 6. Verify: no live duplicates remain ─────────────────────────────────────
 
 DO $$
 DECLARE
@@ -137,10 +138,13 @@ BEGIN
   ) dupes;
 
   IF remaining > 0 THEN
-    RAISE EXCEPTION 'Cleanup incomplete: % duplicate code group(s) still exist', remaining;
+    RAISE EXCEPTION
+      'Cleanup incomplete: % duplicate code group(s) still exist. '
+      'Investigate manually before running migration 037.',
+      remaining;
   END IF;
 
-  RAISE NOTICE 'Cleanup complete. No duplicate organization codes remain.';
+  RAISE NOTICE 'Cleanup complete. No duplicate organization codes remain. Safe to run: npm run migrate';
 END $$;
 
 COMMIT;
