@@ -57,7 +57,6 @@ export const listServices = asyncHandler(async (req, res) => {
        ec.name             AS ens_config_name,
        ec.max_concurrent_calls,
        ec.calls_per_second,
-       ec.retry_count,
        ec.max_attempts,
        ec.adaptive_throttling,
        ec.campaign_priority,
@@ -98,9 +97,9 @@ export const getService = asyncHandler(async (req, res) => {
   const { rows: [row] } = await query(
     `SELECT en.*, o.name AS organization_name,
        ec.id AS ens_config_id, ec.name AS ens_config_name,
-       ec.max_concurrent_calls, ec.calls_per_second, ec.retry_count,
+       ec.max_concurrent_calls, ec.calls_per_second,
        ec.max_attempts, ec.retry_interval_sec, ec.adaptive_throttling,
-       ec.campaign_priority, ec.campaign_timeout_min, ec.sip_gateway, ec.sip_caller_id,
+       ec.campaign_priority, ec.campaign_timeout_min, ec.sip_gateway, ec.blast_clid AS sip_caller_id,
        ers.id AS ers_config_id, ers.name AS ers_config_name,
        ers.max_concurrent_conferences, ers.queue_enabled,
        ers.primary_bridge_number, ers.secondary_bridge_number, ers.conference_profile
