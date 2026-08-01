@@ -150,7 +150,7 @@ async function ensureAdminUser() {
     await query(
       `INSERT INTO organizations (tenant_id, name, code, description)
        VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically')
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT (code) DO NOTHING`,
       [tenant.id]
     );
 

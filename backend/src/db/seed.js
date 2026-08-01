@@ -36,7 +36,7 @@ async function seed() {
   const { rows: [org] } = await query(
     `INSERT INTO organizations (tenant_id, name, code, description)
      VALUES ($1,$2,$3,$4)
-     ON CONFLICT DO NOTHING
+     ON CONFLICT (code) DO NOTHING
      RETURNING id`,
     [tenant.id, 'Default Organization', 'DEFAULT-ORG', 'Created by seed']
   );
