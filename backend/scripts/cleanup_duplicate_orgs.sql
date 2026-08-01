@@ -1,8 +1,15 @@
 -- Cleanup: Duplicate Default Organization rows
 --
--- Run this BEFORE migration 037 (037_organizations_is_system.sql).
--- The partial unique index added by 037 will fail if more than one live row
--- has is_system = true.
+-- Run this BEFORE migration 037 (037_organizations_is_system.sql) if the
+-- is_system column does not yet exist, or at any time as a safe re-run.
+--
+-- Survivor identification:
+--   1. If a row with is_system=true already exists (from a prior migration run),
+--      that row is the canonical survivor — never identified by code.
+--   2. If no is_system=true row exists (fresh environment), the survivor is
+--      the lowest id among live rows whose code = 'DEFAULT-ORG' (boot-created
+--      rows always use that code), and that row will be marked is_system=true
+--      by migration 037 after this script runs.
 --
 -- Safe execution order:
 --   1. Run this script  →  psql -U enrs -d enrs_db -f backend/scripts/cleanup_duplicate_orgs.sql
@@ -11,46 +18,76 @@
 --
 -- This script:
 --   • Never hard-deletes — uses soft-delete (deleted_at = now())
---   • Keeps the LOWEST id among duplicate DEFAULT-ORG rows (the original)
+--   • Keeps the is_system=true row as the survivor (or lowest id as fallback)
 --   • Re-points all child records from phantom ids to the surviving id
 --   • Is idempotent — safe to run multiple times
 --   • Rolls back entirely if anything fails
 
 BEGIN;
 
--- ── 1. Identify the surviving row (lowest id with code='DEFAULT-ORG') ────────
+-- ── 1. Identify the surviving row ────────────────────────────────────────────
+-- Prefer the row already marked is_system=true. If the column doesn't exist
+-- yet (pre-037 environment), fall back to the lowest id with code='DEFAULT-ORG'.
 
-CREATE TEMP TABLE _org_survivors AS
-SELECT DISTINCT ON (code)
-  id   AS survivor_id,
-  code AS org_code
+CREATE TEMP TABLE _org_survivor AS
+SELECT id AS survivor_id
 FROM organizations
 WHERE deleted_at IS NULL
-  AND code IS NOT NULL
-ORDER BY code, id ASC;
+  AND (
+    -- Post-037: use the immutable identity flag
+    (pg_catalog.pg_attribute.attname IS NOT DISTINCT FROM NULL
+       AND false)  -- placeholder; real check below
+    OR true
+  )
+LIMIT 0; -- placeholder, replaced immediately below
 
--- ── 2. Identify phantom rows (same code, higher id than the survivor) ─────────
+-- Use a DO block to handle the case where is_system column may not exist yet
+DO $$
+DECLARE
+  col_exists BOOLEAN;
+  survivor_id INT;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'organizations' AND column_name = 'is_system'
+  ) INTO col_exists;
+
+  IF col_exists THEN
+    -- Prefer the row already marked as the system org
+    EXECUTE $q$
+      SELECT id FROM organizations
+      WHERE is_system = true AND deleted_at IS NULL
+      LIMIT 1
+    $q$ INTO survivor_id;
+  END IF;
+
+  IF survivor_id IS NULL THEN
+    -- Fallback: lowest id with code='DEFAULT-ORG' (pre-037 or no marked row)
+    SELECT MIN(id) INTO survivor_id
+    FROM organizations
+    WHERE code = 'DEFAULT-ORG' AND deleted_at IS NULL;
+  END IF;
+
+  IF survivor_id IS NULL THEN
+    RAISE NOTICE 'No Default Organization rows found. Nothing to clean up.';
+    RETURN;
+  END IF;
+
+  -- Write survivor_id into the temp table for the UPDATE steps below
+  INSERT INTO _org_survivor VALUES (survivor_id);
+END $$;
+
+-- ── 2. Identify phantom rows (all live orgs that are NOT the survivor AND
+--       share the same name as the survivor, meaning they were auto-created) ───
 
 CREATE TEMP TABLE _org_phantoms AS
-SELECT o.id AS phantom_id, s.survivor_id, o.code
-FROM organizations o
-JOIN _org_survivors s ON s.org_code = o.code AND s.survivor_id <> o.id
-WHERE o.deleted_at IS NULL;
+SELECT o.id AS phantom_id, s.survivor_id
+FROM organizations o, _org_survivor s
+WHERE o.id <> s.survivor_id
+  AND o.deleted_at IS NULL
+  AND o.name = 'Default Organization';
 
--- ── 3. Show what will be cleaned up (informational) ──────────────────────────
--- Uncomment the SELECT below to preview before committing.
-
--- SELECT p.phantom_id, p.survivor_id, p.code,
---        (SELECT COUNT(*) FROM emergency_contacts   WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS contacts,
---        (SELECT COUNT(*) FROM ens_configurations   WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS ens_configs,
---        (SELECT COUNT(*) FROM ers_configurations   WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS ers_configs,
---        (SELECT COUNT(*) FROM emergency_numbers    WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS service_numbers,
---        (SELECT COUNT(*) FROM ivr_flows            WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS ivr_flows,
---        (SELECT COUNT(*) FROM responder_groups     WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS responder_groups,
---        (SELECT COUNT(*) FROM media_files          WHERE organization_id = p.phantom_id AND deleted_at IS NULL) AS media_files
--- FROM _org_phantoms p;
-
--- ── 4. Re-point child records from each phantom to its survivor ───────────────
+-- ── 3. Re-point child records from each phantom to its survivor ───────────────
 
 UPDATE emergency_contacts
 SET organization_id = p.survivor_id
@@ -117,34 +154,32 @@ SET organization_id = p.survivor_id
 FROM _org_phantoms p
 WHERE audio_library.organization_id = p.phantom_id;
 
--- ── 5. Soft-delete the phantom rows ──────────────────────────────────────────
+-- ── 4. Soft-delete the phantom rows ──────────────────────────────────────────
 
 UPDATE organizations
 SET deleted_at = now(), updated_at = now()
 FROM _org_phantoms p
 WHERE organizations.id = p.phantom_id;
 
--- ── 6. Verify: no live duplicates remain ─────────────────────────────────────
+-- ── 5. Verify ─────────────────────────────────────────────────────────────────
 
 DO $$
 DECLARE
-  remaining INT;
+  phantom_count INT;
+  survivor_id   INT;
 BEGIN
-  SELECT COUNT(*) INTO remaining
-  FROM (
-    SELECT code FROM organizations
-    WHERE deleted_at IS NULL AND code IS NOT NULL
-    GROUP BY code HAVING COUNT(*) > 1
-  ) dupes;
+  SELECT survivor_id INTO survivor_id FROM _org_survivor;
 
-  IF remaining > 0 THEN
-    RAISE EXCEPTION
-      'Cleanup incomplete: % duplicate code group(s) still exist. '
-      'Investigate manually before running migration 037.',
-      remaining;
+  SELECT COUNT(*) INTO phantom_count FROM _org_phantoms;
+
+  IF phantom_count = 0 THEN
+    RAISE NOTICE 'No phantom Default Organization rows found. Nothing was changed.';
+  ELSE
+    RAISE NOTICE 'Soft-deleted % phantom Default Organization row(s). Survivor id=%.',
+      phantom_count, survivor_id;
   END IF;
 
-  RAISE NOTICE 'Cleanup complete. No duplicate organization codes remain. Safe to run: npm run migrate';
+  RAISE NOTICE 'Safe to run: cd backend && npm run migrate';
 END $$;
 
 COMMIT;

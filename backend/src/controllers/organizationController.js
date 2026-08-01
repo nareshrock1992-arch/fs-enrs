@@ -25,7 +25,9 @@ export const listOrganizations = asyncHandler(async (req, res) => {
   const search = req.query.search ? `%${req.query.search}%` : null;
 
   const { rows } = await query(
-    `SELECT o.*, t.name AS tenant_name,
+    `SELECT o.id, o.tenant_id, o.name, o.code, o.description, o.address, o.phone, o.email,
+            o.is_active, o.created_at, o.updated_at, o.deleted_at,
+            t.name AS tenant_name,
        (SELECT COUNT(*) FROM emergency_contacts c WHERE c.organization_id = o.id AND c.deleted_at IS NULL) AS contact_count
      FROM organizations o
      LEFT JOIN tenants t ON t.id = o.tenant_id
@@ -44,7 +46,9 @@ export const listOrganizations = asyncHandler(async (req, res) => {
 
 export const getOrganization = asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT * FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
+    `SELECT id, tenant_id, name, code, description, address, phone, email,
+            is_active, created_at, updated_at, deleted_at
+     FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
     [req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Organization not found' });

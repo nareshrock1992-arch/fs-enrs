@@ -146,13 +146,17 @@ async function ensureAdminUser() {
       console.log(`[boot] Admin user created: ${email} (change password after first login)`);
     }
 
-    // Default organization — conflict on is_system, not on the editable code field
-    await query(
-      `INSERT INTO organizations (tenant_id, name, code, description, is_system)
-       VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically', true)
-       ON CONFLICT (is_system) WHERE is_system = true DO NOTHING`,
-      [tenant.id]
+    // Default organization — SELECT-first to avoid any dependency on index timing
+    const { rows: [sysOrg] } = await query(
+      `SELECT id FROM organizations WHERE is_system = true AND deleted_at IS NULL LIMIT 1`
     );
+    if (!sysOrg) {
+      await query(
+        `INSERT INTO organizations (tenant_id, name, code, description, is_system)
+         VALUES ($1, 'Default Organization', 'DEFAULT-ORG', 'Created automatically', true)`,
+        [tenant.id]
+      );
+    }
 
     // ESL connection record
     await query(

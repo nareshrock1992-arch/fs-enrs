@@ -32,14 +32,22 @@ async function seed() {
     [tenant.id, email, hash, fullName]
   );
 
-  // Default organization — conflict on is_system, not on the editable code field
-  const { rows: [org] } = await query(
-    `INSERT INTO organizations (tenant_id, name, code, description, is_system)
-     VALUES ($1,$2,$3,$4,true)
-     ON CONFLICT (is_system) WHERE is_system = true DO NOTHING
-     RETURNING id`,
-    [tenant.id, 'Default Organization', 'DEFAULT-ORG', 'Created by seed']
+  // Default organization — SELECT-first to avoid any dependency on index timing
+  let org;
+  const { rows: [existingSysOrg] } = await query(
+    `SELECT id FROM organizations WHERE is_system = true AND deleted_at IS NULL LIMIT 1`
   );
+  if (existingSysOrg) {
+    org = existingSysOrg;
+  } else {
+    const { rows: [newOrg] } = await query(
+      `INSERT INTO organizations (tenant_id, name, code, description, is_system)
+       VALUES ($1,$2,$3,$4,true)
+       RETURNING id`,
+      [tenant.id, 'Default Organization', 'DEFAULT-ORG', 'Created by seed']
+    );
+    org = newOrg;
+  }
 
   // ESL connection record
   await query(
