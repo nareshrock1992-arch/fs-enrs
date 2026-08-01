@@ -657,14 +657,30 @@ export async function createCampaignByConfigId({
   if (!cfg) throw Object.assign(new Error('ENS configuration not found'), { status: 404 });
 
   const contacts = await resolveContacts(configId);
+  logger.info({ module: 'ENS_DEBUG', tag: 'PHASE4_CONTACTS', configId, count: contacts.length, contacts },
+    `[ENS_DEBUG] PHASE4 contact resolution — ${contacts.length} contact(s) from DB`);
   if (contacts.length === 0) {
+    logger.info({ module: 'ENS_DEBUG', tag: 'PHASE4_CONTACTS_EMPTY', configId },
+      '[ENS_DEBUG] PHASE4 FAIL — no contacts in ens_configuration_contacts / responder_groups for this config');
     throw Object.assign(new Error('No active contacts for this ENS configuration'), { status: 422 });
   }
+
+  logger.info({ module: 'ENS_DEBUG', tag: 'PHASE4_CFG', configId,
+    routing_mode: cfg.routing_mode, dial_preference: cfg.dial_preference,
+    allow_mobile: cfg.allow_mobile, allow_extension: cfg.allow_extension,
+    sip_gateway: cfg.sip_gateway, fallback_mode: cfg.fallback_mode },
+    '[ENS_DEBUG] PHASE4 ENS config dialing settings');
 
   // Pre-resolve each contact into a concrete dial target before the transaction.
   // All dialing rules (allow_mobile, allow_extension, formatting) are read from
   // the ENS configuration. The gateway provides only the SIP route name.
   const { resolved, skipped } = await resolveDialTargets(contacts, cfg);
+
+  logger.info({ module: 'ENS_DEBUG', tag: 'PHASE4_RESOLVE', configId,
+    resolved: resolved.length, skipped: skipped.length,
+    skippedReasons: skipped.map(s => ({ name: s.name, reason: s.reason })),
+    resolvedTargets: resolved.map(r => ({ phone: r.phone_number, type: r.target_type, gw: r.gateway_name })),
+  }, `[ENS_DEBUG] PHASE4 dial target resolution — resolved=${resolved.length} skipped=${skipped.length}`);
 
   if (skipped.length > 0) {
     logger.warn({
@@ -682,6 +698,9 @@ export async function createCampaignByConfigId({
   // this case occurs when all contacts exist but none can be resolved in the
   // current dialing mode (e.g., gateway mode with extension-only contacts).
   if (resolved.length === 0) {
+    logger.info({ module: 'ENS_DEBUG', tag: 'PHASE4_RESOLVE_EMPTY', configId,
+      skippedReasons: [...new Set(skipped.map(s => s.reason))] },
+      '[ENS_DEBUG] PHASE4 FAIL — all contacts skipped; common causes: allow_extension=false with extension-only contacts, gateway_only mode with no gateway');
     throw Object.assign(
       new Error('No dialable contacts after dial target resolution — check contact phone numbers and gateway mode'),
       { status: 422 }

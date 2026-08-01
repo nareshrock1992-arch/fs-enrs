@@ -289,29 +289,32 @@ local function exec_ens(s, node)
   end
 
   local caller_number = s:getVariable("caller_id_number") or ""
-  local recording_file
-  if node.recording_file_var and node.recording_file_var ~= "" then
-    local rf = s:getVariable(node.recording_file_var) or ""
-    if rf ~= "" then recording_file = rf end
-  end
 
-  local d = post("/ens/notifications", {
+  -- Default recording_file_var to "recorded_file_path" so a preceding
+  -- record_message node's output is forwarded without explicit config.
+  local rfvar = (node.recording_file_var and node.recording_file_var ~= "") and node.recording_file_var or "recorded_file_path"
+  local recording_file = s:getVariable(rfvar) or ""
+  if recording_file == "" then recording_file = nil end
+
+  local d = post("/ens/campaign/start-by-config", {
     configuration_id = cfg_id,
-    triggered_via    = "PHONE",
-    caller_number    = caller_number ~= "" and caller_number or nil,
     recording_file   = recording_file,
+    caller_number    = caller_number ~= "" and caller_number or nil,
   })
 
-  if d and d.notification_uuid then
-    s:setVariable("ens_notification_uuid", d.notification_uuid)
-    freeswitch.consoleLog("INFO", "[ivr_executor] ens node: blast triggered uuid=" .. d.notification_uuid .. "\\n")
+  if d and d.success and d.campaign_id then
+    s:setVariable("ens_notification_uuid", tostring(d.campaign_id))
+    freeswitch.consoleLog("INFO",
+      "[ivr_executor] ens node: campaign started id=" .. tostring(d.campaign_id) ..
+      " destinations=" .. tostring(d.total_destinations or 0) .. "\\n")
   else
-    freeswitch.consoleLog("ERR", "[ivr_executor] ens node: blast failed — " .. tostring(d and d.error or "no response") .. "\\n")
+    freeswitch.consoleLog("ERR",
+      "[ivr_executor] ens node: blast failed — " .. tostring(d and d.error or "no response") .. "\\n")
   end
 
   return node.next
 end`,
-    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ens/notifications' },
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ens/campaign/start-by-config' },
   },
 
   {

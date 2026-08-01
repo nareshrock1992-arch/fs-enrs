@@ -3,7 +3,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
-import { createCampaign } from '../../services/campaignEngine.js';
+import { createCampaign, createCampaignByConfigId } from '../../services/campaignEngine.js';
+import { logger } from '../../infrastructure/index.js';
+
+// ── TEMPORARY DEBUG helper — remove after ENS blast investigation ─────────────
+const D = (tag, data, msg) => logger.info({ module: 'ENS_DEBUG', tag, ...data }, `[ENS_DEBUG] ${msg}`);
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -202,6 +207,55 @@ export const startCampaign = asyncHandler(async (req, res) => {
   });
 });
 
+// ── Campaign Start by Config ID (IVR ENS node) ───────────────────────────────
+
+// POST /api/v1/internal/ens/campaign/start-by-config
+// Called by ivr_executor.lua exec_ens handler.
+// The IVR flow already resolved configuration_id (via ens_pin_valid condition);
+// this endpoint skips the trigger_number → config lookup and goes straight to
+// createCampaignByConfigId(), which creates the ens_campaigns row the campaign
+// engine polls every tick.
+export const startCampaignByConfig = asyncHandler(async (req, res) => {
+  D('PHASE3_CAMPAIGN_ENDPOINT', {}, '✅ CAMPAIGN PATH HIT — POST /ens/campaign/start-by-config');
+  D('PHASE3_RAW_BODY', { body: req.body }, 'Raw request body');
+
+  const configId = parseInt(req.body.configuration_id, 10);
+  if (!configId || configId <= 0) {
+    D('PHASE3_VALIDATION', { configuration_id: req.body.configuration_id }, 'FAIL — configuration_id missing or invalid');
+    return res.status(400).json({ success: false, error: 'configuration_id required' });
+  }
+  D('PHASE3_VALIDATION', { configId, recording_file: req.body.recording_file || null }, 'PASS — payload valid');
+
+  let campaign;
+  try {
+    campaign = await createCampaignByConfigId({
+      configId,
+      triggeredBy:  null,
+      triggeredVia: 'PHONE',
+      recordingFile: req.body.recording_file || null,
+      messageText:   null,
+    });
+  } catch (err) {
+    D('PHASE3_CAMPAIGN_CREATE', { configId, status: err.status, message: err.message }, `FAIL — createCampaignByConfigId threw: ${err.message}`);
+    throw err; // let asyncHandler/errorHandler handle it
+  }
+
+  D('PHASE3_CAMPAIGN_CREATE', {
+    campaign_id:        campaign.id,
+    status:             campaign.status,
+    total_destinations: campaign.total_destinations,
+    recording_file:     campaign.recording_file,
+    sip_gateway:        campaign.sip_gateway,
+  }, `✅ Campaign created — id=${campaign.id} destinations=${campaign.total_destinations} status=${campaign.status}`);
+
+  res.status(201).json({
+    success:            true,
+    campaign_id:        campaign.id,
+    status:             campaign.status,
+    total_destinations: campaign.total_destinations,
+  });
+});
+
 // ── ENS Lookup ────────────────────────────────────────────────────────────────
 
 // GET /api/v1/internal/ens/lookup?number=<dest>
@@ -311,7 +365,9 @@ export const ensQueueStatus = asyncHandler(async (req, res) => {
 
 // POST /api/v1/internal/ens/notifications
 export const ensCreateNotification = asyncHandler(async (req, res) => {
+  D('PHASE2_LEGACY_ENDPOINT', {}, '❌ LEGACY PATH HIT — POST /ens/notifications — no campaign will be created');
   const d = NotificationCreateSchema.parse(req.body);
+  D('PHASE2_VALIDATED_PAYLOAD', { configuration_id: d.configuration_id, triggered_via: d.triggered_via, recording_file: d.recording_file }, 'Legacy payload validated');
 
   // Verify config exists
   const { rows: [cfg] } = await query(
@@ -319,9 +375,14 @@ export const ensCreateNotification = asyncHandler(async (req, res) => {
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
   );
-  if (!cfg) return res.status(404).json({ error: 'ENS configuration not found' });
+  if (!cfg) {
+    D('PHASE2_CONFIG_LOOKUP', { configuration_id: d.configuration_id }, 'FAIL — ens_configurations row not found or inactive');
+    return res.status(404).json({ error: 'ENS configuration not found' });
+  }
+  D('PHASE2_CONFIG_LOOKUP', { configuration_id: d.configuration_id }, 'PASS — config found');
 
   const contacts = await resolveEnsContacts(d.configuration_id);
+  D('PHASE2_CONTACTS', { count: contacts.length, contacts }, `Contact resolution — ${contacts.length} contact(s)`);
   const notifUuid = uuidv4();
 
   const { rows: [notif] } = await withTransaction(async (tq) => {
@@ -359,6 +420,8 @@ export const ensCreateNotification = asyncHandler(async (req, res) => {
     total_targets:     contacts.length,
   });
 
+  D('PHASE2_RESPONSE', { notification_uuid: notif.notification_uuid, notification_id: notif.id },
+    '❌ Legacy response sent — ens_notifications row created, ens_campaigns NOT created — engine will not pick this up');
   res.status(201).json({
     notification_uuid: notif.notification_uuid,
     notification_id:   notif.id,
