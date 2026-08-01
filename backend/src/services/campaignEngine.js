@@ -551,10 +551,10 @@ export async function onCallHangup(callUuid, cause) {
 async function handleDestFailed(destId, campaignId, cause, errorMsg) {
   await query(
     `UPDATE ens_campaign_destinations
-     SET status = 'failed', hangup_cause = $3, error_message = $4,
+     SET status = 'failed', hangup_cause = $2, error_message = $3,
          completed_at = now(), call_uuid = null, updated_at = now()
      WHERE id = $1`,
-    [destId, campaignId, cause, errorMsg]
+    [destId, cause, errorMsg]
   );
   await query(
     `UPDATE ens_campaigns
