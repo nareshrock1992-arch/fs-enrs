@@ -73,6 +73,7 @@ const EMPTY = {
   retry_failed_only:         false,
   // Call routing
   sip_gateway:               '',
+  gateway_override:          '',
   routing_mode:              'auto',
   dial_preference:           'extension_mobile',
   fallback_mode:             'none',
@@ -179,6 +180,7 @@ export default function EnsList() {
         reply_clid:                form.reply_clid              || null,
         pin:                       form.pin                     || null,
         sip_gateway:               form.sip_gateway             || null,
+        gateway_override:          form.gateway_override        || null,
         expiry_announcement:       form.expiry_announcement     || null,
         no_pending_msg:            form.no_pending_msg          || null,
         mobile_prefix:             form.mobile_prefix           || null,
@@ -231,6 +233,7 @@ export default function EnsList() {
         retry_interval_sec:        full.retry_interval_sec       ?? 60,
         retry_failed_only:         full.retry_failed_only        ?? false,
         sip_gateway:               full.sip_gateway              ?? '',
+        gateway_override:          full.gateway_override         ?? '',
         routing_mode:              full.routing_mode             ?? 'auto',
         dial_preference:           full.dial_preference          ?? 'extension_mobile',
         fallback_mode:             full.fallback_mode            ?? 'none',
@@ -479,6 +482,7 @@ export default function EnsList() {
             {/* ── Call Routing ── */}
             <Section id="callrouting" title="Call Routing" open={openSections.has('callrouting')} onToggle={toggleSection}>
               <div className="grid grid-cols-2 gap-3">
+                {/* Row 1: Default Gateway | Gateway Override */}
                 <div>
                   <label className="label">Default Gateway</label>
                   <select className="input" value={form.sip_gateway}
@@ -489,9 +493,25 @@ export default function EnsList() {
                     ))}
                   </select>
                   <p className="text-[11px] text-text-muted mt-1">
-                    Priority: contact's gateway → this default → platform default → internal
+                    Select a gateway registered in the Telephony Gateways module.
                   </p>
                 </div>
+                <div>
+                  <label className="label">FreeSWITCH Gateway Name</label>
+                  <input
+                    className={`input font-mono ${form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override) ? 'border-red-400 focus:ring-red-400' : ''}`}
+                    value={form.gateway_override}
+                    onChange={e => f('gateway_override', e.target.value)}
+                    placeholder="service-provider"
+                    maxLength={255}
+                  />
+                  {form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override)
+                    ? <p className="text-[11px] text-red-500 mt-1">Only letters, numbers, -, _, and . are allowed.</p>
+                    : <p className="text-[11px] text-text-muted mt-1">Optional. Enter an existing FreeSWITCH gateway name. Leave empty to use the selected gateway.</p>
+                  }
+                </div>
+
+                {/* Row 2: Routing Mode | Skip Behaviour */}
                 <div>
                   <label className="label">Routing Mode</label>
                   <select className="input" value={form.routing_mode}
@@ -499,16 +519,6 @@ export default function EnsList() {
                     <option value="auto">Auto — use gateway when configured</option>
                     <option value="internal_only">Internal Only</option>
                     <option value="gateway_only">Gateway Only</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Dial Preference</label>
-                  <select className="input" value={form.dial_preference}
-                          onChange={e => f('dial_preference', e.target.value)}>
-                    <option value="extension_mobile">Extension → Mobile</option>
-                    <option value="mobile_extension">Mobile → Extension</option>
-                    <option value="extension_only">Extension Only</option>
-                    <option value="mobile_only">Mobile Only</option>
                   </select>
                 </div>
                 <div>
@@ -520,6 +530,31 @@ export default function EnsList() {
                     <option value="fail">Fail Campaign</option>
                   </select>
                   <p className="text-[11px] text-text-muted mt-1">When a contact has no dialable number</p>
+                </div>
+
+                {/* Row 3: Dial Preference */}
+                <div>
+                  <label className="label">Dial Preference</label>
+                  <select className="input" value={form.dial_preference}
+                          onChange={e => f('dial_preference', e.target.value)}>
+                    <option value="extension_mobile">Extension → Mobile</option>
+                    <option value="mobile_extension">Mobile → Extension</option>
+                    <option value="extension_only">Extension Only</option>
+                    <option value="mobile_only">Mobile Only</option>
+                  </select>
+                </div>
+
+                {/* Routing priority — informational */}
+                <div className="col-span-2 rounded-lg bg-surface-hover border border-surface-border px-3 py-2">
+                  <p className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1">Routing Priority</p>
+                  <ol className="text-[11px] text-text-muted space-y-0.5 list-decimal list-inside">
+                    <li><span className="text-text-primary font-medium">FreeSWITCH Gateway Name</span> — manual XML-only gateway</li>
+                    <li>Selected Gateway — managed gateway from dropdown above</li>
+                    <li>Organization Default Gateway</li>
+                    <li>Tenant Default Gateway</li>
+                    <li>Platform Default Gateway</li>
+                    <li>Internal Routing</li>
+                  </ol>
                 </div>
               </div>
             </Section>
@@ -533,7 +568,7 @@ export default function EnsList() {
               </label>
 
               {form.allow_mobile && (
-                <div className="border border-border rounded-lg p-3 space-y-3">
+                <div className="border border-surface-border rounded-lg p-3 space-y-3">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" checked={form.mobile_normalize_enabled}
                            onChange={e => f('mobile_normalize_enabled', e.target.checked)} />
@@ -585,7 +620,7 @@ export default function EnsList() {
               </label>
 
               {form.allow_extension && (
-                <div className="border border-border rounded-lg p-3 space-y-3">
+                <div className="border border-surface-border rounded-lg p-3 space-y-3">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" checked={form.ext_normalize_enabled}
                            onChange={e => f('ext_normalize_enabled', e.target.checked)} />

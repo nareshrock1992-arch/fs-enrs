@@ -6,6 +6,15 @@ const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable
 const intDef = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
 const numDef = (def) => z.number().min(0).default(def);
 
+// Accepts empty string or null as null; trims and validates allowed chars.
+const gatewayOverride = z.preprocess(
+  v => {
+    if (v === '' || v === null || v === undefined) return null;
+    return typeof v === 'string' ? v.trim() : v;
+  },
+  z.string().regex(/^[a-zA-Z0-9\-_.]+$/, 'Only letters, numbers, -, _, . allowed').max(255).nullable()
+);
+
 const EnsConfigSchema = z.object({
   organization_id:           z.number().int().positive(),
   name:                      z.string().min(1).max(128),
@@ -33,6 +42,8 @@ const EnsConfigSchema = z.object({
 
   // Gateway (stored as name string — FreeSWITCH uses sofia/gateway/<name>)
   sip_gateway:               emptyToNull,
+  // Override: takes precedence over sip_gateway at dial time
+  gateway_override:          gatewayOverride,
 
   // Routing policy (migration 034)
   routing_mode:    z.enum(['auto','internal_only','gateway_only']).default('auto'),
@@ -173,7 +184,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        batch_size, retry_interval_sec,
        max_attempts, campaign_timeout_min, recording_retention_hours,
        retry_failed_only, adaptive_throttling, campaign_priority, max_active_campaigns,
-       sip_gateway,
+       sip_gateway, gateway_override,
        routing_mode, dial_preference, fallback_mode, skip_behavior,
        allow_mobile, mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
        allow_extension, ext_normalize_enabled, ext_prefix, ext_suffix,
@@ -181,7 +192,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        is_active
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
+       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -190,7 +201,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.batch_size, d.retry_interval_sec,
       d.max_attempts, d.campaign_timeout_min, d.recording_retention_hours,
       d.retry_failed_only, d.adaptive_throttling, d.campaign_priority, d.max_active_campaigns,
-      d.sip_gateway,
+      d.sip_gateway, d.gateway_override,
       d.routing_mode, d.dial_preference, d.fallback_mode, d.skip_behavior,
       d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
       d.mobile_prefix, d.mobile_suffix,
@@ -214,6 +225,10 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.partial().parse(req.body);
+  // gateway_override uses direct assignment (not COALESCE) so administrators
+  // can clear it by sending an empty string or null.  When the field is absent
+  // from the request body entirely, fall back to the existing DB value.
+  const gatewayOverrideInBody = Object.prototype.hasOwnProperty.call(req.body, 'gateway_override');
 
   const { rows } = await query(
     `UPDATE ens_configurations SET
@@ -250,9 +265,10 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        no_pending_msg            = COALESCE($32, no_pending_msg),
        expiry_announcement       = COALESCE($33, expiry_announcement),
        is_active                 = COALESCE($34, is_active),
-       tenant_id                 = COALESCE(tenant_id, $35),
+       gateway_override          = CASE WHEN $35::boolean THEN $36 ELSE gateway_override END,
+       tenant_id                 = COALESCE(tenant_id, $37),
        updated_at                = now()
-     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $35 RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $37 RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -268,7 +284,9 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
       d.no_pending_msg, d.expiry_announcement,
       d.is_active,
-      req.user.tenantId,
+      gatewayOverrideInBody,   // $35 — boolean: was the key present in req.body?
+      d.gateway_override,      // $36 — the validated value (null when cleared)
+      req.user.tenantId,       // $37
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
