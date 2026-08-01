@@ -262,7 +262,8 @@ export function stopEngine() {
 // ── Crash recovery: reset dialing rows that were orphaned ────────────────────
 
 async function recoverStaleDialing() {
-  const { rows } = await query(
+  // Reset 'dialing' rows orphaned by a crash (no CHANNEL_HANGUP will ever arrive).
+  const { rows: dialingRows } = await query(
     `UPDATE ens_campaign_destinations
      SET status = 'queued', call_uuid = null, next_attempt_at = now() + interval '5 seconds',
          updated_at = now()
@@ -271,10 +272,25 @@ async function recoverStaleDialing() {
      RETURNING campaign_id`,
     [STALE_DIALING_SEC]
   );
-  if (rows.length) {
-    logger.info({ module: 'campaignEngine', count: rows.length }, 'Recovered stale dialing rows');
-    // Also fix campaign dialing counters
-    const campaignIds = [...new Set(rows.map(r => r.campaign_id))];
+
+  // Complete 'answered' rows that survived a crash. The call was answered so
+  // treat it as delivered rather than queueing a retry.
+  const STALE_ANSWERED_SEC = 600;
+  const { rows: answeredRows } = await query(
+    `UPDATE ens_campaign_destinations
+     SET status = 'completed', hangup_cause = 'RECOVERY', completed_at = now(),
+         call_uuid = null, updated_at = now()
+     WHERE status = 'answered'
+       AND answered_at < now() - ($1 || ' seconds')::interval
+     RETURNING campaign_id`,
+    [STALE_ANSWERED_SEC]
+  );
+
+  const allRows = [...dialingRows, ...answeredRows];
+  if (allRows.length) {
+    logger.info({ module: 'campaignEngine', dialing: dialingRows.length, answered: answeredRows.length },
+      'Recovered stale destination rows');
+    const campaignIds = [...new Set(allRows.map(r => r.campaign_id))];
     for (const id of campaignIds) {
       await syncCampaignCounters(id);
     }
@@ -346,7 +362,7 @@ async function processCampaign(campaign) {
   // must block the completion gate or the campaign closes before the retry fires.
   const { rows: [counts] } = await query(
     `SELECT
-       COUNT(*) FILTER (WHERE status = 'dialing')::INT AS dialing,
+       COUNT(*) FILTER (WHERE status IN ('dialing','answered'))::INT AS dialing,
        COUNT(*) FILTER (WHERE status = 'queued'
          AND (next_attempt_at IS NULL OR next_attempt_at <= now()))::INT AS ready,
        COUNT(*) FILTER (WHERE status = 'queued'
@@ -502,7 +518,9 @@ export async function onCallHangup(callUuid, cause) {
   const wasAnswered = dest.answered_at != null || dest.status === 'answered';
 
   if (wasAnswered) {
-    // Successfully delivered
+    // Successfully delivered.
+    // dialing_count was already decremented in onCallAnswer (dialing→answered),
+    // so it must NOT be decremented again here (answered→completed).
     await query(
       `UPDATE ens_campaign_destinations
        SET status = 'completed', hangup_cause = $2, completed_at = now(), updated_at = now()
@@ -512,7 +530,6 @@ export async function onCallHangup(callUuid, cause) {
     await query(
       `UPDATE ens_campaigns
        SET completed_count = completed_count + 1,
-           dialing_count   = GREATEST(0, dialing_count - 1),
            updated_at      = now()
        WHERE id = $1`,
       [dest.campaign_id]
@@ -894,11 +911,17 @@ async function resolveContacts(configId) {
 async function syncCampaignCounters(campaignId) {
   await query(
     `UPDATE ens_campaigns c SET
-       queued_count   = (SELECT COUNT(*) FROM ens_campaign_destinations
-                         WHERE campaign_id = c.id AND status = 'queued'),
-       dialing_count  = (SELECT COUNT(*) FROM ens_campaign_destinations
-                         WHERE campaign_id = c.id AND status = 'dialing'),
-       updated_at     = now()
+       queued_count     = (SELECT COUNT(*) FROM ens_campaign_destinations
+                           WHERE campaign_id = c.id AND status = 'queued'),
+       dialing_count    = (SELECT COUNT(*) FROM ens_campaign_destinations
+                           WHERE campaign_id = c.id AND status IN ('dialing','answered')),
+       answered_count   = (SELECT COUNT(*) FROM ens_campaign_destinations
+                           WHERE campaign_id = c.id AND answered_at IS NOT NULL),
+       completed_count  = (SELECT COUNT(*) FROM ens_campaign_destinations
+                           WHERE campaign_id = c.id AND status = 'completed'),
+       failed_count     = (SELECT COUNT(*) FROM ens_campaign_destinations
+                           WHERE campaign_id = c.id AND status = 'failed'),
+       updated_at       = now()
      WHERE id = $1`,
     [campaignId]
   );
