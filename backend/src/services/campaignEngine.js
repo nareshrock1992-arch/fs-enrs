@@ -93,9 +93,10 @@ function resolveContact(contact, cfg, gateways) {
   const dialPreference = cfg.dial_preference || 'extension_mobile';
 
   // Step 1: Gateway priority chain
-  let gwName = null;
+  // gateway_override wins first — it names an XML-only gateway not in sip_gateways.
+  let gwName = cfg.gateway_override || null;
 
-  if (contact.gateway_id) {
+  if (!gwName && contact.gateway_id) {
     const gw = gateways.byId.get(contact.gateway_id);
     gwName = gw?.name || null;
   }
