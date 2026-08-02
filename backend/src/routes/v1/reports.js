@@ -516,4 +516,114 @@ router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
   });
 }));
 
+// ── ENS Campaign report (backed by ens_campaigns + ens_campaign_destinations) ──
+// The campaign engine never writes to ens_notifications — it uses its own tables.
+// This endpoint provides the canonical ENS delivery report for campaigns.
+
+// GET /api/v1/reports/ens-campaigns?page=&limit=&from=&to=&status=&org_id=
+router.get('/ens-campaigns', asyncHandler(async (req, res) => {
+  const { from, to, status, org_id } = req.query;
+  const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
+  const offset = (page - 1) * limit;
+
+  const { rows: countRows } = await query(
+    `SELECT COUNT(*)::INT AS total
+     FROM ens_campaigns c
+     JOIN ens_configurations e ON e.id = c.ens_configuration_id
+     JOIN organizations o ON o.id = c.organization_id
+     WHERE e.tenant_id = $1
+       AND ($2::date IS NULL OR c.created_at >= $2::date)
+       AND ($3::date IS NULL OR c.created_at <  $3::date + interval '1 day')
+       AND ($4::text IS NULL OR c.status = $4)
+       AND ($5::int  IS NULL OR o.id = $5)`,
+    [req.user.tenantId, from || null, to || null, status || null, org_id || null]
+  );
+
+  const { rows } = await query(
+    `SELECT c.id, c.status, c.triggered_via, c.trigger_number,
+       c.recording_file, c.message_text,
+       c.total_destinations, c.answered_count, c.failed_count,
+       c.completed_count, c.retried_count, c.campaign_duration_sec,
+       c.created_at, c.started_at, c.completed_at,
+       e.name AS ens_name, e.id AS ens_configuration_id,
+       o.name AS org_name, o.id AS organization_id,
+       u.full_name AS triggered_by_name
+     FROM ens_campaigns c
+     JOIN ens_configurations e ON e.id = c.ens_configuration_id
+     JOIN organizations o ON o.id = c.organization_id
+     LEFT JOIN users u ON u.id = c.triggered_by
+     WHERE e.tenant_id = $1
+       AND ($2::date IS NULL OR c.created_at >= $2::date)
+       AND ($3::date IS NULL OR c.created_at <  $3::date + interval '1 day')
+       AND ($4::text IS NULL OR c.status = $4)
+       AND ($5::int  IS NULL OR o.id = $5)
+     ORDER BY c.created_at DESC
+     LIMIT $6 OFFSET $7`,
+    [req.user.tenantId, from || null, to || null, status || null, org_id || null, limit, offset]
+  );
+
+  res.json({ campaigns: rows, total: countRows[0]?.total ?? 0, page, limit });
+}));
+
+// GET /api/v1/reports/ens-campaigns/:id
+router.get('/ens-campaigns/:id', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const { rows: [campaign] } = await query(
+    `SELECT c.*,
+       e.name AS ens_name, e.id AS ens_configuration_id,
+       o.name AS org_name,
+       u.full_name AS triggered_by_name
+     FROM ens_campaigns c
+     JOIN ens_configurations e ON e.id = c.ens_configuration_id
+     LEFT JOIN organizations o ON o.id = c.organization_id
+     LEFT JOIN users u ON u.id = c.triggered_by
+     WHERE c.id = $1 AND e.tenant_id = $2`,
+    [id, req.user.tenantId]
+  );
+  if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+  const { rows: destinations } = await query(
+    `SELECT d.id, d.phone_number, d.contact_name, d.status,
+       d.target_type, d.routing_mode_used, d.gateway_name,
+       d.original_number, d.attempt_count, d.max_attempts,
+       d.hangup_cause, d.error_message,
+       d.last_attempt_at, d.answered_at, d.completed_at, d.next_attempt_at,
+       d.call_uuid,
+       ec.first_name, ec.last_name, ec.extension_number, ec.mobile_number
+     FROM ens_campaign_destinations d
+     LEFT JOIN emergency_contacts ec ON ec.id = d.contact_id
+     WHERE d.campaign_id = $1
+     ORDER BY d.id ASC`,
+    [id]
+  );
+
+  res.json({
+    campaign: {
+      ...campaign,
+      destinations: destinations.map(d => ({
+        id:               d.id,
+        phone_number:     d.phone_number,
+        contact_name:     d.contact_name || (d.first_name ? `${d.first_name} ${d.last_name}`.trim() : null),
+        extension_number: d.extension_number,
+        mobile_number:    d.mobile_number,
+        status:           d.status,
+        target_type:      d.target_type,
+        routing_mode:     d.routing_mode_used,
+        gateway:          d.gateway_name,
+        call_uuid:        d.call_uuid,
+        attempt_count:    d.attempt_count,
+        max_attempts:     d.max_attempts,
+        hangup_cause:     d.hangup_cause,
+        error_message:    d.error_message,
+        last_attempt_at:  d.last_attempt_at,
+        answered_at:      d.answered_at,
+        completed_at:     d.completed_at,
+        next_attempt_at:  d.next_attempt_at,
+      })),
+    },
+  });
+}));
+
 export default router;

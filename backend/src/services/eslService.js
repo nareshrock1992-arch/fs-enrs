@@ -1738,6 +1738,7 @@ export async function originateCampaignCall({
   gatewayName,
   dialString,
   playbackFile,
+  messageText,
   timeout = 30,
 }) {
   let resolved;
@@ -1759,7 +1760,21 @@ export async function originateCampaignCall({
     enrs_dest_id:                 String(destId),
   };
   const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
-  const app    = playbackFile ? `&playback(${playbackFile})` : '&park()';
+
+  // Playback priority: file → TTS → park (last resort; park answers with no audio,
+  // causing CHANNEL_ANSWER to fire and inflating answered_count with no delivery).
+  let app;
+  if (playbackFile) {
+    app = `&playback(${playbackFile})`;
+  } else if (messageText) {
+    // FreeSWITCH speak app: speak(engine|voice|text)
+    // config.freeswitch.ttsEngine is 'engine|voice' (e.g. 'flite|kal').
+    // Strip characters that would break the FreeSWITCH command parser.
+    const safeText = String(messageText).replace(/[|{}\\[\]]/g, ' ').trim();
+    app = `&speak(${config.freeswitch.ttsEngine}|${safeText})`;
+  } else {
+    app = '&park()';
+  }
   const fullCmd = `originate {${varStr}}${resolved} ${app}`;
   // bgapi for 'originate' resolves only after the call completes (BACKGROUND_JOB fires on
   // answer or hangup, not on command acceptance). The timeout must exceed originate_timeout

@@ -177,8 +177,11 @@ export const api = {
     // Unified paginated report endpoints
     ers:           (q) => request('GET', `/reports/ers?${new URLSearchParams(q || {})}`),
     ersDetail:     (uuid) => request('GET', `/reports/ers/${uuid}`),
-    ens:           (q) => request('GET', `/reports/ens?${new URLSearchParams(q || {})}`),
-    ensDetail:     (uuid) => request('GET', `/reports/ens/${uuid}`),
+    ens:              (q)    => request('GET', `/reports/ens?${new URLSearchParams(q || {})}`),
+    ensDetail:        (uuid) => request('GET', `/reports/ens/${uuid}`),
+    // Campaign engine report (ens_campaigns / ens_campaign_destinations)
+    ensCampaigns:     (q)    => request('GET', `/reports/ens-campaigns?${new URLSearchParams(q || {})}`),
+    ensCampaignDetail:(id)   => request('GET', `/reports/ens-campaigns/${id}`),
   },
 
   // Settings

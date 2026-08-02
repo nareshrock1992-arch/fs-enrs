@@ -30,6 +30,11 @@ const RETRYABLE_CAUSES = new Set([
   'BUSY', 'USER_BUSY', 'NO_ANSWER', 'CALL_REJECTED',
   'NORMAL_CIRCUIT_CONGESTION', 'SWITCH_CONGESTION',
   'NO_ROUTE_DESTINATION', 'ORIGINATOR_CANCEL',
+  // Extension / timeout causes — commonly transient; must retry or the
+  // destination is permanently abandoned on the first unregistered-phone event.
+  'NO_USER_RESPONSE',  // extension not registered or SIP 408 timeout
+  'ALLOTTED_TIMEOUT',  // originate_timeout expired before remote answered
+  'SUBSCRIBER_ABSENT', // mobile subscriber offline (SIM off, roaming gap)
 ]);
 
 const BUSY_CAUSES = new Set(['BUSY', 'USER_BUSY', 'NORMAL_CIRCUIT_CONGESTION', 'SWITCH_CONGESTION']);
@@ -438,13 +443,21 @@ async function processCampaign(campaign) {
   // priority chain: contact.gateway_id → cfg.sip_gateway → platform default).
   // The execution engine never re-reads emergency_contacts — phone_number and
   // gateway_name in ens_campaign_destinations are the authoritative snapshot.
-  const clid      = campaign.sip_caller_id || campaign.trigger_number || '999';
-  const mediaPath = campaign.recording_file || '';
+  const clid = campaign.sip_caller_id || campaign.trigger_number || '999';
+
+  // Resolve playback content in priority order:
+  //   recording_file    — absolute FS path recorded via Lua (blast trigger)
+  //   message_audio_url — absolute FS path from media library (UI upload)
+  //   message_text      — FreeSWITCH TTS via &speak() (UI text trigger)
+  // &park() is used only as a last resort; it answers the call with no audio,
+  // inflating answered_count without actually delivering the notification.
+  const mediaPath   = campaign.recording_file || campaign.message_audio_url || '';
+  const messageText = (!mediaPath && campaign.message_text) ? campaign.message_text : null;
 
   for (const dest of destinations) {
     const callUuid = randomUUID();
     state.cpsHistory.push(Date.now());
-    await originateDestination(campaign, dest, callUuid, dest.gateway_name || null, clid, mediaPath);
+    await originateDestination(campaign, dest, callUuid, dest.gateway_name || null, clid, mediaPath, messageText);
   }
 
   emitInternal('enrs::campaign_progress', {
@@ -454,7 +467,7 @@ async function processCampaign(campaign) {
   });
 }
 
-async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile) {
+async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile, messageText) {
   // Assign UUID to destination row first so ESL CHANNEL_ANSWER/HANGUP can find it
   await query(
     `UPDATE ens_campaign_destinations SET call_uuid = $2, updated_at = now() WHERE id = $1`,
@@ -474,6 +487,7 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
     gatewayName,
     contactId:    dest.contact_id || null,
     playbackFile: playbackFile || null,
+    messageText:  messageText   || null,
     timeout:      ORIGINATE_TIMEOUT,
   }).catch(e => {
     handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message)
@@ -687,6 +701,13 @@ export async function createCampaignByConfigId({
     [configId]
   );
   if (!cfg) throw Object.assign(new Error('ENS configuration not found'), { status: 404 });
+
+  if (!recordingFile && !messageAudioUrl && !messageText) {
+    throw Object.assign(
+      new Error('Campaign requires playback content: provide recording_file, message_audio_url, or message_text'),
+      { status: 422 }
+    );
+  }
 
   const contacts = await resolveContacts(configId);
   if (contacts.length === 0) {
