@@ -1611,7 +1611,10 @@ export function connect() {
         'BACKGROUND_JOB',
       ]);
 
-      conn.on('esl::event', handleEvent);
+      // modesl uses EventEmitter2 with wildcard:true, delimiter:'::' and emits
+      // events as 'esl::event::<EVENT_NAME>::<uuid>' — the plain 'esl::event'
+      // pattern never matches those. Use '**' to catch all events at any depth.
+      conn.on('esl::event::**', handleEvent);
 
       emit('esl.status', { connected: true, host: config.esl.host, port: config.esl.port });
       updateHeartbeat(true);
