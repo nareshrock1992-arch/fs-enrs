@@ -113,14 +113,15 @@ function resolveContact(contact, cfg, gateways) {
     if (platformGw && gateways.byName.has(platformGw)) gwName = platformGw;
   }
 
-  // Step 2: Determine routing mode
-  let isGatewayMode;
-  if      (routingMode === 'internal_only') { isGatewayMode = false; gwName = null; }
-  else if (routingMode === 'gateway_only')  {
-    isGatewayMode = true;
+  // Step 2: Enforce hard routing overrides that apply regardless of target type.
+  // 'auto' mode is deferred to Step 4b — it depends on targetType.
+  let isGatewayMode = null; // null = not yet decided (auto mode)
+  if (routingMode === 'internal_only') {
+    isGatewayMode = false;
+    gwName = null;
+  } else if (routingMode === 'gateway_only') {
     if (!gwName) return { skip: true, reason: 'gateway_only_mode_but_no_gateway_configured' };
-  } else {
-    isGatewayMode = !!gwName;
+    isGatewayMode = true;
   }
 
   const ext = contact.extension_number || null;
@@ -169,6 +170,17 @@ function resolveContact(contact, cfg, gateways) {
   }
 
   if (skipReason) return { skip: true, reason: skipReason };
+
+  // Step 4b: In auto mode, derive isGatewayMode from the selected target type.
+  // Extensions must always route internally — a gateway dial string (sofia/gateway/<gw>/1001)
+  // is incorrect for a locally registered FreeSWITCH user and will fail with NO_ROUTE.
+  // Mobiles route via gateway only when one is configured; without a gateway they fall
+  // through to user/<mobile> which FreeSWITCH will reject — the operator must configure
+  // a gateway to reach external mobile numbers.
+  if (isGatewayMode === null) {
+    isGatewayMode = (targetType === 'mobile') && !!gwName;
+    if (targetType === 'extension') gwName = null; // extensions never use a gateway name
+  }
 
   // Step 5: Apply ENS formatting rules (gateway mode only — internal uses user/<ext>)
   let phone_number;
