@@ -93,7 +93,7 @@ async function loadGatewayMap(tenantId) {
 //   allow_mobile    — whether mobile numbers are permitted
 //   allow_extension — whether extension numbers are permitted
 //   mobile_*/ext_*  — formatting rules applied in gateway mode
-function resolveContact(contact, cfg, gateways) {
+export function resolveContact(contact, cfg, gateways) {
   const routingMode    = cfg.routing_mode    || 'auto';
   const dialPreference = cfg.dial_preference || 'extension_mobile';
 
