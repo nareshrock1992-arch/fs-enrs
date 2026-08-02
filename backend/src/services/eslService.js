@@ -631,7 +631,7 @@ async function updateHeartbeat(connected) {
 async function handleEvent(evt) {
   if (!evt) return;
   const name   = evt.getHeader('Event-Name');
-  console.log(`[esl][EVENT] ${name || '?'} uuid=${evt.getHeader('Unique-ID') || '?'}`);
+  console.log(`[esl][EVENT] type=${typeof evt} isNull=${evt===null} keys=${evt && typeof evt === 'object' ? Object.keys(evt).slice(0,5).join(',') : 'N/A'} name=${name || '?'}`);
   const subclass = evt.getHeader('Event-Subclass') || '';
 
   // Conference member join
