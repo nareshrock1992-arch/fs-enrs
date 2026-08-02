@@ -47,9 +47,6 @@ export async function resolveDialString({
   gatewayName,
   domain: _domain, // deprecated, ignored — see docblock
 } = {}) {
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][resolveDialString] ENTER contactId=${JSON.stringify(contactId)} tenantId=${JSON.stringify(tenantId)} mobileNumber=${JSON.stringify(mobileNumber)} extension=${JSON.stringify(extension)} gatewayId=${JSON.stringify(gatewayId)} gatewayName=${JSON.stringify(gatewayName)}`);
-
   let ext = extension || null;
   let mobile = mobileNumber || null;
   let resolvedGatewayId = gatewayId ?? null;
@@ -60,20 +57,12 @@ export async function resolveDialString({
        FROM emergency_contacts WHERE id = $1 AND deleted_at IS NULL`,
       [contactId]
     );
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   contactId lookup → ${contact ? `extension_number=${JSON.stringify(contact.extension_number)} mobile_number=${JSON.stringify(contact.mobile_number)} gateway_id=${JSON.stringify(contact.gateway_id)}` : 'NO ROW FOUND'}`);
     if (contact) {
       ext    = ext    ?? contact.extension_number;
       mobile = mobile ?? contact.mobile_number;
       resolvedGatewayId = resolvedGatewayId ?? contact.gateway_id;
     }
-  } else {
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   contactId is null/falsy — skipping DB lookup`);
   }
-
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][resolveDialString]   after contact resolve: ext=${JSON.stringify(ext)} mobile=${JSON.stringify(mobile)} resolvedGatewayId=${JSON.stringify(resolvedGatewayId)}`);
 
   let gateway = null;
   let rawGatewayName = null;
@@ -84,8 +73,6 @@ export async function resolveDialString({
       [resolvedGatewayId]
     );
     gateway = g || null;
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   gateway by id=${resolvedGatewayId} → ${gateway ? `name=${gateway.name}` : 'NOT FOUND'}`);
   } else if (gatewayName) {
     const { rows: [g] } = await query(
       `SELECT * FROM sip_gateways
@@ -100,8 +87,6 @@ export async function resolveDialString({
     // unregistered name as "no gateway."
     gateway = g || null;
     if (!gateway) rawGatewayName = gatewayName;
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   gateway by name="${gatewayName}" → ${gateway ? `found id=${gateway.id}` : `not in sip_gateways, rawGatewayName=${rawGatewayName}`}`);
   } else if (tenantId) {
     const { rows: [g] } = await query(
       `SELECT * FROM sip_gateways
@@ -110,23 +95,14 @@ export async function resolveDialString({
       [tenantId]
     );
     gateway = g || null;
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   tenant default gateway for tenantId=${tenantId} → ${gateway ? `name=${gateway.name}` : 'NONE'}`);
-  } else {
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   no gatewayId, no gatewayName, no tenantId → will use user/ dial`);
   }
 
   if (gateway || rawGatewayName) {
     const number = mobile || ext;
     if (!number) {
-      // DEBUG-PROBE
-      console.error(`[ENS-DEBUG][resolveDialString]   THROW: gateway configured but no number. ext=${JSON.stringify(ext)} mobile=${JSON.stringify(mobile)}`);
       throw new Error('resolveDialString: a gateway is configured but no destination number is available (need mobile_number or extension)');
     }
     const name = gateway ? gateway.name : rawGatewayName;
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][resolveDialString]   RESULT mode=gateway dialString=sofia/gateway/${name}/${number}`);
     return { dialString: `sofia/gateway/${name}/${number}`, mode: 'gateway', gateway };
   }
 
@@ -144,11 +120,7 @@ export async function resolveDialString({
   // Avaya/Cisco/trunk routing (the gateway branch above) is untouched.
   const dest = ext || mobile;
   if (!dest) {
-    // DEBUG-PROBE
-    console.error(`[ENS-DEBUG][resolveDialString]   THROW: no extension or mobile. ext=${JSON.stringify(ext)} mobile=${JSON.stringify(mobile)}`);
     throw new Error('resolveDialString: no extension or mobile number available to dial');
   }
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][resolveDialString]   RESULT mode=internal dialString=user/${dest}`);
   return { dialString: `user/${dest}`, mode: 'internal', gateway: null };
 }

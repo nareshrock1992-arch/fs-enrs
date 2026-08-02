@@ -995,10 +995,6 @@ async function handleEvent(evt) {
     const uuid      = evt.getHeader('Unique-ID');
     const cause     = evt.getHeader('Hangup-Cause');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
-    const _cid      = evt.getHeader('variable_enrs_campaign_id');
-    const _did      = evt.getHeader('variable_enrs_dest_id');
-    // DEBUG-PROBE: ENS campaign
-    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_HANGUP] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${_did} cause=${cause} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`);
     emit('channel.hangup', { uuid, cause, callerNum });
     eslEvents.emit('CHANNEL_HANGUP', { uuid, cause, callerNum });
 
@@ -1063,10 +1059,6 @@ async function handleEvent(evt) {
   if (name === 'CHANNEL_ANSWER') {
     const uuid      = evt.getHeader('Unique-ID');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
-    const _cid      = evt.getHeader('variable_enrs_campaign_id');
-    const _did      = evt.getHeader('variable_enrs_dest_id');
-    // DEBUG-PROBE: ENS campaign
-    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_ANSWER] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${_did} caller=${callerNum} dest=${evt.getHeader('Caller-Destination-Number')}`);
     emit('channel.answer', { uuid, callerNum });
     eslEvents.emit('CHANNEL_ANSWER', { uuid, callerNum });
     return;
@@ -1077,8 +1069,6 @@ async function handleEvent(evt) {
     const uuid      = evt.getHeader('Unique-ID');
     const callerNum = evt.getHeader('Caller-Caller-ID-Number');
     const destNum   = evt.getHeader('Caller-Destination-Number');
-    // DEBUG-PROBE: ENS campaign — log all enrs_ vars unconditionally for propagation check
-    { const _cid = evt.getHeader('variable_enrs_campaign_id'); const _did = evt.getHeader('variable_enrs_dest_id'); if (_cid || _did) { const _ser = (() => { try { return typeof evt.serialize === 'function' ? evt.serialize() : null; } catch { return null; } })(); const _ev = _ser ? _ser.split('\n').filter(l => l.toLowerCase().includes('enrs_')).join(' | ') : ''; console.log(`[ENS-DEBUG][CHANNEL_CREATE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid ?? 'MISSING'} destId=${_did ?? 'MISSING'} caller=${callerNum} dest=${destNum} | all_enrs_vars: ${_ev || 'NONE'}`); } }
     emit('channel.create', { uuid, callerNum, destNum });
     eslEvents.emit('CHANNEL_CREATE', { uuid, callerNum, destNum });
     return;
@@ -1089,8 +1079,6 @@ async function handleEvent(evt) {
     const uuid       = evt.getHeader('Unique-ID');
     const bridgeUuid = evt.getHeader('Bridge-B-Unique-ID');
     const callerNum  = evt.getHeader('Caller-Caller-ID-Number');
-    // DEBUG-PROBE: ENS campaign
-    { const _cid = evt.getHeader('variable_enrs_campaign_id'); if (_cid) console.log(`[ENS-DEBUG][CHANNEL_BRIDGE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} caller=${callerNum} bridgeUuid=${bridgeUuid}`); }
     emit('channel.bridge', { uuid, bridgeUuid, callerNum });
     eslEvents.emit('CHANNEL_BRIDGE', { uuid, bridgeUuid, callerNum });
     return;
@@ -1129,92 +1117,6 @@ async function handleEvent(evt) {
           })
           .catch(err => console.error('[esl] RECORD_STOP registration failed:', err.message));
       }).catch(() => {});
-    }
-    return;
-  }
-
-  // DEBUG-PROBE: FreeSWITCH bgapi originate result — confirms FS actually received and executed the command
-  if (name === 'BACKGROUND_JOB') {
-    const jobCmd  = evt.getHeader('Job-Command') || '';
-    const jobArg  = evt.getHeader('Job-Command-Arg') || '';
-    if (jobCmd === 'originate') {
-      const jobUuid = evt.getHeader('Job-UUID') || '';
-      const body    = (evt.getBody ? evt.getBody() : '') || '';
-      const isEns   = jobArg.includes('enrs_campaign_id');
-      if (isEns) {
-        const isErr = String(body).trimStart().startsWith('-ERR') || String(body).trimStart().startsWith('-USAGE');
-        console.log(`[ENS-DEBUG][BACKGROUND_JOB] ts=${new Date().toISOString()} jobUuid=${jobUuid} result="${String(body).trim().slice(0, 300)}" cmdArg="${jobArg.slice(0, 300)}"`);
-      }
-    }
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — originate command accepted, channel leg created by FS
-  // Log ALL enrs_ vars unconditionally to detect variable propagation failures
-  if (name === 'CHANNEL_ORIGINATE') {
-    const uuid      = evt.getHeader('Unique-ID');
-    const callerNum = evt.getHeader('Caller-Caller-ID-Number');
-    const destNum   = evt.getHeader('Caller-Destination-Number');
-    const _cid      = evt.getHeader('variable_enrs_campaign_id');
-    const _did      = evt.getHeader('variable_enrs_dest_id');
-    // Serialize and extract every enrs_ variable to catch propagation failures
-    const _ser = (() => { try { return typeof evt.serialize === 'function' ? evt.serialize() : null; } catch { return null; } })();
-    const _enrsVars = _ser ? _ser.split('\n').filter(l => l.toLowerCase().includes('enrs_') || l.toLowerCase().includes('variable_enrs')).join(' | ') : '(serialize unavailable)';
-    console.log(`[ENS-DEBUG][CHANNEL_ORIGINATE] ts=${new Date().toISOString()} uuid=${uuid} caller=${callerNum} dest=${destNum} variable_enrs_campaign_id=${_cid ?? 'MISSING'} variable_enrs_dest_id=${_did ?? 'MISSING'} | all_enrs_vars: ${_enrsVars || 'NONE FOUND'}`);
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — remote party is ringing (SIP 183/180 received)
-  if (name === 'CHANNEL_PROGRESS') {
-    const uuid  = evt.getHeader('Unique-ID');
-    const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) {
-      console.log(`[ENS-DEBUG][CHANNEL_PROGRESS] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} dest=${evt.getHeader('Caller-Destination-Number')}`);
-    }
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — early media / SIP 183 with SDP
-  if (name === 'CHANNEL_PROGRESS_MEDIA') {
-    const uuid  = evt.getHeader('Unique-ID');
-    const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) console.log(`[ENS-DEBUG][CHANNEL_PROGRESS_MEDIA] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} dest=${evt.getHeader('Caller-Destination-Number')}`);
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — dialplan application execution (e.g. playback, park)
-  if (name === 'CHANNEL_EXECUTE') {
-    const uuid  = evt.getHeader('Unique-ID');
-    const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) {
-      const app  = evt.getHeader('Application') || evt.getHeader('variable_current_application') || '';
-      const data = evt.getHeader('Application-Data') || evt.getHeader('variable_current_application_data') || '';
-      console.log(`[ENS-DEBUG][CHANNEL_EXECUTE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} app="${app}" data="${data.slice(0, 300)}"`);
-    }
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — dialplan application completed
-  if (name === 'CHANNEL_EXECUTE_COMPLETE') {
-    const uuid  = evt.getHeader('Unique-ID');
-    const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) {
-      const app      = evt.getHeader('Application') || evt.getHeader('variable_current_application') || '';
-      const data     = evt.getHeader('Application-Data') || evt.getHeader('variable_current_application_data') || '';
-      const response = evt.getHeader('Application-Response') || evt.getHeader('variable_current_application_response') || '';
-      console.log(`[ENS-DEBUG][CHANNEL_EXECUTE_COMPLETE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} app="${app}" data="${data.slice(0, 300)}" response="${response.slice(0, 200)}"`);
-    }
-    return;
-  }
-
-  // DEBUG-PROBE: ENS campaign — final channel teardown (hangup cause is authoritative here)
-  if (name === 'CHANNEL_HANGUP_COMPLETE') {
-    const uuid  = evt.getHeader('Unique-ID');
-    const _cid  = evt.getHeader('variable_enrs_campaign_id');
-    if (_cid) {
-      const cause    = evt.getHeader('Hangup-Cause');
-      const answered = evt.getHeader('variable_answered') || evt.getHeader('variable_endpoint_disposition') || '';
-      console.log(`[ENS-DEBUG][CHANNEL_HANGUP_COMPLETE] ts=${new Date().toISOString()} uuid=${uuid} campaignId=${_cid} destId=${evt.getHeader('variable_enrs_dest_id')} cause=${cause} answered="${answered}" dest=${evt.getHeader('Caller-Destination-Number')}`);
     }
     return;
   }
@@ -1834,35 +1736,13 @@ export async function originateCampaignCall({
   playbackFile,
   timeout = 30,
 }) {
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][originateCampaignCall] ENTER callUuid=${callUuid} campaignId=${campaignId} destId=${destId}`);
-  console.log(`[ENS-DEBUG][originateCampaignCall]   number=${JSON.stringify(number)} contactId=${JSON.stringify(contactId)} tenantId=${JSON.stringify(tenantId)} gatewayId=${JSON.stringify(gatewayId)} gatewayName=${JSON.stringify(gatewayName)} dialString=${JSON.stringify(dialString)} playbackFile=${JSON.stringify(playbackFile)}`);
-
   let resolved;
   try {
     resolved = dialString || (await resolveDialString({
       tenantId, contactId, mobileNumber: number, gatewayId, gatewayName,
     })).dialString;
-    // DEBUG-PROBE
-    console.log(`[ENS-DEBUG][originateCampaignCall]   resolveDialString → "${resolved}"`);
   } catch (resolveErr) {
-    // DEBUG-PROBE
-    console.error(`[ENS-DEBUG][originateCampaignCall]   resolveDialString THREW: "${resolveErr.message}"`);
     throw resolveErr;
-  }
-
-  // DEBUG-PROBE: Layer 6 — verify media file exists before sending originate
-  if (playbackFile) {
-    try {
-      const fsPromises = await import('node:fs/promises');
-      await fsPromises.access(playbackFile);
-      const info = await fsPromises.stat(playbackFile);
-      console.log(`[ENS-DEBUG][originateCampaignCall]   playback file CHECK: exists=true size=${info.size} bytes path="${playbackFile}"`);
-    } catch (fileErr) {
-      console.error(`[ENS-DEBUG][originateCampaignCall]   playback file CHECK: EXISTS=FALSE path="${playbackFile}" err="${fileErr.message}"`);
-    }
-  } else {
-    console.log(`[ENS-DEBUG][originateCampaignCall]   playback file CHECK: playbackFile is null/empty — will use &park()`);
   }
 
   const varParts = {
@@ -1877,11 +1757,10 @@ export async function originateCampaignCall({
   const varStr = Object.entries(varParts).map(([k, v]) => `${k}=${v}`).join(',');
   const app    = playbackFile ? `&playback(${playbackFile})` : '&park()';
   const fullCmd = `originate {${varStr}}${resolved} ${app}`;
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][originateCampaignCall]   ESL CMD → ${fullCmd}`);
-  const result = await eslCommand(fullCmd);
-  // DEBUG-PROBE
-  console.log(`[ENS-DEBUG][originateCampaignCall]   BGAPI result → ${JSON.stringify(result)}`);
+  // bgapi for 'originate' resolves only after the call completes (BACKGROUND_JOB fires on
+  // answer or hangup, not on command acceptance). The timeout must exceed originate_timeout
+  // to avoid premature ORIGINATE_ERROR for calls that ring up to `timeout` seconds.
+  const result = await eslCommand(fullCmd, (timeout + 10) * 1000);
 
   // FreeSWITCH returns -ERR when originate fails before creating a channel
   // (bad gateway name, no route, SIP error at dial-string resolution).
