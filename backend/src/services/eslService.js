@@ -631,7 +631,9 @@ async function updateHeartbeat(connected) {
 async function handleEvent(evt) {
   if (!evt) return;
   const name   = evt.getHeader('Event-Name');
-  console.log(`[esl][EVENT] type=${typeof evt} isNull=${evt===null} keys=${evt && typeof evt === 'object' ? Object.keys(evt).slice(0,5).join(',') : 'N/A'} name=${name || '?'}`);
+  if (name && name !== 'BACKGROUND_JOB' && !name.startsWith('CHANNEL_EXECUTE') && !name.startsWith('CHANNEL_PROGRESS')) {
+    console.log(`[esl][EVENT] ${name} uuid=${evt.getHeader('Unique-ID') || '?'}`);
+  }
   const subclass = evt.getHeader('Event-Subclass') || '';
 
   // Conference member join
@@ -1592,10 +1594,10 @@ export function connect() {
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
 
       // Subscribe to events we care about.
-      // DTMF: digit events for PIN / IVR navigation
-      // CHANNEL_CREATE / CHANNEL_BRIDGE: call lifecycle for monitoring
+      // IMPORTANT: CUSTOM must be LAST. FreeSWITCH's event parser treats every
+      // token after "CUSTOM" as a subclass name — placing it first would silently
+      // consume CHANNEL_ANSWER, CHANNEL_HANGUP, etc. as CUSTOM subclasses.
       conn.subscribe([
-        'CUSTOM conference::maintenance',
         'CHANNEL_HANGUP',
         'CHANNEL_HANGUP_COMPLETE',
         'CHANNEL_ANSWER',
@@ -1609,6 +1611,7 @@ export function connect() {
         'DTMF',
         'RECORD_STOP',
         'BACKGROUND_JOB',
+        'CUSTOM conference::maintenance',
       ]);
 
       // modesl uses EventEmitter2 with wildcard:true, delimiter:'::' and emits

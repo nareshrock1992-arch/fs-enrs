@@ -485,7 +485,6 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
 
 // Called from eslService via eslEvents EventEmitter
 export async function onCallAnswer(callUuid) {
-  logger.info({ module: 'campaignEngine', callUuid }, 'onCallAnswer invoked');
   const { rows: [dest] } = await query(
     `UPDATE ens_campaign_destinations
      SET status = 'answered', answered_at = now(), updated_at = now()
@@ -493,7 +492,6 @@ export async function onCallAnswer(callUuid) {
      RETURNING id, campaign_id`,
     [callUuid]
   );
-  logger.info({ module: 'campaignEngine', callUuid, found: !!dest }, 'onCallAnswer DB result');
   if (!dest) return;
 
   await query(
