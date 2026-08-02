@@ -59,7 +59,7 @@ const EnsConfigSchema = z.object({
   mobile_suffix:             emptyToNull,
 
   // Extension dialing rules (migration 035)
-  allow_extension:           z.boolean().default(false),
+  allow_extension:           z.boolean().default(true),
   ext_normalize_enabled:     z.boolean().default(false),
   ext_prefix:                emptyToNull,
   ext_suffix:                emptyToNull,

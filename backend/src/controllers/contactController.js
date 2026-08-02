@@ -13,11 +13,14 @@ const ContactSchema = z.object({
   first_name:       z.string().min(1).max(64),
   last_name:        z.string().min(1).max(64),
   role:             emptyToNull,
-  mobile_number:    z.string().min(1).max(32),
+  mobile_number:    z.preprocess(v => (v === '' ? null : v), z.string().min(1).max(32).nullable().optional()),
   extension_number: emptyToNull,
   email:            emptyToNullEmail,
   is_active:        z.boolean().default(true),
-});
+}).refine(
+  d => d.mobile_number || d.extension_number,
+  { message: 'At least one of mobile_number or extension_number is required' }
+);
 
 // GET /api/v1/contacts?organization_id=&search=&page=&limit=
 export const listContacts = asyncHandler(async (req, res) => {

@@ -123,7 +123,7 @@ function resolveContact(contact, cfg, gateways) {
 
   // Step 3: ENS config capability flags
   const allowMobile    = cfg.allow_mobile    ?? true;
-  const allowExtension = cfg.allow_extension ?? false;
+  const allowExtension = cfg.allow_extension ?? true;
 
   // Step 4: Number selection per dial_preference + ENS capability flags
   let raw        = null;
