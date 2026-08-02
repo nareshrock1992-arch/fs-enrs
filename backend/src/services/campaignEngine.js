@@ -455,27 +455,30 @@ async function processCampaign(campaign) {
 }
 
 async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile) {
-  // Assign UUID to destination row first so ESL CHANNEL_HANGUP can find it
+  // Assign UUID to destination row first so ESL CHANNEL_ANSWER/HANGUP can find it
   await query(
     `UPDATE ens_campaign_destinations SET call_uuid = $2, updated_at = now() WHERE id = $1`,
     [dest.id, callUuid]
   );
 
-  try {
-    await originateCampaignCall({
-      callUuid,
-      campaignId:   campaign.id,
-      destId:       dest.id,
-      number:       dest.phone_number,
-      clid,
-      gatewayName,
-      contactId:    dest.contact_id || null,
-      playbackFile: playbackFile || null,
-      timeout:      ORIGINATE_TIMEOUT,
-    });
-  } catch (e) {
-    await handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message);
-  }
+  // Fire-and-forget: bgapi originate blocks until BACKGROUND_JOB (call end), but
+  // CHANNEL_ANSWER and CHANNEL_HANGUP already drive all status transitions. Awaiting
+  // originateCampaignCall would block the loop for up to originate_timeout seconds per
+  // destination, causing stale recovery to reset rows that are genuinely in-flight.
+  originateCampaignCall({
+    callUuid,
+    campaignId:   campaign.id,
+    destId:       dest.id,
+    number:       dest.phone_number,
+    clid,
+    gatewayName,
+    contactId:    dest.contact_id || null,
+    playbackFile: playbackFile || null,
+    timeout:      ORIGINATE_TIMEOUT,
+  }).catch(e => {
+    handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message)
+      .catch(err => logger.error({ module: 'campaignEngine', destId: dest.id, err }, 'handleDestFailed error after originate rejection'));
+  });
 }
 
 // ── ESL Event Handlers ────────────────────────────────────────────────────────
