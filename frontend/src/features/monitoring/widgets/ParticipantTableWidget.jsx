@@ -1,20 +1,19 @@
 /**
- * ParticipantTableWidget — grouped participant table.
+ * ParticipantTableWidget — enterprise conference participant table.
  *
- * Participants are split into four sections for fast visual scanning:
- *   SPEAKING  → currently talking (green section header)
- *   CONNECTED → on call, not speaking
- *   MUTED     → mic muted
- *
- * All participant controls (mute, deaf, promote, floor, transfer, kick)
- * are wired to api.monitoring — same as the original CenterPanel table.
- *
- * Shared between ERS and STANDARD conference types.
+ * Design principles (matches reference image):
+ *  - Fixed 40 px row height — never grows regardless of audio state
+ *  - Columns: # · Participant · Role · Mic · Talk Time · Audio Level · Status · Actions
+ *  - Audio energy shown as horizontal bars (energy 0-100); bars animate when talking
+ *  - Status: Speaking (green) / Listening (blue) / Muted (red) / Deaf (amber)
+ *  - Search filter on display name / extension
+ *  - Sort: speaking → connected → muted (stable within each group: moderators first)
+ *  - All action controls always visible — no hover-reveal
  */
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   Mic, MicOff, EarOff, Shield, Signal,
-  PhoneOff, PhoneForwarded, Users,
+  PhoneOff, PhoneForwarded, Users, Search,
 } from 'lucide-react';
 import { api } from '../../../api/client.js';
 import { elapsedSec, fmtDur } from '../utils/time.js';
@@ -38,77 +37,67 @@ function initials(name) {
   return '?';
 }
 
-function MemberAvatar({ id, name, talking }) {
-  const color = AVATAR_COLORS[Number(id) % AVATAR_COLORS.length];
-  return (
-    <div className={[
-      'w-6 h-6 rounded flex items-center justify-center shrink-0 text-[9px] font-bold',
-      color,
-      talking ? 'ring-1 ring-emerald-500/60' : '',
-    ].join(' ')}>
-      {initials(name)}
-    </div>
-  );
-}
+// ─── Horizontal audio energy bars ────────────────────────────────────────────
+// Always rendered at fixed size. animationPlayState controls movement — no DOM changes.
 
-function TalkingBars() {
+function AudioLevel({ energy, talking }) {
+  const filled = talking
+    ? Math.max(3, Math.round((energy ?? 60) / 100 * 7))
+    : Math.round((energy ?? 0) / 100 * 7);
   return (
-    <div className="flex items-end gap-px h-3 shrink-0">
-      {[1, 2, 3].map((_, i) => (
-        <div key={i}
-             className="w-px rounded-full bg-green-500"
-             style={{
-               height: `${(i + 1) * 4}px`,
-               animation: `pulse 0.5s ease-in-out ${i * 0.12}s infinite alternate`,
-             }} />
+    <div className="flex items-center gap-px" style={{ width: 50, height: 14 }}>
+      {Array.from({ length: 7 }, (_, i) => (
+        <div
+          key={i}
+          style={{
+            flex: 1,
+            height: 12,
+            borderRadius: 2,
+            backgroundColor: i < filled
+              ? (talking ? '#22c55e' : '#6b7280')
+              : 'rgba(107,114,128,0.12)',
+            animationPlayState: (talking && i < filled) ? 'running' : 'paused',
+            animation: `pulse ${0.22 + i * 0.07}s ease-in-out ${i * 0.04}s infinite alternate`,
+          }}
+        />
       ))}
     </div>
   );
 }
 
-// ─── Energy bar ───────────────────────────────────────────────────────────────
+// ─── Status chip ─────────────────────────────────────────────────────────────
 
-function EnergyBar({ energy }) {
-  if (!energy) return null;
+function StatusChip({ talking, muted, deaf }) {
+  if (talking) return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-green-500">
+      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />
+      Speaking
+    </span>
+  );
+  if (muted) return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-400">
+      <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+      Muted
+    </span>
+  );
+  if (deaf) return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+      Deaf
+    </span>
+  );
   return (
-    <div className="flex items-end gap-px" title={`Energy: ${energy}`}>
-      {[1, 2, 3, 4, 5].map(bar => (
-        <div key={bar}
-             className={`rounded-sm ${energy >= bar * 20 ? 'bg-emerald-500' : 'bg-surface-border'}`}
-             style={{ width: 3, height: bar * 2 + 2 }} />
-      ))}
-    </div>
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-text-muted">
+      <span className="w-1.5 h-1.5 rounded-full bg-blue-400/40 shrink-0" />
+      Listening
+    </span>
   );
 }
 
-// ─── Section divider — minimal: 1px rule + label ─────────────────────────────
+// ─── Participant row ──────────────────────────────────────────────────────────
+// Row height is fixed at 40 px via style — never grows on audio events.
 
-function SectionHeader({ label, count, stripe }) {
-  if (count === 0) return null;
-  return (
-    <tr>
-      <td colSpan={4}
-          className="px-2 pt-2 pb-0.5 text-[7px] font-bold uppercase tracking-widest select-none"
-          style={{ color: stripe, opacity: 0.7 }}>
-        {label}
-        <span className="ml-1.5 font-mono opacity-60">{count}</span>
-      </td>
-    </tr>
-  );
-}
-
-// ─── Participant row — dense, color-coded left border ─────────────────────────
-//
-// status: 'speaking' | 'connected' | 'muted'
-// Left border color is the primary status signal — readable at a glance.
-
-const STATUS_BORDER = {
-  speaking:  '#22c55e',
-  connected: '#3b82f6',
-  muted:     '#6b7280',
-};
-
-const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker, status }) {
+const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker, rowNum }) {
   const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
   const ext      = m.extension   || m.callerNum  || '';
   const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
@@ -122,6 +111,8 @@ const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker,
   })();
   const talkSecs = Math.floor(totalTalkMs / 1000);
 
+  const avatarColor = AVATAR_COLORS[Number(m.id) % AVATAR_COLORS.length];
+
   async function act(fn, ...args) {
     try { await fn(room, ...args); }
     catch (e) { console.error('[monitoring] action failed:', e.message); }
@@ -132,100 +123,121 @@ const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker,
     if (dest?.trim()) act(api.monitoring.transfer, m.id, dest.trim());
   }
 
-  const borderColor = STATUS_BORDER[status] ?? STATUS_BORDER.connected;
-  const rowBg = status === 'speaking'
-    ? 'bg-green-500/5'
-    : status === 'muted'
-      ? 'opacity-80'
-      : '';
+  const rowBg = m.talking ? 'bg-green-500/[0.03]'
+              : m.muted   ? 'opacity-75'
+              : '';
 
   return (
     <tr
-      style={{ borderLeft: `3px solid ${borderColor}` }}
+      style={{ height: 40 }}  // ← FIXED row height — never changes
       className={`border-b border-surface-border/20 transition-colors ${rowBg} hover:bg-surface-hover/40`}
     >
-      {/* Participant — avatar + name + ext */}
-      <td className="pl-2 pr-1 py-1">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <MemberAvatar id={m.id} name={display} talking={m.talking} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1">
-              {m.talking && <TalkingBars />}
-              <span className="text-[10px] font-semibold text-text-primary truncate">{display}</span>
+      {/* Row number */}
+      <td className="pl-3 pr-1 w-8 shrink-0 select-none">
+        <span className="text-[10px] text-text-muted/30 tabular-nums">{rowNum}</span>
+      </td>
+
+      {/* Participant — avatar + name + extension */}
+      <td className="px-2">
+        <div className="flex items-center gap-2 overflow-hidden">
+          <div className={[
+            'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-[10px] font-bold',
+            avatarColor,
+            m.talking ? 'ring-1 ring-green-500/50' : '',
+          ].join(' ')}>
+            {initials(display)}
+          </div>
+          <div className="min-w-0 overflow-hidden">
+            <div className="text-[12px] font-medium text-text-primary truncate leading-tight">
+              {display}
             </div>
-            <span className="text-[8px] font-mono text-text-muted">{ext || `#${m.id}`}</span>
+            <div className="text-[10px] font-mono text-text-muted truncate leading-none">
+              {ext || `#${m.id}`}
+            </div>
           </div>
         </div>
       </td>
 
-      {/* Status badges — role + audio in one compact column */}
-      <td className="px-1 py-1">
-        <div className="flex items-center gap-0.5 flex-wrap">
-          {m.moderator && (
-            <span className="text-[7px] px-1 py-px rounded bg-amber-500/15 text-amber-500 font-bold">MOD</span>
-          )}
-          {m.floor && (
-            <span className="text-[7px] px-1 py-px rounded bg-purple-500/15 text-purple-400 font-bold">FL</span>
-          )}
-          {m.muted && (
-            <span className="text-[7px] px-1 py-px rounded bg-red-500/15 text-red-400 font-bold">MUT</span>
-          )}
-          {m.deaf && (
-            <span className="text-[7px] px-1 py-px rounded bg-orange-500/15 text-orange-400 font-bold">DEF</span>
-          )}
-        </div>
+      {/* Role */}
+      <td className="px-2 w-16 hidden sm:table-cell">
+        {m.moderator ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/12 text-amber-500 font-bold border border-amber-500/20">
+            MOD
+          </span>
+        ) : m.floor ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/12 text-purple-400 font-bold border border-purple-500/20">
+            FLOOR
+          </span>
+        ) : null}
       </td>
 
-      {/* Duration — joined + talk time */}
-      <td className="px-1 py-1 hidden lg:table-cell whitespace-nowrap">
-        <div className="text-[8px] font-mono text-text-muted tabular-nums">
+      {/* Mic state */}
+      <td className="px-2 w-8 text-center">
+        {m.muted
+          ? <MicOff size={13} className="text-red-400 mx-auto" />
+          : <Mic    size={13} className="text-text-muted/25 mx-auto" />
+        }
+      </td>
+
+      {/* Talk time + join time */}
+      <td className="px-2 w-20 hidden md:table-cell">
+        <div className="text-[10px] font-mono tabular-nums text-text-muted">
           {joinSecs != null ? fmtDur(joinSecs) : '—'}
         </div>
         {talkSecs > 0 && (
-          <div className="text-[7px] font-mono text-green-500/70 tabular-nums">{fmtDur(talkSecs)}</div>
+          <div className="text-[9px] font-mono tabular-nums text-green-500/70">{fmtDur(talkSecs)}</div>
         )}
       </td>
 
-      {/* Actions — always visible, compact icon buttons */}
-      <td className="px-1 py-1" style={{ minWidth: 132 }}>
+      {/* Audio level bars */}
+      <td className="px-2 w-16 hidden lg:table-cell">
+        <AudioLevel energy={m.energy} talking={m.talking} />
+      </td>
+
+      {/* Status */}
+      <td className="px-2 w-24 hidden sm:table-cell">
+        <StatusChip talking={m.talking} muted={m.muted} deaf={m.deaf} />
+      </td>
+
+      {/* Actions — compact icon buttons, always visible */}
+      <td className="pr-3 pl-1 w-36">
         <div className="flex items-center gap-px">
           <button title={m.muted ? 'Unmute' : 'Mute'}
             onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
-            className={['p-1 rounded transition-colors', m.muted ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'text-text-muted hover:text-emerald-500 hover:bg-surface-hover'].join(' ')}>
-            {m.muted ? <MicOff size={10} /> : <Mic size={10} />}
+            className={['p-1.5 rounded transition-colors', m.muted ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'text-text-muted/50 hover:text-text-primary hover:bg-surface-hover'].join(' ')}>
+            {m.muted ? <MicOff size={13} /> : <Mic size={13} />}
           </button>
           <button title={m.deaf ? 'Undeaf' : 'Deaf'}
             onClick={() => act(m.deaf ? api.monitoring.undeaf : api.monitoring.deaf, m.id)}
-            className={['p-1 rounded transition-colors', m.deaf ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'text-text-muted hover:text-orange-400 hover:bg-surface-hover'].join(' ')}>
-            <EarOff size={10} />
+            className={['p-1.5 rounded transition-colors', m.deaf ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'text-text-muted/50 hover:text-text-primary hover:bg-surface-hover'].join(' ')}>
+            <EarOff size={13} />
           </button>
-          <button title={m.moderator ? 'Demote' : 'Promote to MOD'}
+          <button title={m.moderator ? 'Demote' : 'Promote to moderator'}
             onClick={() => act(api.monitoring.promote, m.id)}
-            className={['p-1 rounded transition-colors', m.moderator ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'text-text-muted hover:text-amber-400 hover:bg-surface-hover'].join(' ')}>
-            <Shield size={10} />
+            className={['p-1.5 rounded transition-colors', m.moderator ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'text-text-muted/50 hover:text-amber-400 hover:bg-surface-hover'].join(' ')}>
+            <Shield size={13} />
           </button>
           <button title={m.floor ? 'Release floor' : 'Give floor'}
             onClick={() => act(api.monitoring.floor, m.id)}
-            className={['p-1 rounded transition-colors', m.floor ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20' : 'text-text-muted hover:text-purple-400 hover:bg-surface-hover'].join(' ')}>
-            <Signal size={10} />
+            className={['p-1.5 rounded transition-colors', m.floor ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20' : 'text-text-muted/50 hover:text-purple-400 hover:bg-surface-hover'].join(' ')}>
+            <Signal size={13} />
           </button>
           <button title="Transfer" onClick={transfer}
-            className="p-1 rounded text-text-muted hover:text-blue-400 hover:bg-surface-hover transition-colors">
-            <PhoneForwarded size={10} />
-          </button>
-          <button title={`Copy ext: ${ext || m.id}`}
-            onClick={() => navigator.clipboard?.writeText(ext || String(m.id))}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">
-            #
+            className="p-1.5 rounded text-text-muted/50 hover:text-blue-400 hover:bg-surface-hover transition-colors">
+            <PhoneForwarded size={13} />
           </button>
           <button title="Volume +" onClick={() => act(api.monitoring.volume, m.id, 'in', 1)}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">V+</button>
+            className="p-1.5 rounded text-text-muted/50 hover:text-text-primary hover:bg-surface-hover transition-colors text-[8px] font-bold leading-none tabular-nums">
+            V+
+          </button>
           <button title="Volume −" onClick={() => act(api.monitoring.volume, m.id, 'in', -1)}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">V−</button>
-          <button title="Kick"
+            className="p-1.5 rounded text-text-muted/50 hover:text-text-primary hover:bg-surface-hover transition-colors text-[8px] font-bold leading-none tabular-nums">
+            V−
+          </button>
+          <button title="Kick participant"
             onClick={() => { if (window.confirm(`Kick ${display} from ${room}?`)) act(api.monitoring.kick, m.id); }}
-            className="p-1 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors">
-            <PhoneOff size={10} />
+            className="p-1.5 rounded text-text-muted/50 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+            <PhoneOff size={13} />
           </button>
         </div>
       </td>
@@ -238,85 +250,122 @@ const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker,
 export const ParticipantTableWidget = memo(function ParticipantTableWidget({
   conf, now, talkTracker,
 }) {
+  const [search, setSearch] = useState('');
   const members = conf?.members || [];
   const room    = conf?.name    || '';
 
-  // Group members into sections for fast visual scanning
-  const { speaking, connected, muted } = useMemo(() => {
-    const speaking   = [];
-    const connected  = [];
-    const muted      = [];
-    for (const m of members) {
-      if (m.talking)      speaking.push(m);
-      else if (m.muted)   muted.push(m);
-      else                connected.push(m);
-    }
-    // Within each section: moderators first
-    const byMod = (a, b) => (b.moderator ? 1 : 0) - (a.moderator ? 1 : 0);
-    speaking.sort(byMod);
-    connected.sort(byMod);
-    muted.sort(byMod);
-    return { speaking, connected, muted };
-  }, [members]);
+  // Sort: speaking → connected → muted; moderators first within each group
+  const sorted = useMemo(() => {
+    const statusOrder = m => m.talking ? 0 : m.muted ? 2 : m.deaf ? 1 : 1;
+    const q = search.trim().toLowerCase();
+    return [...members]
+      .filter(m => {
+        if (!q) return true;
+        const name = (m.displayName || m.callerName || m.callerNum || '').toLowerCase();
+        const ext  = (m.extension || m.callerNum || '').toLowerCase();
+        return name.includes(q) || ext.includes(q);
+      })
+      .sort((a, b) => {
+        const sd = statusOrder(a) - statusOrder(b);
+        if (sd !== 0) return sd;
+        return (b.moderator ? 1 : 0) - (a.moderator ? 1 : 0);
+      });
+  }, [members, search]);
+
+  const liveCount  = members.filter(m => m.talking).length;
+  const mutedCount = members.filter(m => m.muted).length;
 
   if (members.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2">
-        <Users size={18} className="text-text-muted/25" />
-        <p className="text-xs text-text-muted">No participants</p>
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
+        <Users size={20} className="text-text-muted/20" />
+        <p className="text-[11px] text-text-muted">No participants in this conference</p>
       </div>
     );
   }
 
-  const liveCount = speaking.length;
-
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-      {/* Sub-header */}
-      <div className="flex items-center gap-2 mb-2 shrink-0 px-1">
-        <Users size={11} className="text-blue-500" />
-        <span className="text-xs font-bold text-text-primary">Participants</span>
-        <span className="text-[10px] px-1.5 py-px rounded-full bg-blue-500/15 text-blue-400 font-bold ml-1">
-          {members.length}
+
+      {/* ── Sub-header: label + counters + search ───────────────────────── */}
+      <div className="flex items-center gap-2 mb-2 shrink-0">
+        <Users size={12} className="text-text-muted/50" />
+        <span className="text-[11px] font-semibold text-text-primary">
+          Participants
         </span>
+        <span className="text-[10px] font-mono text-text-muted/50 tabular-nums">
+          ({members.length})
+        </span>
+
         {liveCount > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded-full bg-green-500/15 text-green-500 font-bold flex items-center gap-0.5">
-            <span className="w-1 h-1 rounded-full bg-green-500 animate-pulse" />
-            {liveCount} live
+          <span className="flex items-center gap-1 text-[10px] font-medium text-green-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+            {liveCount} speaking
           </span>
         )}
+        {mutedCount > 0 && (
+          <span className="text-[10px] text-red-400/70">· {mutedCount} muted</span>
+        )}
+
+        {/* Search */}
+        <div className="ml-auto flex items-center gap-1.5 border border-surface-border rounded-lg px-2 py-1
+                        focus-within:border-primary/40 transition-colors bg-surface-card">
+          <Search size={11} className="text-text-muted/40 shrink-0" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search…"
+            className="text-[11px] bg-transparent text-text-primary placeholder:text-text-muted/40
+                       outline-none w-28 min-w-0"
+          />
+        </div>
       </div>
 
+      {/* ── Table ───────────────────────────────────────────────────────── */}
       <div className="card !p-0 overflow-hidden flex-1 min-h-0">
-        <div className="overflow-auto h-full" style={{ minWidth: 0 }}>
-          <table className="w-full text-left border-collapse" style={{ minWidth: '560px' }}>
+        <div className="overflow-auto h-full">
+          <table className="w-full text-left border-collapse" style={{ minWidth: 640 }}>
             <thead>
-              <tr>
-                {['Participant', 'Status', 'Time', 'Actions'].map(h => (
-                  <th key={h}
-                      className="px-2 py-1.5 text-[8px] font-bold uppercase tracking-wider
-                                 text-text-muted bg-surface-hover/40 whitespace-nowrap
-                                 border-b border-surface-border sticky top-0 z-10">
-                    {h}
+              <tr className="border-b border-surface-border">
+                {[
+                  { label: '#',           cls: 'w-8  pl-3'                        },
+                  { label: 'PARTICIPANT', cls: 'min-w-[160px]'                    },
+                  { label: 'ROLE',        cls: 'w-16 hidden sm:table-cell'        },
+                  { label: 'MIC',         cls: 'w-8  text-center'                 },
+                  { label: 'TIME',        cls: 'w-20 hidden md:table-cell'        },
+                  { label: 'AUDIO',       cls: 'w-16 hidden lg:table-cell'        },
+                  { label: 'STATUS',      cls: 'w-24 hidden sm:table-cell'        },
+                  { label: 'ACTIONS',     cls: 'w-36'                             },
+                ].map(({ label, cls }) => (
+                  <th key={label}
+                      className={`px-2 py-2 text-[9px] font-bold uppercase tracking-wider
+                                  text-text-muted/60 bg-surface-hover/30 whitespace-nowrap
+                                  sticky top-0 z-10 ${cls}`}>
+                    {label}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              <SectionHeader label="Speaking"  count={speaking.length}  stripe="#22c55e" />
-              {speaking.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="speaking" />
-              ))}
-
-              <SectionHeader label="Connected" count={connected.length} stripe="#3b82f6" />
-              {connected.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="connected" />
-              ))}
-
-              <SectionHeader label="Muted"     count={muted.length}     stripe="#6b7280" />
-              {muted.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="muted" />
-              ))}
+              {sorted.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-10 text-center text-[11px] text-text-muted">
+                    No participants match "{search}"
+                  </td>
+                </tr>
+              ) : (
+                sorted.map((m, idx) => (
+                  <ParticipantRow
+                    key={m.id}
+                    m={m}
+                    room={room}
+                    now={now}
+                    talkTracker={talkTracker}
+                    rowNum={idx + 1}
+                  />
+                ))
+              )}
             </tbody>
           </table>
         </div>
