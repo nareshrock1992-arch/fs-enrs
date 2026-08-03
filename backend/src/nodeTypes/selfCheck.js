@@ -13,6 +13,9 @@ import ersRouter from '../routes/internal/ers.js';
 import ensRouter from '../routes/internal/ens.js';
 import ivrRouter from '../routes/internal/ivr.js';
 import { NODE_TYPE_REGISTRY } from './registry.js';
+import { logger } from '../infrastructure/logger.js';
+
+const log = logger.forModule('boot:selfCheck');
 
 const MOUNTS = [
   { prefix: '/api/v1/internal/ers', router: ersRouter },
@@ -52,10 +55,9 @@ export function checkNodeTypeApiEndpoints() {
   }
 
   if (problems.length > 0) {
-    console.warn('[boot] Node-type registry self-check FOUND PROBLEMS:');
-    for (const p of problems) console.warn('  ⚠ ' + p);
+    log.warn('Node-type registry self-check FOUND PROBLEMS', { problems });
   } else {
-    console.log(`[boot] Node-type registry self-check OK — ${NODE_TYPE_REGISTRY.length} node type(s), all apiEndpoint declarations match registered routes.`);
+    log.info('Node-type registry self-check OK', { nodeTypeCount: NODE_TYPE_REGISTRY.length });
   }
 
   return problems;

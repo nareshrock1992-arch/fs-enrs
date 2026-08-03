@@ -160,9 +160,11 @@ describe('InProcessEventBus', () => {
     bus.publish(makeEvent());
     await flushImmediate();
 
-    // After clear, second publish has no handlers → dead letter, received stays at 0
+    // After clear, second publish has no handlers → dead letter, received stays at 0.
+    // stats.published is 1 because publish() increments _stats.published BEFORE
+    // checking for handlers — dead-letter events still count as published.
     expect(received).toHaveLength(0);
-    expect(bus.stats.published).toBe(0);
+    expect(bus.stats.published).toBe(1);
   });
 
   // ── publishMany ────────────────────────────────────────────────────────────

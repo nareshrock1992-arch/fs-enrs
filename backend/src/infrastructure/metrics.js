@@ -22,8 +22,14 @@ const DEFAULT_LABELS = { service: process.env.SERVICE_NAME ?? 'enrs-backend' };
 
 client.register.setDefaultLabels(DEFAULT_LABELS);
 
-// Collect default Node.js process metrics (memory, CPU, event loop lag)
-client.collectDefaultMetrics({ prefix: 'enrs_' });
+// Collect default Node.js process metrics (memory, CPU, event loop lag).
+// Guard: prom-client's global registry persists across vi.resetModules() in
+// tests — a second import would throw "already registered" without this check.
+try {
+  client.collectDefaultMetrics({ prefix: 'enrs_' });
+} catch (e) {
+  if (!e.message?.includes('already been registered')) throw e;
+}
 
 // ── Metric definitions ─────────────────────────────────────────────────────
 // We use a registry-backed pattern: define each metric once, lazily on first
@@ -80,7 +86,8 @@ const HISTOGRAM_NAMES = new Set([
 function getCounter(name) {
   if (!COUNTER_NAMES.has(name)) throw new Error(`Unknown counter: ${name}`);
   if (!_counters.has(name)) {
-    _counters.set(name, new client.Counter({ name, help: name, labelNames: ['tenant_id', 'channel', 'cause', 'status', 'method', 'path'] }));
+    const existing = client.register.getSingleMetric(name);
+    _counters.set(name, existing ?? new client.Counter({ name, help: name, labelNames: ['tenant_id', 'channel', 'cause', 'status', 'method', 'path'] }));
   }
   return _counters.get(name);
 }
@@ -88,7 +95,8 @@ function getCounter(name) {
 function getGauge(name) {
   if (!GAUGE_NAMES.has(name)) throw new Error(`Unknown gauge: ${name}`);
   if (!_gauges.has(name)) {
-    _gauges.set(name, new client.Gauge({ name, help: name, labelNames: ['tenant_id', 'gateway'] }));
+    const existing = client.register.getSingleMetric(name);
+    _gauges.set(name, existing ?? new client.Gauge({ name, help: name, labelNames: ['tenant_id', 'gateway'] }));
   }
   return _gauges.get(name);
 }
@@ -96,7 +104,8 @@ function getGauge(name) {
 function getHistogram(name) {
   if (!HISTOGRAM_NAMES.has(name)) throw new Error(`Unknown histogram: ${name}`);
   if (!_histograms.has(name)) {
-    _histograms.set(name, new client.Histogram({
+    const existing = client.register.getSingleMetric(name);
+    _histograms.set(name, existing ?? new client.Histogram({
       name,
       help: name,
       labelNames: ['tenant_id', 'channel', 'method', 'path', 'status'],

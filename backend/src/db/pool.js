@@ -1,5 +1,8 @@
 import pg from 'pg';
 import { config } from '../config/index.js';
+import { logger } from '../infrastructure/logger.js';
+
+const log = logger.forModule('db:pool');
 
 const { Pool } = pg;
 
@@ -16,7 +19,7 @@ export const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('[db] Pool error:', err.message);
+  log.error('Pool error', { message: err.message });
 });
 
 // Annotate a pg error with the originating SQL and params so the error
@@ -61,10 +64,10 @@ export async function withTransaction(fn) {
 export async function testConnection() {
   try {
     const { rows } = await query('SELECT NOW() AS now');
-    console.log('[db] Connected — server time:', rows[0].now);
+    log.info('Connected', { serverTime: rows[0].now });
     return true;
   } catch (err) {
-    console.error('[db] Connection failed:', err.message);
+    log.error('Connection failed', { message: err.message });
     return false;
   }
 }
