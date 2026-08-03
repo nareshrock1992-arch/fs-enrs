@@ -10,25 +10,7 @@ import {
   Shield, Square, AlertCircle, CheckCircle,
   Hash,
 } from 'lucide-react';
-
-// ─── Duration helpers ─────────────────────────────────────────────────────────
-
-function elapsedSec(iso, now = Date.now()) {
-  if (!iso) return 0;
-  return Math.max(0, Math.floor((now - new Date(iso)) / 1000));
-}
-
-function fmtDur(secs) {
-  if (secs < 60)   return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
-}
-
-function fmtTime(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
+import { elapsedSec, fmtDur, fmtTime } from '../utils/time.js';
 
 // ─── Tier → severity badge ────────────────────────────────────────────────────
 

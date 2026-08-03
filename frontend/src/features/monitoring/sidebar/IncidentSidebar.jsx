@@ -19,6 +19,7 @@ import { useMemo } from 'react';
 import { PhoneCall, Headphones } from 'lucide-react';
 import { IncidentCard } from './IncidentCard.jsx';
 import { IncidentCardSkeleton } from './IncidentCardSkeleton.jsx';
+import { getConferenceType } from '../config/widgetRegistry.js';
 
 // ─── Normalize one conference+incident entry → IncidentView ──────────────────
 //
@@ -112,7 +113,7 @@ export function IncidentSidebar({ conferences, selectedConf, onSelect, now, load
       {/* Header */}
       <div className="flex items-center gap-2 mb-2.5 shrink-0">
         <PhoneCall size={12} className="text-emerald-500" />
-        <span className="text-xs font-bold text-text-primary">Active Incidents</span>
+        <span className="text-xs font-bold text-text-primary">Conferences</span>
         <span className={[
           'ml-1 text-[10px] px-1.5 py-px rounded-full font-bold',
           incidents.length > 0
@@ -121,6 +122,25 @@ export function IncidentSidebar({ conferences, selectedConf, onSelect, now, load
         ].join(' ')}>
           {incidents.length}
         </span>
+        {/* Type breakdown — ERS vs Standard */}
+        {incidents.length > 0 && (() => {
+          const ersCount = (conferences || []).filter(c => getConferenceType(c) === 'ERS').length;
+          const stdCount = incidents.length - ersCount;
+          return (
+            <div className="ml-auto flex items-center gap-1">
+              {ersCount > 0 && (
+                <span className="text-[8px] px-1 py-px rounded bg-red-500/10 text-red-400 font-bold">
+                  {ersCount} ERS
+                </span>
+              )}
+              {stdCount > 0 && (
+                <span className="text-[8px] px-1 py-px rounded bg-surface-hover text-text-muted font-bold">
+                  {stdCount} STD
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* List */}
