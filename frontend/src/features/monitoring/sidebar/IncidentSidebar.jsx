@@ -144,7 +144,7 @@ export function IncidentSidebar({ conferences, selectedConf, onSelect, now, load
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+      <div className="flex-1 overflow-y-auto space-y-px pr-0.5">
         {loading ? (
           <>
             <IncidentCardSkeleton />

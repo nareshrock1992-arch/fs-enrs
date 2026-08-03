@@ -42,7 +42,7 @@ function MemberAvatar({ id, name, talking }) {
   const color = AVATAR_COLORS[Number(id) % AVATAR_COLORS.length];
   return (
     <div className={[
-      'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-[10px] font-bold',
+      'w-6 h-6 rounded flex items-center justify-center shrink-0 text-[9px] font-bold',
       color,
       talking ? 'ring-1 ring-emerald-500/60' : '',
     ].join(' ')}>
@@ -81,18 +81,15 @@ function EnergyBar({ energy }) {
   );
 }
 
-// ─── Section header ───────────────────────────────────────────────────────────
+// ─── Section divider — minimal: 1px rule + label ─────────────────────────────
 
-function SectionHeader({ label, count, color = 'text-text-muted', stripe }) {
+function SectionHeader({ label, count, stripe }) {
   if (count === 0) return null;
   return (
     <tr>
-      <td colSpan={5}
-          className={`px-2 pt-3 pb-1 text-[8px] font-bold uppercase tracking-widest ${color} select-none`}>
-        <span
-          className="inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle"
-          style={{ background: stripe }}
-        />
+      <td colSpan={4}
+          className="px-2 pt-2 pb-0.5 text-[7px] font-bold uppercase tracking-widest select-none"
+          style={{ color: stripe, opacity: 0.7 }}>
         {label}
         <span className="ml-1.5 font-mono opacity-60">{count}</span>
       </td>
@@ -100,9 +97,18 @@ function SectionHeader({ label, count, color = 'text-text-muted', stripe }) {
   );
 }
 
-// ─── Participant row ───────────────────────────────────────────────────────────
+// ─── Participant row — dense, color-coded left border ─────────────────────────
+//
+// status: 'speaking' | 'connected' | 'muted'
+// Left border color is the primary status signal — readable at a glance.
 
-const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker }) {
+const STATUS_BORDER = {
+  speaking:  '#22c55e',
+  connected: '#3b82f6',
+  muted:     '#6b7280',
+};
+
+const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker, status }) {
   const display  = m.displayName || m.callerName || m.callerNum || `#${m.id}`;
   const ext      = m.extension   || m.callerNum  || '';
   const joinSecs = m.joinedAt ? elapsedSec(m.joinedAt, now) : null;
@@ -126,165 +132,100 @@ const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker 
     if (dest?.trim()) act(api.monitoring.transfer, m.id, dest.trim());
   }
 
-  return (
-    <tr className={[
-      'border-b border-surface-border/25 transition-colors',
-      m.talking ? 'bg-green-500/4' : 'hover:bg-surface-hover/50',
-    ].join(' ')}>
+  const borderColor = STATUS_BORDER[status] ?? STATUS_BORDER.connected;
+  const rowBg = status === 'speaking'
+    ? 'bg-green-500/5'
+    : status === 'muted'
+      ? 'opacity-80'
+      : '';
 
-      {/* Participant */}
-      <td className="px-2 py-2">
-        <div className="flex items-center gap-2 min-w-0">
+  return (
+    <tr
+      style={{ borderLeft: `3px solid ${borderColor}` }}
+      className={`border-b border-surface-border/20 transition-colors ${rowBg} hover:bg-surface-hover/40`}
+    >
+      {/* Participant — avatar + name + ext */}
+      <td className="pl-2 pr-1 py-1">
+        <div className="flex items-center gap-1.5 min-w-0">
           <MemberAvatar id={m.id} name={display} talking={m.talking} />
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1">
               {m.talking && <TalkingBars />}
-              <span className="text-xs font-semibold text-text-primary truncate">{display}</span>
+              <span className="text-[10px] font-semibold text-text-primary truncate">{display}</span>
             </div>
-            <span className="text-[9px] font-mono text-text-muted">{ext || `#${m.id}`}</span>
+            <span className="text-[8px] font-mono text-text-muted">{ext || `#${m.id}`}</span>
           </div>
         </div>
       </td>
 
-      {/* Role badges */}
-      <td className="px-2 py-2">
-        <div className="flex items-center gap-1 flex-wrap">
+      {/* Status badges — role + audio in one compact column */}
+      <td className="px-1 py-1">
+        <div className="flex items-center gap-0.5 flex-wrap">
           {m.moderator && (
-            <span className="text-[9px] px-1.5 py-px rounded-full
-                             bg-amber-500/15 text-amber-500 font-bold flex items-center gap-0.5">
-              <Shield size={7} /> MOD
-            </span>
+            <span className="text-[7px] px-1 py-px rounded bg-amber-500/15 text-amber-500 font-bold">MOD</span>
           )}
           {m.floor && (
-            <span className="text-[9px] px-1 py-px rounded bg-purple-500/15 text-purple-400 font-bold">
-              FL
-            </span>
+            <span className="text-[7px] px-1 py-px rounded bg-purple-500/15 text-purple-400 font-bold">FL</span>
           )}
-          {!m.moderator && (
-            <span className="text-[9px] px-1.5 py-px rounded-full bg-surface-hover text-text-muted">
-              PART
-            </span>
-          )}
-        </div>
-      </td>
-
-      {/* Audio state */}
-      <td className="px-2 py-2">
-        <div className="flex items-center gap-1">
-          {m.muted ? (
-            <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500 font-bold flex items-center gap-0.5">
-              <MicOff size={7} /> MUTED
-            </span>
-          ) : (
-            <span className="text-[9px] text-emerald-500 font-medium flex items-center gap-0.5">
-              <Mic size={8} /> ON
-            </span>
+          {m.muted && (
+            <span className="text-[7px] px-1 py-px rounded bg-red-500/15 text-red-400 font-bold">MUT</span>
           )}
           {m.deaf && (
-            <span className="text-[9px] px-1 py-px rounded bg-orange-500/15 text-orange-500 font-bold flex items-center gap-0.5">
-              <EarOff size={7} /> DEAF
-            </span>
+            <span className="text-[7px] px-1 py-px rounded bg-orange-500/15 text-orange-400 font-bold">DEF</span>
           )}
         </div>
       </td>
 
-      {/* Joined / talk / energy */}
-      <td className="px-2 py-2 hidden lg:table-cell">
-        <div className="text-[9px] font-mono text-text-muted tabular-nums">
+      {/* Duration — joined + talk time */}
+      <td className="px-1 py-1 hidden lg:table-cell whitespace-nowrap">
+        <div className="text-[8px] font-mono text-text-muted tabular-nums">
           {joinSecs != null ? fmtDur(joinSecs) : '—'}
         </div>
         {talkSecs > 0 && (
-          <div className="text-[8px] font-mono text-green-500/70 tabular-nums flex items-center gap-0.5">
-            <Mic size={7} /> {fmtDur(talkSecs)} talk
-          </div>
+          <div className="text-[7px] font-mono text-green-500/70 tabular-nums">{fmtDur(talkSecs)}</div>
         )}
-        <EnergyBar energy={m.energy} />
       </td>
 
-      {/* Actions */}
-      <td className="px-2 py-2" style={{ minWidth: '148px' }}>
-        <div className="flex items-center gap-0.5">
-          <button
-            title={m.muted ? 'Unmute' : 'Mute'}
+      {/* Actions — always visible, compact icon buttons */}
+      <td className="px-1 py-1" style={{ minWidth: 132 }}>
+        <div className="flex items-center gap-px">
+          <button title={m.muted ? 'Unmute' : 'Mute'}
             onClick={() => act(m.muted ? api.monitoring.unmute : api.monitoring.mute, m.id)}
-            className={[
-              'p-1.5 rounded-lg transition-colors',
-              m.muted
-                ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
-                : 'text-text-muted hover:bg-surface-hover hover:text-emerald-500',
-            ].join(' ')}>
-            {m.muted ? <MicOff size={11} /> : <Mic size={11} />}
+            className={['p-1 rounded transition-colors', m.muted ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'text-text-muted hover:text-emerald-500 hover:bg-surface-hover'].join(' ')}>
+            {m.muted ? <MicOff size={10} /> : <Mic size={10} />}
           </button>
-
-          <button
-            title={m.deaf ? 'Undeaf' : 'Deaf'}
+          <button title={m.deaf ? 'Undeaf' : 'Deaf'}
             onClick={() => act(m.deaf ? api.monitoring.undeaf : api.monitoring.deaf, m.id)}
-            className={[
-              'p-1.5 rounded-lg transition-colors',
-              m.deaf
-                ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20'
-                : 'text-text-muted hover:bg-surface-hover hover:text-orange-400',
-            ].join(' ')}>
-            <EarOff size={11} />
+            className={['p-1 rounded transition-colors', m.deaf ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'text-text-muted hover:text-orange-400 hover:bg-surface-hover'].join(' ')}>
+            <EarOff size={10} />
           </button>
-
-          <button
-            title={m.moderator ? 'Remove moderator' : 'Promote to moderator'}
+          <button title={m.moderator ? 'Demote' : 'Promote to MOD'}
             onClick={() => act(api.monitoring.promote, m.id)}
-            className={[
-              'p-1.5 rounded-lg transition-colors',
-              m.moderator
-                ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                : 'text-text-muted hover:bg-amber-500/10 hover:text-amber-400',
-            ].join(' ')}>
-            <Shield size={11} />
+            className={['p-1 rounded transition-colors', m.moderator ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'text-text-muted hover:text-amber-400 hover:bg-surface-hover'].join(' ')}>
+            <Shield size={10} />
           </button>
-
-          <button
-            title={m.floor ? 'Release floor' : 'Give floor'}
+          <button title={m.floor ? 'Release floor' : 'Give floor'}
             onClick={() => act(api.monitoring.floor, m.id)}
-            className={[
-              'p-1.5 rounded-lg transition-colors',
-              m.floor
-                ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20'
-                : 'text-text-muted hover:bg-purple-500/10 hover:text-purple-400',
-            ].join(' ')}>
-            <Signal size={11} />
+            className={['p-1 rounded transition-colors', m.floor ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20' : 'text-text-muted hover:text-purple-400 hover:bg-surface-hover'].join(' ')}>
+            <Signal size={10} />
           </button>
-
-          <button
-            title="Transfer"
-            onClick={transfer}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-blue-500/10 hover:text-blue-400 transition-colors">
-            <PhoneForwarded size={11} />
+          <button title="Transfer" onClick={transfer}
+            className="p-1 rounded text-text-muted hover:text-blue-400 hover:bg-surface-hover transition-colors">
+            <PhoneForwarded size={10} />
           </button>
-
-          <button
-            title={`Copy: ${ext || m.id}`}
+          <button title={`Copy ext: ${ext || m.id}`}
             onClick={() => navigator.clipboard?.writeText(ext || String(m.id))}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[8px] font-bold leading-none">
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">
             #
           </button>
-
-          <button title="Volume +"
-            onClick={() => act(api.monitoring.volume, m.id, 'in', 1)}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[9px] font-bold leading-none">
-            V+
-          </button>
-          <button title="Volume −"
-            onClick={() => act(api.monitoring.volume, m.id, 'in', -1)}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary transition-colors text-[9px] font-bold leading-none">
-            V−
-          </button>
-
-          <button
-            title="Kick participant"
-            onClick={() => {
-              if (window.confirm(`Kick ${display} from ${room}?`))
-                act(api.monitoring.kick, m.id);
-            }}
-            className="p-1.5 rounded-lg text-text-muted hover:bg-red-500/10 hover:text-red-500 transition-colors">
-            <PhoneOff size={11} />
+          <button title="Volume +" onClick={() => act(api.monitoring.volume, m.id, 'in', 1)}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">V+</button>
+          <button title="Volume −" onClick={() => act(api.monitoring.volume, m.id, 'in', -1)}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors text-[7px] font-bold leading-none">V−</button>
+          <button title="Kick"
+            onClick={() => { if (window.confirm(`Kick ${display} from ${room}?`)) act(api.monitoring.kick, m.id); }}
+            className="p-1 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors">
+            <PhoneOff size={10} />
           </button>
         </div>
       </td>
@@ -348,39 +289,33 @@ export const ParticipantTableWidget = memo(function ParticipantTableWidget({
 
       <div className="card !p-0 overflow-hidden flex-1 min-h-0">
         <div className="overflow-auto h-full" style={{ minWidth: 0 }}>
-          <table className="w-full text-left border-collapse" style={{ minWidth: '680px' }}>
+          <table className="w-full text-left border-collapse" style={{ minWidth: '560px' }}>
             <thead>
               <tr>
-                {['Participant', 'Role', 'Audio', 'Joined / Talk', 'Actions'].map(h => (
+                {['Participant', 'Status', 'Time', 'Actions'].map(h => (
                   <th key={h}
-                      className="px-2 py-2 text-[9px] font-bold uppercase tracking-wider
+                      className="px-2 py-1.5 text-[8px] font-bold uppercase tracking-wider
                                  text-text-muted bg-surface-hover/40 whitespace-nowrap
-                                 border-b border-surface-border first:rounded-tl last:rounded-tr sticky top-0 z-10">
+                                 border-b border-surface-border sticky top-0 z-10">
                     {h}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              <SectionHeader
-                label="Speaking" count={speaking.length}
-                color="text-emerald-500" stripe="#22c55e" />
+              <SectionHeader label="Speaking"  count={speaking.length}  stripe="#22c55e" />
               {speaking.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} />
+                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="speaking" />
               ))}
 
-              <SectionHeader
-                label="Connected" count={connected.length}
-                color="text-blue-400" stripe="#60a5fa" />
+              <SectionHeader label="Connected" count={connected.length} stripe="#3b82f6" />
               {connected.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} />
+                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="connected" />
               ))}
 
-              <SectionHeader
-                label="Muted" count={muted.length}
-                color="text-text-muted" stripe="#6b7280" />
+              <SectionHeader label="Muted"     count={muted.length}     stripe="#6b7280" />
               {muted.map(m => (
-                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} />
+                <ParticipantRow key={m.id} m={m} room={room} now={now} talkTracker={talkTracker} status="muted" />
               ))}
             </tbody>
           </table>

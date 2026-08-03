@@ -1,169 +1,67 @@
 /**
- * IncidentCard — one card per active emergency incident in the sidebar.
+ * IncidentCard — compact single-row conference entry in the sidebar.
  *
- * Accepts a normalized `incident` view object produced by toIncidentView()
- * in IncidentSidebar.jsx. Never reads raw conference or API data directly.
+ * Target: ~40 px tall so 15–20 conferences fit without scrolling.
+ * Status encoded via color/shape only — no label reading needed.
+ *
+ * Left border color  = tier severity (red / amber / blue / gray).
+ * Dot indicators     : green pulse = live speaker · red pulse = recording · amber = locked.
+ * Far-right number   : participant count.
  */
 import { memo } from 'react';
-import {
-  PhoneCall, Users, Radio, Clock,
-  Shield, Square, AlertCircle, CheckCircle,
-  Hash,
-} from 'lucide-react';
-import { elapsedSec, fmtDur, fmtTime } from '../utils/time.js';
+import { elapsedSec, fmtDur } from '../utils/time.js';
 
-// ─── Tier → severity badge ────────────────────────────────────────────────────
-
-const TIER_CFG = {
-  PRIMARY:   { label: 'CRITICAL', short: 'P1', bg: 'bg-red-500',    pill: 'bg-red-500/15 text-red-500 border-red-500/30' },
-  SECONDARY: { label: 'HIGH',     short: 'P2', bg: 'bg-amber-500',  pill: 'bg-amber-500/15 text-amber-500 border-amber-500/30' },
-  QUEUE:     { label: 'PENDING',  short: 'Q',  bg: 'bg-blue-500',   pill: 'bg-blue-500/15 text-blue-500 border-blue-500/30' },
+const TIER_HEX = {
+  PRIMARY:   '#ef4444',
+  SECONDARY: '#f59e0b',
+  QUEUE:     '#3b82f6',
 };
-
-const DEFAULT_TIER = { label: 'UNKNOWN', short: '?', bg: 'bg-surface-border', pill: 'bg-surface-hover text-text-muted border-surface-border' };
-
-// ─── Recording state badge ────────────────────────────────────────────────────
-
-function RecordingBadge({ state }) {
-  if (state === 'ACTIVE') {
-    return (
-      <span className="text-[8px] px-1.5 py-px rounded-full bg-red-500/15 text-red-500
-                       font-bold flex items-center gap-0.5 animate-pulse shrink-0">
-        <Radio size={6} /> REC
-      </span>
-    );
-  }
-  if (state === 'STARTING') {
-    return (
-      <span className="text-[8px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500
-                       font-bold flex items-center gap-0.5 animate-pulse shrink-0">
-        <Radio size={6} /> START
-      </span>
-    );
-  }
-  if (state === 'STOPPING') {
-    return (
-      <span className="text-[8px] px-1.5 py-px rounded-full bg-slate-500/15 text-slate-400
-                       font-bold flex items-center gap-0.5 shrink-0">
-        <Square size={6} /> STOP
-      </span>
-    );
-  }
-  if (state === 'FAILED') {
-    return (
-      <span className="text-[8px] px-1.5 py-px rounded-full bg-red-900/20 text-red-400
-                       font-bold flex items-center gap-0.5 shrink-0">
-        <AlertCircle size={6} /> FAIL
-      </span>
-    );
-  }
-  return null;
-}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const IncidentCard = memo(function IncidentCard({ incident, selected, onSelect, now }) {
-  const tier    = TIER_CFG[incident.tier] ?? DEFAULT_TIER;
-  const secs    = elapsedSec(incident.createdAt, now);
+  const tierHex = TIER_HEX[incident.tier] ?? '#6b7280';
   const live    = incident.members?.filter(m => m.talking).length ?? 0;
-  const lastAct = fmtTime(incident.lastActivityAt);
+  const isRec   = incident.recordingState === 'ACTIVE';
+  const secs    = elapsedSec(incident.createdAt, now);
 
   return (
     <button
       type="button"
       onClick={() => onSelect(incident.id)}
+      style={{ borderLeftColor: tierHex, borderLeftWidth: 3 }}
       className={[
-        'w-full text-left rounded-xl border transition-all duration-150 cursor-pointer overflow-hidden',
+        'w-full text-left flex items-center gap-2 px-2 py-1.5 transition-colors rounded-r',
+        'border border-l-0',
         selected
-          ? 'border-primary/50 bg-primary/8 shadow-sm'
-          : 'border-surface-border bg-surface-card hover:border-primary/20 hover:bg-surface-hover',
+          ? 'bg-primary/10 border-primary/30'
+          : 'border-surface-border hover:bg-surface-hover',
       ].join(' ')}
     >
-      {/* Severity stripe */}
-      <div className={`h-0.5 w-full ${tier.bg} opacity-70`} />
+      {/* Elapsed — fixed-width monospace so all cards line up */}
+      <span className="text-[8px] font-mono text-text-muted/50 tabular-nums w-8 shrink-0">
+        {fmtDur(secs)}
+      </span>
 
-      <div className="p-3">
+      {/* Conference name */}
+      <span className="flex-1 text-[10px] font-bold text-text-primary truncate">
+        {incident.ersName}
+      </span>
 
-        {/* Row 1: Severity pill + Incident name + Recording badge */}
-        <div className="flex items-start gap-2 mb-2">
-          <span className={`text-[8px] px-1.5 py-px rounded border font-bold shrink-0 mt-px ${tier.pill}`}>
-            {tier.short}
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-bold text-text-primary leading-tight truncate">
-              {incident.ersName}
-            </p>
-            <p className="text-[9px] font-mono text-text-muted truncate mt-px">
-              {incident.displayId}
-            </p>
-          </div>
-          <RecordingBadge state={incident.recordingState} />
-        </div>
-
-        {/* Row 2: Organization */}
-        {incident.organizationName ? (
-          <div className="flex items-center gap-1 mb-1.5">
-            <Hash size={8} className="text-text-muted shrink-0" />
-            <span className="text-[9px] text-text-muted truncate">{incident.organizationName}</span>
-          </div>
-        ) : null}
-
-        {/* Row 3: Commander */}
-        <div className="flex items-center gap-1 mb-1.5 min-h-[14px]">
-          <Shield size={8} className="text-amber-500 shrink-0" />
-          {incident.commander ? (
-            <span className="text-[9px] text-amber-500 font-medium truncate">
-              {incident.commander.displayName}
-            </span>
-          ) : (
-            <span className="text-[9px] text-text-muted italic">No commander</span>
-          )}
-        </div>
-
-        {/* Row 4: Participants + live speakers */}
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className={`flex items-center gap-1 text-[9px] font-medium ${live > 0 ? 'text-green-500' : 'text-text-secondary'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${live > 0 ? 'bg-green-500 animate-pulse' : 'bg-text-muted/30'}`} />
-            <Users size={8} />
-            {incident.participantCount}
-            {live > 0 && <span className="text-[8px] text-green-400">· {live} live</span>}
-          </span>
-        </div>
-
-        {/* Row 5: Broadcast Status + Notification Progress */}
-        <div className="flex items-center gap-2 mb-2">
-          <span className="flex items-center gap-1 text-[9px] text-text-muted">
-            <Radio size={8} className="shrink-0" />
-            <span>Broadcast: </span>
-            <span className="text-text-muted/50 italic">—</span>
-          </span>
-          <span className="text-text-muted/30 text-[9px]">·</span>
-          <span className="flex items-center gap-1 text-[9px] text-text-muted">
-            <CheckCircle size={8} className="shrink-0" />
-            <span>Notif: </span>
-            <span className="text-text-muted/50 italic">—</span>
-          </span>
-        </div>
-
-        {/* Row 6: Duration + Last activity + Caller */}
-        <div className="flex items-center justify-between pt-1.5 border-t border-surface-border/30">
-          <span className="flex items-center gap-0.5 text-[9px] font-mono tabular-nums text-text-muted">
-            <Clock size={7} />
-            {fmtDur(secs)}
-          </span>
-          {lastAct ? (
-            <span className="text-[8px] text-text-muted/60 tabular-nums">
-              last {lastAct}
-            </span>
-          ) : null}
-          {incident.callerNumber ? (
-            <span className="text-[9px] font-mono text-text-muted/70 flex items-center gap-0.5">
-              <PhoneCall size={7} />
-              {incident.callerNumber}
-            </span>
-          ) : null}
-        </div>
-
+      {/* Status dots + count */}
+      <div className="flex items-center gap-1 shrink-0">
+        {live > 0 && (
+          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" title={`${live} speaking`} />
+        )}
+        {isRec && (
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" title="Recording" />
+        )}
+        {incident.locked && (
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Locked" />
+        )}
+        <span className="text-[9px] font-mono tabular-nums text-text-muted w-4 text-right">
+          {incident.participantCount}
+        </span>
       </div>
     </button>
   );

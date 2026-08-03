@@ -29,8 +29,8 @@ export function MonitoringCenter({
   events,
   loading,
 }) {
-  const [rightCollapsed,    setRightCollapsed]    = useState(false);
-  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
+  const [rightCollapsed,    setRightCollapsed]    = useState(true);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(true);
 
   function toggleSelect(name) {
     setSelectedConf(s => s === name ? null : name);
@@ -44,14 +44,14 @@ export function MonitoringCenter({
         className="grid gap-3"
         style={{
           gridTemplateColumns: rightCollapsed
-            ? '288px 1fr auto'
-            : '288px 1fr 272px',
-          minHeight: '520px',
-          maxHeight: 'calc(100vh - 280px)',
+            ? '192px 1fr auto'
+            : '192px 1fr 256px',
+          height: 'calc(100vh - 220px)',
+          minHeight: 480,
         }}>
 
         {/* Left — Conference Sidebar */}
-        <div className="card !p-4 overflow-hidden flex flex-col">
+        <div className="card !p-3 overflow-hidden flex flex-col">
           <IncidentSidebar
             conferences={conferences}
             selectedConf={selectedConf}
@@ -62,9 +62,9 @@ export function MonitoringCenter({
         </div>
 
         {/* Center — Header + Widget workspace */}
-        <div className="card !p-4 overflow-hidden flex flex-col min-w-0">
+        <div className="card !p-0 overflow-hidden flex flex-col min-w-0">
           <ConferenceHeader conf={selectedConference} />
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
             <WidgetRenderer
               conf={selectedConference}
               now={now}
