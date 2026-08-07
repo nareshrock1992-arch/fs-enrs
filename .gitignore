@@ -1,0 +1,34 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Runtime logs
+*.log
+logs/
+!logs/.gitkeep
+
+# Runtime/application data
+backend/data/
+backend/uploads/
+uploads/
+
+# Local development files
+*.local
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
