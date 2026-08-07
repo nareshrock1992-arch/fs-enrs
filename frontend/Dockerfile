@@ -1,22 +1,41 @@
+# =============================================================================
+# fs-enrs Frontend — Production Dockerfile
+# =============================================================================
+
+# ── Stage 1: Vite build ────────────────────────────────────────────────────────
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+
+# VITE_BASE_PATH   — Vite --base; sets import.meta.env.BASE_URL for asset URLs.
+# VITE_API_URL     — API base the browser sends requests to.
+#                      Dev:  /api/v1        — Vite proxy forwards to enrs-backend
+#                      Prod: /enrs/api/v1   — nginx routes /enrs/api/* → enrs-backend/api/*
+# VITE_SOCKET_PATH — Socket.IO handshake path.
+#                      Dev:  /socket.io         — Vite proxy
+#                      Prod: /enrs/socket.io    — nginx routes to enrs-backend
+ARG VITE_BASE_PATH=/enrs/
+ARG VITE_API_URL=/enrs/api/v1
+ARG VITE_SOCKET_PATH=/enrs/socket.io
+
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_SOCKET_PATH=${VITE_SOCKET_PATH}
+
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then \
+      npm ci --ignore-scripts; \
+    else \
+      npm install --ignore-scripts; \
+    fi
+
 COPY . .
 
-# VITE_API_URL: leave empty so the SPA uses its own origin (/api/v1 relative path)
-# which nginx proxies to the backend container. Override only for CDN/external setups.
-ARG VITE_API_URL=""
-ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build -- --base ${VITE_BASE_PATH}
 
-RUN npm run build
+# ── Stage 2: static file server ───────────────────────────────────────────────
+FROM nginx:1.27-alpine AS serve
 
-FROM nginx:alpine
+COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
+
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 8100
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=20s \
-  CMD wget -qO- http://localhost:8100/ || exit 1
-
-CMD ["nginx", "-g", "daemon off;"]
+EXPOSE 80

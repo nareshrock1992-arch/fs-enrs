@@ -23,7 +23,7 @@ export function initSocket(httpServer) {
       origin:      config.cors.origins,
       credentials: true,
     },
-    path: '/socket.io',
+    path: process.env.SOCKET_PATH || '/socket.io',
   });
 
   // Inject into ESL service so it can broadcast events

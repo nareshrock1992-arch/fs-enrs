@@ -30,7 +30,8 @@ async function request(method, path, body, opts = {}) {
     } else {
       localStorage.removeItem('enrs_token');
       localStorage.removeItem('enrs_user');
-      window.location.href = '/login';
+      // Redirect to login within the same sub-path prefix (BASE_URL = /enrs/ in prod, / in dev)
+      window.location.href = (import.meta.env.BASE_URL || '/') + 'login';
       throw new Error('Session expired');
     }
   }
@@ -251,10 +252,12 @@ export const api = {
     update:      (id,d) => request('PUT',    `/media-library/${id}`, d),
     deploy:      (id)   => request('POST',   `/media-library/${id}/deploy`),
     remove:      (id)   => request('DELETE', `/media-library/${id}`),
-    // Token-bearing URLs for <audio src> and <a download> — browser can't set Authorization header
-    streamUrl:   (id)   => `/api/v1/media-library/${id}/stream?token=${getToken() || ''}`,
-    downloadUrl: (id)   => `/api/v1/media-library/${id}/download?token=${getToken() || ''}`,
-    waveformUrl: (id)   => `/api/v1/media-library/${id}/waveform?token=${getToken() || ''}`,
+    // Token-bearing URLs for <audio src> and <a download> — browser can't set Authorization header.
+    // BASE already includes the sub-path prefix (/enrs/api/v1 in prod, /api/v1 in dev),
+    // so these URLs resolve correctly regardless of the nginx deployment path.
+    streamUrl:   (id)   => `${BASE}/media-library/${id}/stream?token=${getToken() || ''}`,
+    downloadUrl: (id)   => `${BASE}/media-library/${id}/download?token=${getToken() || ''}`,
+    waveformUrl: (id)   => `${BASE}/media-library/${id}/waveform?token=${getToken() || ''}`,
     waveform:    (id)   => request('GET',    `/media-library/${id}/waveform`),
   },
 
@@ -271,9 +274,9 @@ export const api = {
     update:      (id,d) => request('PUT',    `/recordings/${id}`, d),
     archive:     (id)   => request('POST',   `/recordings/${id}/archive`),
     remove:      (id)   => request('DELETE', `/recordings/${id}`),
-    // Token-bearing URLs for <audio src> and <a download>
-    streamUrl:   (id)   => `/api/v1/recordings/${id}/stream?token=${getToken() || ''}`,
-    downloadUrl: (id)   => `/api/v1/recordings/${id}/download?token=${getToken() || ''}`,
+    // Token-bearing URLs for <audio src> and <a download> — same sub-path fix as mediaLibrary.
+    streamUrl:   (id)   => `${BASE}/recordings/${id}/stream?token=${getToken() || ''}`,
+    downloadUrl: (id)   => `${BASE}/recordings/${id}/download?token=${getToken() || ''}`,
     waveform:    (id)   => request('GET',    `/recordings/${id}/waveform`),
   },
 

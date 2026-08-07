@@ -1,7 +1,7 @@
 import { io } from 'socket.io-client';
 
 export const socket = io('/', {
-  path: '/socket.io',
+  path: import.meta.env.VITE_SOCKET_PATH || '/socket.io',
   autoConnect: true,
   reconnection: true,
   reconnectionDelay: 2000,
