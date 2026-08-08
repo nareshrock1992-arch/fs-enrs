@@ -17,24 +17,28 @@ const fmtLong = iso => iso ? new Date(iso).toLocaleString(undefined, { dateStyle
 const dur     = sec => sec == null ? '—' : `${Math.floor(sec / 60)}m ${sec % 60}s`;
 
 const CAMPAIGN_STATUS = {
-  Pending:     { label: 'Pending',     badge: 'badge-amber', dot: 'bg-amber-500',              icon: Clock },
-  Running:     { label: 'Running',     badge: 'badge-blue',  dot: 'bg-blue-500 animate-pulse', icon: Activity },
-  Completed:   { label: 'Completed',   badge: 'badge-green', dot: 'bg-green-500',              icon: CheckCircle2 },
-  Failed:      { label: 'Failed',      badge: 'badge-red',   dot: 'bg-red-600',                icon: XCircle },
-  Cancelled:   { label: 'Cancelled',   badge: 'badge-gray',  dot: 'bg-gray-400',               icon: CircleDot },
+  queued:    { label: 'Queued',    badge: 'badge-amber', dot: 'bg-amber-500',              icon: Clock },
+  running:   { label: 'Running',   badge: 'badge-blue',  dot: 'bg-blue-500 animate-pulse', icon: Activity },
+  paused:    { label: 'Paused',    badge: 'badge-amber', dot: 'bg-amber-400',              icon: Clock },
+  completed: { label: 'Completed', badge: 'badge-green', dot: 'bg-green-500',              icon: CheckCircle2 },
+  failed:    { label: 'Failed',    badge: 'badge-red',   dot: 'bg-red-600',                icon: XCircle },
+  cancelled: { label: 'Cancelled', badge: 'badge-gray',  dot: 'bg-gray-400',               icon: CircleDot },
 };
 
 const DEST_STATUS = {
-  Pending:   { badge: 'badge-gray',  icon: CircleDot },
-  Dialing:   { badge: 'badge-blue',  icon: PhoneCall },
-  Answered:  { badge: 'badge-green', icon: CheckCircle2 },
-  Failed:    { badge: 'badge-red',   icon: XCircle },
-  Retrying:  { badge: 'badge-amber', icon: RefreshCw },
-  Completed: { badge: 'badge-green', icon: CheckCircle2 },
+  queued:    { label: 'Queued',    badge: 'badge-gray',  icon: CircleDot },
+  dialing:   { label: 'Dialing',   badge: 'badge-blue',  icon: PhoneCall },
+  answered:  { label: 'Answered',  badge: 'badge-green', icon: CheckCircle2 },
+  completed: { label: 'Completed', badge: 'badge-green', icon: CheckCircle2 },
+  failed:    { label: 'Failed',    badge: 'badge-red',   icon: XCircle },
+  expired:   { label: 'Expired',   badge: 'badge-gray',  icon: CircleDot },
+  skipped:   { label: 'Skipped',   badge: 'badge-gray',  icon: CircleDot },
+  busy:      { label: 'Busy',      badge: 'badge-amber', icon: PhoneCall },
+  no_answer: { label: 'No Answer', badge: 'badge-amber', icon: PhoneCall },
 };
 
 function StatusDot({ status }) {
-  const c = CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.Pending;
+  const c = CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.queued;
   return (
     <span className="flex items-center gap-1.5">
       <span className={`w-2 h-2 rounded-full shrink-0 ${c.dot}`} />
@@ -92,8 +96,8 @@ const DetailPanel = memo(function DetailPanel({ campaignId }) {
 
   const c    = data;
   const dsts = c.destinations || [];
-  const answered  = dsts.filter(d => ['Answered', 'Completed'].includes(d.status)).length;
-  const failed    = dsts.filter(d => d.status === 'Failed').length;
+  const answered  = dsts.filter(d => ['answered', 'completed'].includes(d.status)).length;
+  const failed    = dsts.filter(d => d.status === 'failed').length;
   const retried   = dsts.filter(d => d.attempt_count > 1).length;
   const answerPct = dsts.length > 0 ? Math.round((answered / dsts.length) * 100) : 0;
 
@@ -190,7 +194,7 @@ const DetailPanel = memo(function DetailPanel({ campaignId }) {
                 </thead>
                 <tbody>
                   {dsts.map((d, i) => {
-                    const dc = DEST_STATUS[d.status] || DEST_STATUS.Pending;
+                    const dc = DEST_STATUS[d.status] || { label: d.status || '—', badge: 'badge-gray', icon: CircleDot };
                     return (
                       <tr key={i} className="table-row">
                         <td className="table-cell font-medium">{d.contact_name || '—'}</td>
@@ -199,7 +203,7 @@ const DetailPanel = memo(function DetailPanel({ campaignId }) {
                         <td className="table-cell-muted capitalize">{d.routing_mode || '—'}</td>
                         <td className="table-cell-muted">{d.gateway || '—'}</td>
                         <td className="table-cell">
-                          <span className={`badge ${dc.badge}`}>{d.status || '—'}</span>
+                          <span className={`badge ${dc.badge}`}>{dc.label || d.status || '—'}</span>
                         </td>
                         <td className="table-cell-muted tabular-nums">{d.attempt_count ?? '—'}/{d.max_attempts ?? '—'}</td>
                         <td className="table-cell-muted">{d.hangup_cause || d.error_message || '—'}</td>
@@ -269,10 +273,11 @@ function CampaignCard({ campaign, expanded, onToggle }) {
     <div className={`card p-0 overflow-hidden transition-all duration-150
                      ${expanded ? 'border-brand/30 shadow-md' : 'hover:border-brand/20'}`}>
       <div className={`h-0.5 ${
-        campaign.status === 'Running'   ? 'bg-blue-500' :
-        campaign.status === 'Completed' ? 'bg-green-500' :
-        campaign.status === 'Pending'   ? 'bg-amber-500' :
-        campaign.status === 'Failed'    ? 'bg-red-600' : 'bg-surface-border'
+        campaign.status === 'running'   ? 'bg-blue-500' :
+        campaign.status === 'completed' ? 'bg-green-500' :
+        campaign.status === 'queued'    ? 'bg-amber-500' :
+        campaign.status === 'paused'    ? 'bg-amber-400' :
+        campaign.status === 'failed'    ? 'bg-red-600' : 'bg-surface-border'
       }`} />
 
       <button
@@ -387,11 +392,12 @@ function FilterBar({ filters, onChange, onSearch, loading }) {
           <select className="input-sm w-40" value={filters.status}
             onChange={e => onChange({ ...filters, status: e.target.value })}>
             <option value="">All Statuses</option>
-            <option value="Pending">Pending</option>
-            <option value="Running">Running</option>
-            <option value="Completed">Completed</option>
-            <option value="Failed">Failed</option>
-            <option value="Cancelled">Cancelled</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
           </select>
         </div>
       </div>
@@ -410,8 +416,8 @@ function FilterBar({ filters, onChange, onSearch, loading }) {
 
 function SummaryStats({ campaigns }) {
   const total     = campaigns.length;
-  const active    = campaigns.filter(c => c.status === 'Running').length;
-  const completed = campaigns.filter(c => c.status === 'Completed').length;
+  const active    = campaigns.filter(c => c.status === 'running').length;
+  const completed = campaigns.filter(c => c.status === 'completed').length;
   const totalT    = campaigns.reduce((s, c) => s + (c.total_destinations || 0), 0);
   const totalA    = campaigns.reduce((s, c) => s + (c.answered_count     || 0), 0);
 

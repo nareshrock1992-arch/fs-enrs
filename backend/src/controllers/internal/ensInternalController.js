@@ -215,6 +215,29 @@ export const startCampaign = asyncHandler(async (req, res) => {
 // this endpoint skips the trigger_number → config lookup and goes straight to
 // createCampaignByConfigId(), which creates the ens_campaigns row the campaign
 // engine polls every tick.
+//
+// F-09 SECURITY NOTE — why tenant validation is intentionally omitted here:
+//
+//  1. This route is protected by INTERNAL_API_KEY (internalAuth middleware).
+//     No JWT-authenticated user can reach it; only FreeSWITCH can.
+//
+//  2. The configuration_id this endpoint receives is embedded in a published
+//     IVR flow.  At publish time, ivrGraphValidator validates every ENS node's
+//     configuration_id against the IVR flow's own tenant_id
+//     (ivrGraphValidator.js — `WHERE id = ANY($1) AND tenant_id = $2`).
+//     A cross-tenant configuration_id cannot survive IVR flow publication.
+//
+//  3. The Lua executor has no access to a user JWT and therefore cannot supply
+//     a tenant_id that would be meaningful for tenant-scoped lookup.  Inventing
+//     one would require IVR-flow-to-tenant mapping changes in Lua and the
+//     internal API contract — a larger change than the risk warrants.
+//
+//  4. The remaining residual risk (compromised INTERNAL_API_KEY) is the same
+//     for all internal endpoints and is mitigated operationally (key rotation,
+//     firewall rules, nginx deny on WAN).
+//
+// Do NOT add a tenantId guard here without verifying that the IVR executor
+// can supply a reliable tenant context and that the Lua contract is updated.
 export const startCampaignByConfig = asyncHandler(async (req, res) => {
   D('PHASE3_CAMPAIGN_ENDPOINT', {}, '✅ CAMPAIGN PATH HIT — POST /ens/campaign/start-by-config');
   D('PHASE3_RAW_BODY', { body: req.body }, 'Raw request body');

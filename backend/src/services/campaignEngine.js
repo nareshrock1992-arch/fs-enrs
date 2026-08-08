@@ -697,8 +697,29 @@ export async function createCampaign({
   });
 }
 
+/**
+ * Creates an ENS campaign from a configuration ID.
+ *
+ * SECURITY CONTRACT — tenantId parameter
+ *
+ * Authenticated (JWT) callers MUST pass tenantId so the configuration lookup
+ * is scoped to the requesting user's tenant.  Omitting tenantId or passing
+ * null disables the tenant filter and is RESERVED for trusted internal
+ * callers that are not associated with a user JWT:
+ *
+ *   - campaignController.triggerCampaign   → MUST pass req.user.tenantId
+ *   - ensInternalController.startCampaignByConfig → intentionally omits
+ *     (protected by INTERNAL_API_KEY; configuration_id was validated at IVR
+ *     flow publish time by ivrGraphValidator — see F-09 audit note)
+ *   - campaignEngine.createCampaign (phone trigger) → intentionally omits
+ *     (configuration derived from emergency_numbers DB lookup, not caller input)
+ *
+ * Any new public/JWT caller must pass tenantId.  Any new trusted internal
+ * caller that lacks user context may omit it, but must document why.
+ */
 export async function createCampaignByConfigId({
   configId,
+  tenantId = null,
   organizationId,
   triggeredBy,
   triggeredVia = 'UI',
@@ -709,8 +730,10 @@ export async function createCampaignByConfigId({
 }) {
   const { rows: [cfg] } = await query(
     `SELECT * FROM ens_configurations
-     WHERE id = $1 AND is_active = true AND deleted_at IS NULL`,
-    [configId]
+     WHERE id = $1
+       AND ($2::int IS NULL OR tenant_id = $2)
+       AND is_active = true AND deleted_at IS NULL`,
+    [configId, tenantId]
   );
   if (!cfg) throw Object.assign(new Error('ENS configuration not found'), { status: 404 });
 
@@ -873,7 +896,6 @@ export function getEngineStats() {
   return {
     active_campaigns: campaignState.size,
     is_running:       engineTimer !== null,
-    campaign_ids:     [...campaignState.keys()],
   };
 }
 
