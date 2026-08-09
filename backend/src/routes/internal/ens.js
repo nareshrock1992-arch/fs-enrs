@@ -1,23 +1,7 @@
 import { Router } from 'express';
 import * as ctrl from '../../controllers/internal/ensInternalController.js';
-import { logger } from '../../infrastructure/index.js';
 
 const router = Router();
-
-// ── TEMPORARY DEBUG — remove after ENS blast investigation ───────────────────
-router.use((req, _res, next) => {
-  if (req.method === 'POST') {
-    logger.info({
-      module:  'ENS_DEBUG',
-      tag:     'PHASE1_INCOMING_REQUEST',
-      method:  req.method,
-      url:     req.originalUrl,
-      body:    req.body,
-    }, `[ENS_DEBUG] ▶ Incoming POST → ${req.originalUrl}`);
-  }
-  next();
-});
-// ─────────────────────────────────────────────────────────────────────────────
 
 // Number → config lookup (ens_blast_trigger.lua / ens_playback_handler.lua first call)
 router.get('/lookup', ctrl.ensLookup);

@@ -141,7 +141,7 @@ pm2 status
 # Deployment → Diagnostics → ESL Status
 
 # Check FreeSWITCH can reach backend
-fs_cli -x "lua /usr/share/freeswitch/scripts/dial_911_conference.lua"
+fs_cli -x "lua /usr/share/freeswitch/scripts/ers_conference_bridge.lua"
 
 # Run DB cleanup if needed (dry run first)
 cd backend

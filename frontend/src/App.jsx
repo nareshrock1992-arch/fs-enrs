@@ -19,9 +19,7 @@ import ErsLive       from './pages/ers/ErsLive.jsx';
 import IvrList       from './pages/ivr/IvrList.jsx';
 import IvrBuilder    from './pages/ivr/IvrBuilder.jsx';
 import ReportNotifications from './pages/reports/ReportNotifications.jsx';
-import ReportIncidents     from './pages/reports/ReportIncidents.jsx';
 import ReportContactUsage  from './pages/reports/ReportContactUsage.jsx';
-import ReportErsIncidents  from './pages/reports/ReportErsIncidents.jsx';
 import ReportEnsBroadcasts from './pages/reports/ReportEnsBroadcasts.jsx';
 import ErsReport           from './pages/reports/ErsReport.jsx';
 import EnsReport           from './pages/reports/EnsReport.jsx';
@@ -109,8 +107,6 @@ export default function App() {
         <Route path="reports/contact-usage" element={<ReportContactUsage />} />
         {/* Legacy report routes — kept so old bookmarks still work */}
         <Route path="reports/notifications" element={<ReportNotifications />} />
-        <Route path="reports/incidents"     element={<ReportIncidents />} />
-        <Route path="reports/ers-incidents"  element={<ReportErsIncidents />} />
         <Route path="reports/ens-broadcasts" element={<ReportEnsBroadcasts />} />
 
         {/* Admin-only */}

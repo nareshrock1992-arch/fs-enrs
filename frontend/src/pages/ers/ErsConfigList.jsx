@@ -47,6 +47,7 @@ const EMPTY = {
   retry_ring_count:             3,
   retry_ring_interval:          30,
   ring_timeout_seconds:         '',   // blank = ring indefinitely (2h safety cap)
+  sip_gateway_id:               '',   // blank = use per-contact or tenant default
   // Auth
   pin:                          '',
   allow_rejoin:                 true,
@@ -144,6 +145,7 @@ export default function ErsConfigList() {
   const [orgs,     setOrgs]     = useState([]);
   const [groups,   setGroups]   = useState([]);
   const [contacts, setContacts] = useState([]);
+  const [gateways, setGateways] = useState([]);
   const [modal,    setModal]    = useState(null);
   const [form,     setForm]     = useState(EMPTY);
   const [saving,   setSaving]   = useState(false);
@@ -151,16 +153,18 @@ export default function ErsConfigList() {
 
   async function load() {
     try {
-      const [e, o, g, c] = await Promise.all([
+      const [e, o, g, c, gw] = await Promise.all([
         api.ers.list(),
         api.orgs.list(),
         api.groups.list(),
         api.contacts.list(),
+        api.gateways.list(),
       ]);
       setRows(e.configurations || []);
       setOrgs(o.organizations || []);
       setGroups(g.groups || []);
       setContacts(c.contacts || []);
+      setGateways((gw.gateways || []).filter(g => g.is_active));
     } catch {}
   }
 
@@ -211,6 +215,7 @@ export default function ErsConfigList() {
         retry_ring_count:             Number(form.retry_ring_count),
         retry_ring_interval:          Number(form.retry_ring_interval),
         ring_timeout_seconds:         form.ring_timeout_seconds === '' ? null : Number(form.ring_timeout_seconds),
+        sip_gateway_id:               form.sip_gateway_id === '' ? null : Number(form.sip_gateway_id),
         pin:                          form.pin || null,
         primary_retry_count:          Number(form.primary_retry_count),
         primary_retry_interval_sec:   Number(form.primary_retry_interval_sec),
@@ -266,6 +271,7 @@ export default function ErsConfigList() {
         retry_ring_count:             full.retry_ring_count ?? 3,
         retry_ring_interval:          full.retry_ring_interval ?? 30,
         ring_timeout_seconds:         full.ring_timeout_seconds ?? '',
+        sip_gateway_id:               full.sip_gateway_id ?? '',
         pin:                          full.pin ?? '',
         allow_rejoin:                 full.allow_rejoin ?? true,
         cli_authentication:           full.cli_authentication ?? false,
@@ -641,6 +647,19 @@ export default function ErsConfigList() {
                   <p className="text-[10px] text-text-muted mt-1">
                     Overall ceiling for a ring-all wave: give up after this many seconds with no
                     responder answering. Indefinite ringing is safety-capped at 2 hours internally.
+                  </p>
+                </div>
+                <div className="col-span-2">
+                  <label className="label">Outbound SIP Gateway (optional)</label>
+                  <select className="input" value={form.sip_gateway_id}
+                          onChange={e => f('sip_gateway_id', e.target.value)}>
+                    <option value="">— None (use per-contact or tenant default) —</option>
+                    {gateways.map(gw => (
+                      <option key={gw.id} value={gw.id}>{gw.name} ({gw.gateway_type})</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-text-muted mt-1">
+                    Config-level default for responder outbound calls. Per-contact gateway overrides this.
                   </p>
                 </div>
               </div>

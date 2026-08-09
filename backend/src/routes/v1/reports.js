@@ -29,33 +29,6 @@ router.get('/notifications', asyncHandler(async (req, res) => {
   res.json({ notifications: rows });
 }));
 
-// GET /api/v1/reports/incidents?from=&to=&status=&org_id=
-router.get('/incidents', asyncHandler(async (req, res) => {
-  const { from, to, status, org_id } = req.query;
-  const { rows } = await query(
-    `SELECT i.*,
-       e.name AS ers_name,
-       o.name AS org_name,
-       COUNT(r.id)::INT AS responder_count,
-       EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
-     FROM ers_incidents i
-     JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     JOIN organizations o ON o.id = e.organization_id
-     LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
-     WHERE i.deleted_at IS NULL
-       AND i.tenant_id = $5
-       AND ($1::date IS NULL OR i.started_at >= $1::date)
-       AND ($2::date IS NULL OR i.started_at <  $2::date + interval '1 day')
-       AND ($3::text IS NULL OR i.status = $3)
-       AND ($4::int  IS NULL OR o.id = $4)
-     GROUP BY i.id, e.name, o.name
-     ORDER BY i.started_at DESC
-     LIMIT 500`,
-    [from || null, to || null, status || null, org_id || null, req.user.tenantId]
-  );
-  res.json({ incidents: rows });
-}));
-
 // GET /api/v1/reports/contact-usage
 router.get('/contact-usage', asyncHandler(async (req, res) => {
   const { rows } = await query(
@@ -77,67 +50,6 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
     [req.user.tenantId]
   );
   res.json({ contacts: rows });
-}));
-
-// ── Phase 5 detailed reports ──────────────────────────────────────────────────
-
-// GET /api/v1/reports/ers-incidents?from=&to=
-// Full detail: every incident + every participant's join/leave/rejoin
-// timestamps and directory identity + recording link. Backed by
-// ers_incident_participants (migration 016), which mod_conference's own
-// add/del-member events populate — accurate regardless of which path put
-// a leg in the room (ring-all, caller bridge, rejoin redial).
-router.get('/ers-incidents', asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  const { rows: incidents } = await query(
-    `SELECT i.id, i.incident_uuid, i.status, i.caller_number, i.caller_name,
-       i.conference_room, i.group_type, i.recording_path,
-       i.started_at, i.ended_at, i.queued_at, i.dequeued_at,
-       e.name AS ers_name, o.name AS org_name,
-       EXTRACT(EPOCH FROM (COALESCE(i.ended_at, now()) - i.started_at))::INT AS duration_seconds
-     FROM ers_incidents i
-     JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE i.deleted_at IS NULL
-       AND i.tenant_id = $3
-       AND ($1::date IS NULL OR i.started_at >= $1::date)
-       AND ($2::date IS NULL OR i.started_at <  $2::date + interval '1 day')
-     ORDER BY i.started_at DESC
-     LIMIT 200`,
-    [from || null, to || null, req.user.tenantId]
-  );
-
-  const ids = incidents.map(i => i.id);
-  let participants = [];
-  if (ids.length > 0) {
-    const { rows } = await query(
-      `SELECT p.incident_id, p.raw_number, p.role,
-         p.joined_at, p.left_at, p.rejoined_at,
-         c.first_name, c.last_name, c.extension_number, c.mobile_number
-       FROM ers_incident_participants p
-       LEFT JOIN emergency_contacts c ON c.id = p.contact_id
-       WHERE p.incident_id = ANY($1)
-       ORDER BY p.joined_at`,
-      [ids]
-    );
-    participants = rows;
-  }
-
-  const byIncident = {};
-  for (const p of participants) {
-    (byIncident[p.incident_id] ??= []).push({
-      name:       p.first_name ? `${p.first_name} ${p.last_name}`.trim() : (p.raw_number || 'unknown'),
-      number:     p.extension_number || p.mobile_number || p.raw_number,
-      role:       p.role,
-      joined_at:  p.joined_at,
-      left_at:    p.left_at,
-      rejoined_at: p.rejoined_at,
-    });
-  }
-
-  res.json({
-    incidents: incidents.map(i => ({ ...i, participants: byIncident[i.id] || [] })),
-  });
 }));
 
 // GET /api/v1/reports/ens-broadcasts?from=&to=

@@ -62,17 +62,6 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// ── TEMPORARY: global request probe — remove after ENS blast investigation ────
-// Uses console.log (not logger) so output is guaranteed to appear in PM2 stdout.
-app.use((req, _res, next) => {
-  const ts = new Date().toISOString();
-  console.log(
-    `[ENS_PROBE] ${ts} | ${req.method} ${req.originalUrl} | ip=${req.ip} | body_keys=${Object.keys(req.body || {}).join(',') || '(none)'}`
-  );
-  next();
-});
-// ─────────────────────────────────────────────────────────────────────────────
-
 // ── Global rate limiting ──────────────────────────────────────
 app.use('/api', rateLimit({
   windowMs: 60_000,  // 1 minute

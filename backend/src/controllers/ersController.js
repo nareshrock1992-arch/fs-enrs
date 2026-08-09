@@ -4,6 +4,16 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
 
 const str    = (max) => z.string().max(max).optional().nullable();
+
+async function validateGatewayTenant(gatewayId, tenantId) {
+  if (!gatewayId) return;
+  const { rows: [gw] } = await query(
+    `SELECT tenant_id FROM sip_gateways WHERE id = $1 AND deleted_at IS NULL`,
+    [gatewayId]
+  );
+  if (!gw) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  if (gw.tenant_id !== tenantId) throw Object.assign(new Error('Gateway does not belong to this tenant'), { status: 403 });
+}
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 const boolDef = (def) => z.boolean().default(def);
 const intDef  = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
@@ -77,6 +87,9 @@ const ErsConfigSchema = z.object({
   secondary_contact_ids:        z.array(z.number().int().positive()).default([]),
 
   is_active: boolDef(true),
+
+  // Gateway — config-level default for responder outbound calls (migration 042)
+  sip_gateway_id: z.number().int().positive().optional().nullable(),
 });
 
 // ── Tier group helpers ────────────────────────────────────────────────────────
@@ -210,6 +223,7 @@ export const getConfiguration = asyncHandler(async (req, res) => {
 
 export const createConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.parse(req.body);
+  await validateGatewayTenant(d.sip_gateway_id, req.user.tenantId);
 
   const { rows } = await query(
     `INSERT INTO ers_configurations (
@@ -227,11 +241,11 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        pin, allow_rejoin, cli_authentication,
        primary_retry_count, primary_retry_interval_sec,
        secondary_retry_count, secondary_retry_interval_sec,
-       is_active, ring_timeout_seconds
+       is_active, ring_timeout_seconds, sip_gateway_id
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
-       $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+       $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -248,7 +262,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.pin, d.allow_rejoin, d.cli_authentication,
       d.primary_retry_count, d.primary_retry_interval_sec,
       d.secondary_retry_count, d.secondary_retry_interval_sec,
-      d.is_active, d.ring_timeout_seconds ?? null,
+      d.is_active, d.ring_timeout_seconds ?? null, d.sip_gateway_id ?? null,
     ]
   );
   const cfg = rows[0];
@@ -268,6 +282,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.partial().parse(req.body);
+  await validateGatewayTenant(d.sip_gateway_id, req.user.tenantId);
 
   const { rows } = await query(
     `UPDATE ers_configurations SET
@@ -310,6 +325,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        is_active                    = COALESCE($38, is_active),
        tenant_id                    = COALESCE(tenant_id, $39),
        ring_timeout_seconds         = COALESCE($40, ring_timeout_seconds),
+       sip_gateway_id               = CASE WHEN $41::int IS NOT NULL THEN $41 ELSE sip_gateway_id END,
        updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL AND COALESCE(tenant_id, $39) = $39 RETURNING *`,
     [
@@ -331,6 +347,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.is_active,
       req.user.tenantId,
       d.ring_timeout_seconds,
+      d.sip_gateway_id ?? null,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
@@ -372,7 +389,7 @@ const BroadcastUsersSchema = z.object({
   users: z.array(z.object({
     name:      z.string().min(1).max(128),
     extension: z.string().max(32).optional().nullable(),
-    mobile:    z.string().min(7).max(32),
+    mobile:    z.string().min(1).max(32),
   })).min(1).max(500),
 });
 

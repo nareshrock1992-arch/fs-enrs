@@ -16,7 +16,7 @@ const ConferenceRoomRegex = /^[a-z0-9_]{1,64}$/;
 // actually accepts, without needing a live server.
 export const IncidentCreateSchema = z.object({
   configuration_id: z.number().int().positive(),
-  caller_number:    z.string().min(7).max(32),
+  caller_number:    z.string().min(1).max(32),
   caller_name:      z.string().max(128).optional().nullable(),
   conference_room:  z.string().regex(ConferenceRoomRegex, 'Invalid conference_room format'),
   group_type:       z.enum(['primary', 'secondary']),
@@ -30,7 +30,7 @@ const IncidentCompleteSchema = z.object({
 
 // migration 002 B9 expanded CHECK to include REJOINED and OBSERVER
 const ResponderUpdateSchema = z.object({
-  responder_number: z.string().min(7).max(32),
+  responder_number: z.string().min(1).max(32),
   status:           z.enum(['JOINED', 'MISSED', 'REJOINED']),
   joined_at:        z.string().datetime({ offset: true }).optional().nullable(),
   joined_via:       z.string().max(32).optional().nullable(),
@@ -38,7 +38,7 @@ const ResponderUpdateSchema = z.object({
 });
 
 const ObserverSchema = z.object({
-  observer_number: z.string().min(7).max(32),
+  observer_number: z.string().min(1).max(32),
   joined_via:      z.string().max(32).optional().nullable(),
   joined_at:       z.string().datetime({ offset: true }).optional().nullable(),
 });
@@ -55,27 +55,29 @@ async function resolveResponders(configId, tier) {
   if (tier !== 'primary' && tier !== 'secondary') return [];
 
   // Source 1: individual contacts (migration 010)
+  // COALESCE: prefer mobile_number; fall back to extension_number so that
+  // extension-only contacts (e.g. internal PBX users) are reachable.
   const { rows: contactRows } = await query(
-    `SELECT ec.mobile_number
+    `SELECT COALESCE(ec.mobile_number, ec.extension_number) AS mobile_number
      FROM emergency_contacts ec
      JOIN ers_tier_contacts etc ON etc.contact_id = ec.id
      WHERE etc.ers_configuration_id = $1
        AND etc.tier = $2
        AND ec.deleted_at IS NULL AND ec.is_active = true
-       AND ec.mobile_number IS NOT NULL`,
+       AND (ec.mobile_number IS NOT NULL OR ec.extension_number IS NOT NULL)`,
     [configId, tier]
   );
 
   // Source 2: group members (migration 009)
   const { rows: groupRows } = await query(
-    `SELECT ec.mobile_number
+    `SELECT COALESCE(ec.mobile_number, ec.extension_number) AS mobile_number
      FROM emergency_contacts ec
      JOIN responder_group_members rgm ON rgm.emergency_contact_id = ec.id
      JOIN ers_tier_groups etg ON etg.group_id = rgm.responder_group_id
      WHERE etg.ers_configuration_id = $1
        AND etg.tier = $2
        AND ec.deleted_at IS NULL AND ec.is_active = true
-       AND ec.mobile_number IS NOT NULL`,
+       AND (ec.mobile_number IS NOT NULL OR ec.extension_number IS NOT NULL)`,
     [configId, tier]
   );
 
@@ -186,12 +188,17 @@ export const ersLookup = asyncHandler(async (req, res) => {
        ec.recording_trigger,
        ec.recording_format,
        en.service_name,
-       en.organization_id
+       en.organization_id,
+       sg.name AS gateway_name
      FROM emergency_numbers en
      JOIN ers_configurations ec
        ON ec.id = en.ers_configuration_id
       AND ec.deleted_at IS NULL
       AND ec.is_active = true
+     LEFT JOIN sip_gateways sg
+       ON sg.id = ec.sip_gateway_id
+      AND sg.is_active = true
+      AND sg.deleted_at IS NULL
      WHERE en.number = $1
        AND en.type = 'ERS'
        AND en.deleted_at IS NULL
@@ -277,6 +284,8 @@ export const ersLookup = asyncHandler(async (req, res) => {
       recording_mode:              cfg.recording_mode ?? 'MANUAL',
       recording_trigger:           cfg.recording_trigger ?? 'CONFERENCE_CREATED',
       recording_format:            cfg.recording_format ?? 'wav',
+      // Gateway — config-level default for responder outbound calls
+      gateway_name:                cfg.gateway_name || null,
       // Auth
       pin_required:                Boolean(cfg.pin),
       allow_rejoin:                cfg.allow_rejoin ?? true,
@@ -876,7 +885,7 @@ export const ersTierStatus = asyncHandler(async (req, res) => {
 export const RingAllSchema = z.object({
   configuration_id: z.number().int().positive(),
   tier:             z.enum(['primary', 'secondary']),
-  caller_number:    z.string().min(7).max(32),
+  caller_number:    z.string().min(1).max(32),
   caller_name:      z.string().max(128).optional().nullable(),
   emergency_number: z.string().max(32).optional().nullable(),
 });
@@ -887,7 +896,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
   const { rows: [cfg] } = await query(
     `SELECT id, tenant_id, ring_timeout_seconds,
             primary_bridge_number, secondary_bridge_number,
-            conference_type, conference_profile
+            conference_type, conference_profile, sip_gateway_id
      FROM ers_configurations
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
@@ -1000,6 +1009,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     tenantId:           cfg.tenant_id,
     callerNumber:       d.caller_number,
     ringTimeoutSeconds: cfg.ring_timeout_seconds,
+    configGatewayId:    cfg.sip_gateway_id ?? null,
   });
 
   emitInternal('enrs::ers_incident_created', {
@@ -1098,7 +1108,7 @@ export const ersPlaybackAuthorize = asyncHandler(async (req, res) => {
 // Exported for scripts/verify-api-contracts.js (same as IncidentCreateSchema).
 export const OverflowEnqueueSchema = z.object({
   configuration_id:   z.number().int().positive(),
-  caller_number:      z.string().min(7).max(32),
+  caller_number:      z.string().min(1).max(32),
   caller_name:        z.string().max(128).optional().nullable(),
   destination_number: z.string().max(32).optional().nullable(),
 });
@@ -1248,7 +1258,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
   // Promote — transactional, FOR UPDATE guard against a concurrent poll
   // promoting the same entry twice.
   const { rows: [cfg] } = await query(
-    `SELECT tenant_id, ring_timeout_seconds FROM ers_configurations WHERE id = $1`,
+    `SELECT tenant_id, ring_timeout_seconds, sip_gateway_id FROM ers_configurations WHERE id = $1`,
     [entry.ers_configuration_id]
   );
 
@@ -1288,6 +1298,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
     tenantId:           cfg.tenant_id,
     callerNumber:       entry.caller_number,
     ringTimeoutSeconds: cfg.ring_timeout_seconds,
+    configGatewayId:    cfg.sip_gateway_id ?? null,
   });
 
   emitInternal('enrs::ers_queue_changed', {

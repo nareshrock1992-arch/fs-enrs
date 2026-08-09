@@ -171,9 +171,7 @@ export const api = {
   reports: {
     // Legacy endpoints (kept for backward-compat with old pages)
     notifications: (q) => request('GET', `/reports/notifications?${new URLSearchParams(q || {})}`),
-    incidents:     (q) => request('GET', `/reports/incidents?${new URLSearchParams(q || {})}`),
     contactUsage:  ()  => request('GET', '/reports/contact-usage'),
-    ersIncidents:  (q) => request('GET', `/reports/ers-incidents?${new URLSearchParams(q || {})}`),
     ensBroadcasts: (q) => request('GET', `/reports/ens-broadcasts?${new URLSearchParams(q || {})}`),
     // Unified paginated report endpoints
     ers:           (q) => request('GET', `/reports/ers?${new URLSearchParams(q || {})}`),

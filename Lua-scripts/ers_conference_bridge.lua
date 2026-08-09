@@ -108,12 +108,16 @@ end
 
 -- Originate outbound call to a responder and bridge them into the conference.
 -- Uses freeswitch.bgapi() for true non-blocking origination (not session-tied).
-local function invite_responder(number, conf_room, conf_profile, incident_uuid, gateway)
-  local gw      = gateway or "sofia/gateway/primary"
+local function invite_responder(number, conf_room, conf_profile, incident_uuid, gateway, c_num, c_name)
+  local gw      = gateway or "user"
   local profile = conf_profile or "default"
+  local num_val  = (c_num  or ""):gsub("['}]", "")
+  local name_val = (c_name or ""):gsub("['}]", "")
   local cmd     = string.format(
-    "originate {ignore_early_media=true,call_timeout=30,origination_caller_id_number=ERS-RESP}%s/%s &conference(%s@%s)",
-    gw, number, conf_room, profile
+    "originate {ignore_early_media=true,call_timeout=30,"
+    .. "origination_caller_id_number=%s,origination_caller_id_name='%s',"
+    .. "effective_caller_id_number=%s,effective_caller_id_name='%s'}%s/%s &conference(%s@%s)",
+    num_val, name_val, num_val, name_val, gw, number, conf_room, profile
   )
   log("INFO", "Inviting " .. number .. " → " .. conf_room)
   freeswitch.bgapi(cmd)
@@ -127,14 +131,14 @@ local function invite_responder(number, conf_room, conf_profile, incident_uuid, 
   })
 end
 
-local function invite_tier(responders, conf_room, conf_profile, incident_uuid, cfg)
+local function invite_tier(responders, conf_room, conf_profile, incident_uuid, cfg, c_num, c_name)
   if not responders or #responders == 0 then
     log("WARN", "No responders configured for " .. conf_room)
     return
   end
-  local gw = cfg and cfg.sip_gateway or nil
+  local gw = cfg and cfg.gateway_name and ("sofia/gateway/" .. cfg.gateway_name) or nil
   for _, number in ipairs(responders) do
-    invite_responder(number, conf_room, conf_profile, incident_uuid, gw)
+    invite_responder(number, conf_room, conf_profile, incident_uuid, gw, c_num, c_name)
   end
   log("INFO", "Invited " .. #responders .. " responders to " .. conf_room)
 end
@@ -296,7 +300,7 @@ if is_queued then
   -- When dequeued, invite primary responders to this caller's conference
   speak("An emergency bridge is now available. Connecting you now.")
   session:sleep(300)
-  invite_tier(cfg.primary_responders or {}, conf_room, conf_profile, incident_uuid, cfg)
+  invite_tier(cfg.primary_responders or {}, conf_room, conf_profile, incident_uuid, cfg, caller, caller_name)
 end
 
 -- 5. ACTIVE path: join conference, invite responders, start recording
@@ -313,7 +317,7 @@ end
 
 -- Invite tier responders (non-blocking)
 if not is_queued and #responders > 0 then
-  invite_tier(responders, conf_room, conf_profile, incident_uuid, cfg)
+  invite_tier(responders, conf_room, conf_profile, incident_uuid, cfg, caller, caller_name)
 end
 
 -- Announce before bridging

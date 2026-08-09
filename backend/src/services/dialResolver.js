@@ -27,6 +27,7 @@ import { query } from '../db/pool.js';
  * @param {string} [opts.extension]       — explicit internal extension (overrides contact lookup)
  * @param {string} [opts.mobileNumber]    — explicit external number (overrides contact lookup)
  * @param {number} [opts.gatewayId]       — explicit gateway override by ID (highest priority)
+ * @param {number} [opts.fallbackGatewayId] — config-level gateway used only when contact has no gateway_id
  * @param {string} [opts.gatewayName]     — explicit gateway override by name (e.g. a legacy
  *                                          ens_configurations.sip_gateway string column) — looked
  *                                          up in sip_gateways for this tenant if possible, else
@@ -44,6 +45,7 @@ export async function resolveDialString({
   extension,
   mobileNumber,
   gatewayId,
+  fallbackGatewayId,
   gatewayName,
   domain: _domain, // deprecated, ignored — see docblock
 } = {}) {
@@ -60,8 +62,11 @@ export async function resolveDialString({
     if (contact) {
       ext    = ext    ?? contact.extension_number;
       mobile = mobile ?? contact.mobile_number;
-      resolvedGatewayId = resolvedGatewayId ?? contact.gateway_id;
+      // Per-contact gateway_id takes priority over the config-level fallback
+      resolvedGatewayId = resolvedGatewayId ?? contact.gateway_id ?? (fallbackGatewayId || null);
     }
+  } else if (!resolvedGatewayId && fallbackGatewayId) {
+    resolvedGatewayId = fallbackGatewayId;
   }
 
   let gateway = null;

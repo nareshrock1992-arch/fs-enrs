@@ -88,10 +88,11 @@ async function resolveTierResponders(configId, tier) {
   return contactRows;
 }
 
-async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity }) {
+async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId }) {
   const { dialString } = await resolveDialString({
     tenantId,
     contactId: contact.id,
+    fallbackGatewayId: configGatewayId,
   });
 
   const vars = [
@@ -125,7 +126,7 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
  * Returns immediately — the loop runs in the background until a responder
  * answers, the timeout hits, or the caller abandons (room empties).
  */
-export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds }) {
+export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds, configGatewayId = null }) {
   if (activeRings.has(room)) return { started: false, reason: 'ring loop already active for this room' };
 
   const controller = { stopped: false };
@@ -215,7 +216,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
           if (controller.stopped) break;
           const invitedNum = contact.extension_number || contact.mobile_number;
           try {
-            await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity });
+            await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId });
             // Increment dial_attempts counter so reports show how many ring waves
             // each responder received (dial_attempts = number of originate commands sent).
             if (invitedNum) {
