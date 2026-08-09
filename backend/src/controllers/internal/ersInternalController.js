@@ -189,6 +189,7 @@ export const ersLookup = asyncHandler(async (req, res) => {
        ec.recording_format,
        en.service_name,
        en.organization_id,
+       ec.gateway_override,
        sg.name AS gateway_name
      FROM emergency_numbers en
      JOIN ers_configurations ec
@@ -284,8 +285,8 @@ export const ersLookup = asyncHandler(async (req, res) => {
       recording_mode:              cfg.recording_mode ?? 'MANUAL',
       recording_trigger:           cfg.recording_trigger ?? 'CONFERENCE_CREATED',
       recording_format:            cfg.recording_format ?? 'wav',
-      // Gateway — config-level default for responder outbound calls
-      gateway_name:                cfg.gateway_name || null,
+      // Gateway — gateway_override wins over sip_gateway_id-resolved name
+      gateway_name:                cfg.gateway_override?.trim() || cfg.gateway_name || null,
       // Auth
       pin_required:                Boolean(cfg.pin),
       allow_rejoin:                cfg.allow_rejoin ?? true,
@@ -896,7 +897,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
   const { rows: [cfg] } = await query(
     `SELECT id, tenant_id, ring_timeout_seconds,
             primary_bridge_number, secondary_bridge_number,
-            conference_type, conference_profile, sip_gateway_id
+            conference_type, conference_profile, sip_gateway_id, gateway_override
      FROM ers_configurations
      WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [d.configuration_id]
@@ -1008,8 +1009,9 @@ export const ersRingAll = asyncHandler(async (req, res) => {
     conferenceProfile,
     tenantId:           cfg.tenant_id,
     callerNumber:       d.caller_number,
-    ringTimeoutSeconds: cfg.ring_timeout_seconds,
-    configGatewayId:    cfg.sip_gateway_id ?? null,
+    ringTimeoutSeconds:  cfg.ring_timeout_seconds,
+    configGatewayId:     cfg.sip_gateway_id ?? null,
+    configGatewayName:   cfg.gateway_override?.trim() || null,
   });
 
   emitInternal('enrs::ers_incident_created', {
@@ -1258,7 +1260,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
   // Promote — transactional, FOR UPDATE guard against a concurrent poll
   // promoting the same entry twice.
   const { rows: [cfg] } = await query(
-    `SELECT tenant_id, ring_timeout_seconds, sip_gateway_id FROM ers_configurations WHERE id = $1`,
+    `SELECT tenant_id, ring_timeout_seconds, sip_gateway_id, gateway_override FROM ers_configurations WHERE id = $1`,
     [entry.ers_configuration_id]
   );
 
@@ -1297,8 +1299,9 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
     room,
     tenantId:           cfg.tenant_id,
     callerNumber:       entry.caller_number,
-    ringTimeoutSeconds: cfg.ring_timeout_seconds,
-    configGatewayId:    cfg.sip_gateway_id ?? null,
+    ringTimeoutSeconds:  cfg.ring_timeout_seconds,
+    configGatewayId:     cfg.sip_gateway_id ?? null,
+    configGatewayName:   cfg.gateway_override?.trim() || null,
   });
 
   emitInternal('enrs::ers_queue_changed', {

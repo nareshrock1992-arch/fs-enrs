@@ -18,6 +18,16 @@ const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable
 const boolDef = (def) => z.boolean().default(def);
 const intDef  = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
 
+// Gateway name validator — accepts empty/null as null; trims and restricts to
+// characters safe for a FreeSWITCH gateway name in a sofia/gateway/<name>/... URI.
+const gatewayOverride = z.preprocess(
+  v => {
+    if (v === '' || v === null || v === undefined) return null;
+    return typeof v === 'string' ? v.trim() : v;
+  },
+  z.string().regex(/^[a-zA-Z0-9\-_.]+$/, 'Only letters, numbers, -, _, . allowed').max(255).nullable()
+);
+
 const ErsConfigSchema = z.object({
   organization_id:              z.number().int().positive(),
   name:                         z.string().min(1).max(128),
@@ -90,6 +100,9 @@ const ErsConfigSchema = z.object({
 
   // Gateway — config-level default for responder outbound calls (migration 042)
   sip_gateway_id: z.number().int().positive().optional().nullable(),
+
+  // Manual FreeSWITCH gateway name — overrides sip_gateway_id at dial time (migration 043)
+  gateway_override: gatewayOverride,
 });
 
 // ── Tier group helpers ────────────────────────────────────────────────────────
@@ -241,11 +254,11 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        pin, allow_rejoin, cli_authentication,
        primary_retry_count, primary_retry_interval_sec,
        secondary_retry_count, secondary_retry_interval_sec,
-       is_active, ring_timeout_seconds, sip_gateway_id
+       is_active, ring_timeout_seconds, sip_gateway_id, gateway_override
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
-       $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
+       $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
      ) RETURNING *`,
     [
       d.organization_id, req.user.tenantId, d.name, d.description,
@@ -262,7 +275,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.pin, d.allow_rejoin, d.cli_authentication,
       d.primary_retry_count, d.primary_retry_interval_sec,
       d.secondary_retry_count, d.secondary_retry_interval_sec,
-      d.is_active, d.ring_timeout_seconds ?? null, d.sip_gateway_id ?? null,
+      d.is_active, d.ring_timeout_seconds ?? null, d.sip_gateway_id ?? null, d.gateway_override ?? null,
     ]
   );
   const cfg = rows[0];
@@ -283,6 +296,12 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.partial().parse(req.body);
   await validateGatewayTenant(d.sip_gateway_id, req.user.tenantId);
+
+  // Three-way gateway_override update semantics:
+  //   key absent from body  → preserve existing DB value (CASE returns gateway_override)
+  //   key present, non-null → write the new value       (CASE returns $43)
+  //   key present, null     → explicitly clear to NULL   (CASE returns $43 = null)
+  const gatewayOverrideInBody = Object.prototype.hasOwnProperty.call(req.body, 'gateway_override');
 
   const { rows } = await query(
     `UPDATE ers_configurations SET
@@ -326,6 +345,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        tenant_id                    = COALESCE(tenant_id, $39),
        ring_timeout_seconds         = COALESCE($40, ring_timeout_seconds),
        sip_gateway_id               = CASE WHEN $41::int IS NOT NULL THEN $41 ELSE sip_gateway_id END,
+       gateway_override             = CASE WHEN $42::boolean THEN $43 ELSE gateway_override END,
        updated_at                   = now()
      WHERE id = $1 AND deleted_at IS NULL AND COALESCE(tenant_id, $39) = $39 RETURNING *`,
     [
@@ -348,6 +368,8 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       req.user.tenantId,
       d.ring_timeout_seconds,
       d.sip_gateway_id ?? null,
+      gatewayOverrideInBody,     // $42 — boolean: was gateway_override key present in body?
+      d.gateway_override,        // $43 — validated value (null when explicitly cleared)
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });

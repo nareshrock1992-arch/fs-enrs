@@ -88,11 +88,20 @@ async function resolveTierResponders(configId, tier) {
   return contactRows;
 }
 
-async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId }) {
+async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId, configGatewayName }) {
+  // Gateway precedence: per-contact gateway_id (resolved inside dialResolver) wins first.
+  // Below that: configGatewayName (gateway_override) wins over configGatewayId (sip_gateway_id).
+  // Pass only one of the two config-level params — passing fallbackGatewayId when gatewayName
+  // is also set would allow sip_gateway_id to shadow gateway_override for contacts that have
+  // no per-contact gateway (fallbackGatewayId is checked before gatewayName in dialResolver).
+  const gatewayParams = configGatewayName
+    ? { gatewayName: configGatewayName }
+    : { fallbackGatewayId: configGatewayId };
+
   const { dialString } = await resolveDialString({
     tenantId,
     contactId: contact.id,
-    fallbackGatewayId: configGatewayId,
+    ...gatewayParams,
   });
 
   const vars = [
@@ -126,7 +135,7 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
  * Returns immediately — the loop runs in the background until a responder
  * answers, the timeout hits, or the caller abandons (room empties).
  */
-export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds, configGatewayId = null }) {
+export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds, configGatewayId = null, configGatewayName = null }) {
   if (activeRings.has(room)) return { started: false, reason: 'ring loop already active for this room' };
 
   const controller = { stopped: false };
@@ -216,7 +225,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
           if (controller.stopped) break;
           const invitedNum = contact.extension_number || contact.mobile_number;
           try {
-            await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId });
+            await originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId, configGatewayName });
             // Increment dial_attempts counter so reports show how many ring waves
             // each responder received (dial_attempts = number of originate commands sent).
             if (invitedNum) {

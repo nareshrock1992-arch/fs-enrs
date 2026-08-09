@@ -48,6 +48,7 @@ const EMPTY = {
   retry_ring_interval:          30,
   ring_timeout_seconds:         '',   // blank = ring indefinitely (2h safety cap)
   sip_gateway_id:               '',   // blank = use per-contact or tenant default
+  gateway_override:             '',   // blank = no manual gateway name override
   // Auth
   pin:                          '',
   allow_rejoin:                 true,
@@ -216,6 +217,7 @@ export default function ErsConfigList() {
         retry_ring_interval:          Number(form.retry_ring_interval),
         ring_timeout_seconds:         form.ring_timeout_seconds === '' ? null : Number(form.ring_timeout_seconds),
         sip_gateway_id:               form.sip_gateway_id === '' ? null : Number(form.sip_gateway_id),
+        gateway_override:             form.gateway_override || null,
         pin:                          form.pin || null,
         primary_retry_count:          Number(form.primary_retry_count),
         primary_retry_interval_sec:   Number(form.primary_retry_interval_sec),
@@ -272,6 +274,7 @@ export default function ErsConfigList() {
         retry_ring_interval:          full.retry_ring_interval ?? 30,
         ring_timeout_seconds:         full.ring_timeout_seconds ?? '',
         sip_gateway_id:               full.sip_gateway_id ?? '',
+        gateway_override:             full.gateway_override ?? '',
         pin:                          full.pin ?? '',
         allow_rejoin:                 full.allow_rejoin ?? true,
         cli_authentication:           full.cli_authentication ?? false,
@@ -649,18 +652,43 @@ export default function ErsConfigList() {
                     responder answering. Indefinite ringing is safety-capped at 2 hours internally.
                   </p>
                 </div>
-                <div className="col-span-2">
-                  <label className="label">Outbound SIP Gateway (optional)</label>
+                {/* Gateway — two controls: registered gateway dropdown + manual override name */}
+                <div>
+                  <label className="label">Default Gateway</label>
                   <select className="input" value={form.sip_gateway_id}
                           onChange={e => f('sip_gateway_id', e.target.value)}>
-                    <option value="">— None (use per-contact or tenant default) —</option>
+                    <option value="">— None —</option>
                     {gateways.map(gw => (
                       <option key={gw.id} value={gw.id}>{gw.name} ({gw.gateway_type})</option>
                     ))}
                   </select>
                   <p className="text-[10px] text-text-muted mt-1">
-                    Config-level default for responder outbound calls. Per-contact gateway overrides this.
+                    Select a registered SIP gateway.
                   </p>
+                </div>
+                <div>
+                  <label className="label">FreeSWITCH Gateway Name</label>
+                  <input
+                    className={`input font-mono ${form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override) ? 'border-red-400 focus:ring-red-400' : ''}`}
+                    value={form.gateway_override}
+                    onChange={e => f('gateway_override', e.target.value)}
+                    placeholder="primary"
+                    maxLength={255}
+                  />
+                  {form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override)
+                    ? <p className="text-[10px] text-red-500 mt-1">Only letters, numbers, -, _, and . are allowed.</p>
+                    : <p className="text-[10px] text-text-muted mt-1">Optional. Manual gateway name — overrides the dropdown above.</p>
+                  }
+                </div>
+                <div className="col-span-2 rounded-lg bg-surface-hover border border-surface-border px-3 py-2">
+                  <p className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1">Gateway Priority</p>
+                  <ol className="text-[10px] text-text-muted space-y-0.5 list-decimal list-inside">
+                    <li><span className="text-text-primary font-medium">Per-contact gateway</span> — individual responder override (highest)</li>
+                    <li><span className="text-text-primary font-medium">FreeSWITCH Gateway Name</span> — manual name above (wins over dropdown)</li>
+                    <li>Default Gateway — registered gateway from dropdown above</li>
+                    <li>Tenant default gateway</li>
+                    <li>Internal extension routing</li>
+                  </ol>
                 </div>
               </div>
             </section>
