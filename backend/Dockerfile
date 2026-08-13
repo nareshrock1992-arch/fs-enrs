@@ -22,7 +22,11 @@ RUN if [ -f package-lock.json ]; then \
 FROM node:20-alpine AS production
 
 # tini for correct PID-1 signal forwarding; wget for HEALTHCHECK
-RUN apk add --no-cache tini wget
+# curl: required by diagnosticsService.js (execSync('curl --version')) to probe
+# curl availability — the /diagnostics endpoint will FAIL if curl is absent.
+# NOTE: this satisfies the container-side check only. The FreeSWITCH HOST also
+# requires curl independently (Lua io.popen calls) — see deploy/DEPENDENCIES.md.
+RUN apk add --no-cache tini wget curl
 
 WORKDIR /app
 

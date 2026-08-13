@@ -24,6 +24,26 @@ import { validateGraph }           from '../utils/ivrGraphValidator.js';
 import { query }                   from '../db/pool.js';
 import { config }                  from '../config/index.js';
 
+// ── Deployment mutex ──────────────────────────────────────────────────────────
+//
+// Serialises the COMPLETE write+reloadxml critical section so no two
+// deployments can interleave:  write XML → rename → chmod → reloadxml.
+//
+// Promise-chain mutex — no external library, works in a single-process fork
+// (ecosystem.config.cjs: instances=1, exec_mode='fork').
+//
+// withDeployLock(async () => { ... }) — runs fn() after all previously
+// queued holders have finished. fn()'s rejection propagates to the caller
+// but does NOT permanently poison the queue: _deployLock is reset via
+// run.catch(() => {}) so the next waiter always gets a chance to run.
+
+let _deployLock = Promise.resolve();
+function withDeployLock(fn) {
+  const run = _deployLock.then(fn);
+  _deployLock = run.catch(() => {});
+  return run;
+}
+
 // ── Step helper ───────────────────────────────────────────────────────────────
 
 function makeReport() {
@@ -167,7 +187,13 @@ async function deployDialplanXml() {
   const xmlContent = generateDialplanXml(bindings, { nested, testMode });
   const xmlPath    = path.posix.join(dialplanTargetDir, 'enrs_ivr.xml');
 
-  await fs.writeFile(xmlPath, xmlContent, 'utf8');
+  // Atomic write: tmp file on the same filesystem → rename.
+  // rename() is atomic on POSIX — readers never observe a partial file.
+  // Called from within withDeployLock() at the call site — do NOT acquire
+  // the lock here; the caller owns it for the complete write+reloadxml pair.
+  const tmpPath = xmlPath + '.tmp';
+  await fs.writeFile(tmpPath, xmlContent, 'utf8');
+  await fs.rename(tmpPath, xmlPath);
   await fs.chmod(xmlPath, 0o644).catch(() => {});
 
   return { xmlPath, bindingCount: bindings.length };
@@ -234,26 +260,34 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
     luaPath = await runStep(report, 'deploy_lua_executor', deployLuaExecutor);
     report.files.lua = luaPath;
 
-    // 6. Generate + deploy dialplan XML
-    const xmlResult = await runStep(report, 'deploy_dialplan_xml', deployDialplanXml);
-    xmlPath = xmlResult.xmlPath;
-    report.files.xml          = xmlPath;
-    report.files.bound_numbers = xmlResult.bindingCount;
-
-    // 7. reloadxml via ESL
+    // 6+7. Write XML then reloadxml — both inside the deployment mutex so no
+    //      concurrent deployFlow or redeployAll can interleave its own write
+    //      or reload between these two operations.
+    //
+    //      Step names, count, and order are unchanged; runStep() calls simply
+    //      run inside the locked closure rather than at the outer scope.
     let eslConnected = true;
-    await runStep(report, 'reloadxml', async () => {
-      try {
-        const res = await eslCommand('reloadxml');
-        if (res && res.toLowerCase().includes('fail')) {
-          throw new Error('reloadxml returned failure: ' + res);
+    await withDeployLock(async () => {
+      // 6. Generate + deploy dialplan XML
+      const xmlResult = await runStep(report, 'deploy_dialplan_xml', deployDialplanXml);
+      xmlPath = xmlResult.xmlPath;
+      report.files.xml          = xmlResult.xmlPath;
+      report.files.bound_numbers = xmlResult.bindingCount;
+
+      // 7. reloadxml via ESL
+      await runStep(report, 'reloadxml', async () => {
+        try {
+          const res = await eslCommand('reloadxml');
+          if (res && res.toLowerCase().includes('fail')) {
+            throw new Error('reloadxml returned failure: ' + res);
+          }
+        } catch (eslErr) {
+          // ESL offline is a warning, not a fatal error
+          // (files are deployed; dialplan will load on next FS restart)
+          eslConnected = false;
+          report.warnings.push('ESL reloadxml skipped (ESL not connected): ' + eslErr.message);
         }
-      } catch (eslErr) {
-        // ESL offline is a warning, not a fatal error
-        // (files are deployed; dialplan will load on next FS restart)
-        eslConnected = false;
-        report.warnings.push('ESL reloadxml skipped (ESL not connected): ' + eslErr.message);
-      }
+      });
     });
 
     // 8. Verify the deploy actually loaded — do NOT trust reloadxml's "+OK".
@@ -357,17 +391,36 @@ export async function redeployAll() {
 
   if (flows.length === 0) return { message: 'No bound flows to deploy' };
 
-  // Only regenerate XML + reloadxml (Lua executor is the same for all)
-  const { xmlPath, bindingCount } = await deployDialplanXml();
+  // Write XML and reloadxml inside the deployment mutex — same lock used by
+  // deployFlow so the two cannot interleave their write+reload sequences.
+  let xmlPath, bindingCount;
+  let eslReloaded = false;
+  let eslWarning  = null;
 
-  try {
-    await eslCommand('reloadxml');
-  } catch { /* non-fatal */ }
+  await withDeployLock(async () => {
+    // Only regenerate XML + reloadxml (Lua executor is the same for all flows)
+    const result = await deployDialplanXml();
+    xmlPath      = result.xmlPath;
+    bindingCount = result.bindingCount;
+
+    try {
+      await eslCommand('reloadxml');
+      eslReloaded = true;
+    } catch (eslErr) {
+      eslWarning = eslErr.message;
+      console.warn('[deploymentEngine] redeployAll: reloadxml failed (non-fatal) —', eslErr.message);
+      // ESL failure is non-fatal: XML is on disk, FreeSWITCH loads it on restart.
+      // Do NOT re-throw — the lock must release normally so subsequent deployments
+      // can proceed.
+    }
+  });
 
   return {
     xml_path:      xmlPath,
     binding_count: bindingCount,
     flow_count:    flows.length,
+    esl_reloaded:  eslReloaded,
+    ...(eslWarning && { esl_warning: eslWarning }),
   };
 }
 

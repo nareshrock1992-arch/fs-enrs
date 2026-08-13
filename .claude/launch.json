@@ -8,6 +8,13 @@
     {
       "name": "backend",
       "url": "http://100.93.232.116:4100"
+    },
+    {
+      "name": "fs-cc-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "cwd": "../fs-cc/frontend"
     }
   ]
 }
