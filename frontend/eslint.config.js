@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import globals from 'globals';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 
@@ -11,13 +12,7 @@ export default [
       ecmaVersion: 2023,
       sourceType: 'module',
       parserOptions: { ecmaFeatures: { jsx: true } },
-      globals: {
-        window: 'readonly', document: 'readonly', console: 'readonly',
-        fetch: 'readonly', localStorage: 'readonly', sessionStorage: 'readonly',
-        FormData: 'readonly', URLSearchParams: 'readonly', navigator: 'readonly',
-        setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly',
-        alert: 'readonly', confirm: 'readonly', prompt: 'readonly',
-      },
+      globals: globals.browser,
     },
     settings: { react: { version: 'detect' } },
     rules: {
@@ -26,6 +21,9 @@ export default [
       // hide stale closures, unused vars) not stylistic preferences.
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-undef': 'error',
+      // Empty catch blocks are used intentionally throughout the codebase as
+      // a deliberate "swallow and continue" pattern — flag non-catch empties only.
+      'no-empty': ['error', { allowEmptyCatch: true }],
       'react/jsx-uses-react': 'off',
       'react/react-in-jsx-scope': 'off',
       'react-hooks/rules-of-hooks': 'error',
