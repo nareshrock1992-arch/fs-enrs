@@ -19,5 +19,8 @@ set -e
 echo "[entrypoint] Running database migrations ..."
 node src/db/migrate.js
 
-echo "[entrypoint] Migrations complete. Starting server ..."
+echo "[entrypoint] Running initial admin bootstrap ..."
+node src/db/seed-initial-admin.js
+
+echo "[entrypoint] Bootstrap complete. Starting server ..."
 exec "$@"
