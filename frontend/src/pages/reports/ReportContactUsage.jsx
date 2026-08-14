@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Download, Users } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
 export default function ReportContactUsage() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows, setRows] = useState([]);
 
   async function load() {
     try { setRows((await api.reports.contactUsage()).contacts || []); } catch {}
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function exportCsv() {
     const h = ['Name', 'Mobile Number', 'Organization', 'ENS Direct Configs', 'ENS Group Configs', 'ERS Incidents'];

@@ -2,6 +2,7 @@ import { useEffect, useReducer, useCallback } from 'react';
 import { PhoneIncoming, Clock, CheckCircle2, User, ShieldAlert } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import { useSocketEvent } from '../../hooks/useSocketEvent.js';
 import { useLiveDuration } from '../../hooks/useLiveDuration.js';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
@@ -144,6 +145,7 @@ function QueueRow({ entry }) {
 // ── ErsLive ───────────────────────────────────────────────────────────────────
 
 export default function ErsLive() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [state, dispatch] = useReducer(reducer, INIT);
 
   const seed = useCallback(async () => {
@@ -169,7 +171,7 @@ export default function ErsLive() {
 
       dispatch({ type: 'SEED', payload: { incidents, queue: q.queue || [] } });
     } catch {}
-  }, []);
+  }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { seed(); }, [seed]);
 

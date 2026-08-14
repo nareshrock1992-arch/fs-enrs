@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Save, Wifi, WifiOff, ToggleLeft, ToggleRight, Settings2 } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 
 export default function SettingsPage() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [settings, setSettings] = useState([]);
   const [flags,    setFlags]    = useState([]);
   const [esl,      setEsl]      = useState(null);
@@ -26,7 +28,7 @@ export default function SettingsPage() {
       setVals(init);
     } catch {}
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function saveSetting(key) {
     setSaving(key);

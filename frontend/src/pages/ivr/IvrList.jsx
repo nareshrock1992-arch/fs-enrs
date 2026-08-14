@@ -26,7 +26,8 @@ export default function IvrList() {
   const [tplLoading, setTplLoading] = useState(false);
   const PAGE_SIZE = 20;
   const navigate = useNavigate();
-  const user = useAuthStore(s => s.user);
+  const user           = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
 
   const load = useCallback(async () => {
@@ -40,7 +41,7 @@ export default function IvrList() {
     } finally {
       setLoading(false);
     }
-  }, [search, page]);
+  }, [search, page, activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 

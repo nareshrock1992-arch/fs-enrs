@@ -248,7 +248,8 @@ export default function AudioLibrary() {
   const [deploying,  setDeploying]  = useState({});
   const [deleting,   setDeleting]   = useState({});
 
-  const user    = useAuthStore(s => s.user);
+  const user           = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
 
   const load = useCallback(async (triggerScanIfEmpty = false) => {
@@ -273,7 +274,7 @@ export default function AudioLibrary() {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, catFilter, canEdit]);
+  }, [search, catFilter, canEdit, activeTenantId]);
 
   useEffect(() => { load(true); }, [load]);
 

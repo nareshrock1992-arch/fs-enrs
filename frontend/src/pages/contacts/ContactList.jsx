@@ -2,12 +2,14 @@ import { useEffect, useState, useRef } from 'react';
 import { Plus, Pencil, Trash2, Upload, CheckCircle2, XCircle } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
 const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_number: '', extension_number: '', email: '', role: '', department_id: '' };
 
 export default function ContactList() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,     setRows]     = useState([]);
   const [orgs,     setOrgs]     = useState([]);
   const [depts,    setDepts]    = useState([]);
@@ -34,7 +36,8 @@ export default function ContactList() {
       setDepts(d.departments || []);
     } catch {}
   }
-  useEffect(() => { load(); }, [orgFilter]);
+  useEffect(() => { setModal(null); setOrgFilter(''); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [orgFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 

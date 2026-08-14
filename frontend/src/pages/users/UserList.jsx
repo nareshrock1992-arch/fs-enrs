@@ -13,7 +13,8 @@ const ALL_ROLES    = ['SUPER_ADMIN', ...TENANT_ROLES];
 const EMPTY = { email: '', full_name: '', password: '', role: 'VIEWER', tenant_id: '' };
 
 export default function UserList() {
-  const currentUser = useAuthStore(s => s.user);
+  const currentUser    = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
 
   const [users,    setUsers]   = useState([]);
@@ -32,13 +33,14 @@ export default function UserList() {
   }
 
   useEffect(() => {
+    setModal(null); setFilter('');
     load();
     if (isSuperAdmin) {
       api.tenants.list().then(d => setTenants(d.tenants || [])).catch(() => {});
     }
-  }, []);
+  }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openCreate() { setForm({ ...EMPTY }); setModal('create'); setError(''); }
   function openEdit(u)  {

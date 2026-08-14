@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, Bell } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
@@ -10,6 +11,7 @@ const STATUSES = ['', 'PENDING', 'SENT', 'FAILED', 'CANCELLED'];
 function fmt(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
 
 export default function ReportNotifications() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,    setRows]    = useState([]);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({ status: '', from: '', to: '' });
@@ -25,7 +27,7 @@ export default function ReportNotifications() {
     } catch {} finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setFilters(p => ({ ...p, [k]: v }));
 

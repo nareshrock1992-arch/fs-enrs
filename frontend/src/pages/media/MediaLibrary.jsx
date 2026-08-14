@@ -718,7 +718,8 @@ function MediaLibraryInner() {
   const [deploying,  setDeploying]  = useState({});
   const [deleting,   setDeleting]   = useState({});
 
-  const user    = useAuthStore(s => s.user);
+  const user           = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
 
   const load = useCallback(async () => {
@@ -742,7 +743,7 @@ function MediaLibraryInner() {
     } finally {
       setLoading(false);
     }
-  }, [search, catFilter]);
+  }, [search, catFilter, activeTenantId]);
 
   useEffect(() => { load(); }, [load]);
 

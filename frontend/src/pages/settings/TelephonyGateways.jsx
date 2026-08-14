@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, UploadCloud, CheckCircle, XCircle, Star, Network } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
@@ -14,6 +15,7 @@ const EMPTY = {
 const TYPE_LABELS = { avaya: 'Avaya Aura', cisco: 'Cisco UC', generic_sip: 'Generic SIP', other: 'Other' };
 
 export default function TelephonyGateways() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,  setRows]  = useState([]);
   const [modal, setModal] = useState(null);
   const [form,  setForm]  = useState(EMPTY);
@@ -27,7 +29,7 @@ export default function TelephonyGateways() {
       setRows(r.gateways || []);
     } catch {}
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 

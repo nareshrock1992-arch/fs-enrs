@@ -433,7 +433,8 @@ export default function Recordings() {
   const [selected,     setSelected]     = useState(null);
   const [detail,       setDetail]       = useState(null);
 
-  const user    = useAuthStore(s => s.user);
+  const user           = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
 
   const load = useCallback(async () => {
@@ -452,7 +453,7 @@ export default function Recordings() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, typeFilter]);
+  }, [search, statusFilter, typeFilter, activeTenantId]);
 
   useEffect(() => { load(); }, [load]);
 

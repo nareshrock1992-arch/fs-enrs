@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import {
   Plus, Pencil, Trash2, ToggleLeft, ToggleRight,
@@ -142,6 +143,7 @@ function TierSection({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ErsConfigList() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,     setRows]     = useState([]);
   const [orgs,     setOrgs]     = useState([]);
   const [groups,   setGroups]   = useState([]);
@@ -169,7 +171,7 @@ export default function ErsConfigList() {
     } catch {}
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 

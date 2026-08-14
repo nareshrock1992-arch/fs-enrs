@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 
 import { api } from '../api/client.js';
+import { useAuthStore } from '../store/authStore.js';
 import { useSocketEvent } from '../hooks/useSocketEvent.js';
 import StatCard from '../components/ui/StatCard.jsx';
 import PageHeader from '../components/ui/PageHeader.jsx';
@@ -187,6 +188,7 @@ function ChartTooltip({ active, payload, label }) {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [state, dispatch] = useReducer(reducer, INIT);
   const [chart,   setChart]   = useState([]);
   const [period,  setPeriod]  = useState('week');
@@ -230,7 +232,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Chart data ──────────────────────────────────────────────────────────────
   const loadChart = useCallback(async () => {

@@ -6,6 +6,7 @@ import {
   Bell, FileAudio, UserCheck, Activity, MessageSquare,
 } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
@@ -462,6 +463,7 @@ function Pagination({ page, totalPages, onPage }) {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function EnsReport() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [campaigns, setCampaigns] = useState([]);
   const [total,     setTotal]     = useState(0);
   const [page,      setPage]      = useState(1);
@@ -487,9 +489,9 @@ export default function EnsReport() {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load(1); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(1); }, [load]); // re-runs on filter or tenant change
 
   const toggle = id => setExpanded(e => ({ ...e, [id]: !e[id] }));
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));

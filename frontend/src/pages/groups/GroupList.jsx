@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, Users } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
@@ -8,6 +9,7 @@ import PageHeader from '../../components/ui/PageHeader.jsx';
 const EMPTY = { organization_id: '', name: '', description: '' };
 
 export default function GroupList() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,  setRows]  = useState([]);
   const [orgs,  setOrgs]  = useState([]);
   const [modal, setModal] = useState(null);
@@ -26,7 +28,7 @@ export default function GroupList() {
       setOrgs(o.organizations || []);
     } catch {}
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setModal(null); setMembersModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 

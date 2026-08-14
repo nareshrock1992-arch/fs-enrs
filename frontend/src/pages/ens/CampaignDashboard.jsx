@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useAuthStore } from '../../store/authStore.js';
 import {
   Bell, Pause, Play, XCircle, RefreshCw, ChevronDown, ChevronRight,
   CheckCircle, AlertCircle, Phone, Clock, BarChart2, Users,
@@ -352,6 +353,7 @@ const STATUS_FILTERS = [
 ];
 
 export default function CampaignDashboard() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [campaigns, setCampaigns] = useState([]);
   const [total, setTotal]         = useState(0);
   const [loading, setLoading]     = useState(true);
@@ -377,7 +379,7 @@ export default function CampaignDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, page]);
+  }, [statusFilter, page, activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setLoading(true);

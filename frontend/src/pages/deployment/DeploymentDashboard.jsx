@@ -362,7 +362,8 @@ export default function DeploymentDashboard() {
   const [deploying,setDeploying]= useState({});
   const [report,   setReport]   = useState(null);
 
-  const user    = useAuthStore(s => s.user);
+  const user           = useAuthStore(s => s.user);
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const canEdit = user?.role === 'ADMIN';
 
   const loadFlows = useCallback(async () => {
@@ -375,7 +376,7 @@ export default function DeploymentDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadFlows(); }, [loadFlows]);
 

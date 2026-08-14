@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, ChevronDown, ChevronRight, Radio } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 
@@ -8,6 +9,7 @@ import Badge from '../../components/ui/Badge.jsx';
 // (each contact's extension AND mobile leg tracked separately) plus the
 // authorized-playback access log.
 export default function ReportEnsBroadcasts() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [broadcasts, setBroadcasts] = useState([]);
   const [playbackLog, setPlaybackLog] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -29,7 +31,7 @@ export default function ReportEnsBroadcasts() {
       setLoading(false);
     }
   }
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fmt = iso => iso ? new Date(iso).toLocaleString() : '—';
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { useAuthStore } from '../../store/authStore.js';
 import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Users, User, ChevronDown } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
@@ -100,6 +101,7 @@ const EMPTY = {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function EnsList() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,     setRows]     = useState([]);
   const [orgs,     setOrgs]     = useState([]);
   const [groups,   setGroups]   = useState([]);
@@ -140,7 +142,7 @@ export default function EnsList() {
     } catch {}
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
