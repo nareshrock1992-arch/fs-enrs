@@ -23,6 +23,7 @@ import {
   setConferenceRecordingPath, setConferenceRecordingError,
   eslStatus, syncConferenceFromXml,
 } from '../services/eslService.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 
 // Schedule a post-command xml_list verification 300 ms after the HTTP response.
 // Runs conference xml_list, compares against the in-memory registry, and emits
@@ -74,9 +75,9 @@ export const getConferences = asyncHandler(async (req, res) => {
        LEFT JOIN organizations o ON o.id = e.organization_id
        WHERE i.status = 'ACTIVE'
          AND i.deleted_at IS NULL
-         AND i.tenant_id = $2
+         AND ($2::int IS NULL OR i.tenant_id = $2)
          AND i.conference_room = ANY($1)`,
-      [rooms, req.user.tenantId]
+      [rooms, effectiveTenantId(req)]
     );
     for (const r of rows) incidentMap[r.conference_room] = r;
   }

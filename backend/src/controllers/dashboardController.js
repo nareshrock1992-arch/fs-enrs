@@ -1,10 +1,11 @@
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { eslStatus, getConferenceSnapshot, seedConferenceRegistry } from '../services/eslService.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 
 // GET /api/v1/dashboard/metrics
 export const getMetrics = asyncHandler(async (req, res) => {
-  const tid = req.user.tenantId;
+  const tid = effectiveTenantId(req);
   const [contacts, groups, orgs, ensConfigs, ersConfigs,
          notifications, incidents, activeConfs, queuedCalls] = await Promise.all([
     // emergency_contacts has no tenant_id — scope via organizations join
@@ -12,7 +13,7 @@ export const getMetrics = asyncHandler(async (req, res) => {
       `SELECT COUNT(ec.id)::INT AS n
        FROM emergency_contacts ec
        JOIN organizations o ON o.id = ec.organization_id
-       WHERE ec.deleted_at IS NULL AND ec.is_active = true AND o.tenant_id = $1`,
+       WHERE ec.deleted_at IS NULL AND ec.is_active = true AND ($1::int IS NULL OR o.tenant_id = $1)`,
       [tid]
     ),
     // responder_groups has no tenant_id — scope via organizations join
@@ -20,18 +21,18 @@ export const getMetrics = asyncHandler(async (req, res) => {
       `SELECT COUNT(rg.id)::INT AS n
        FROM responder_groups rg
        JOIN organizations o ON o.id = rg.organization_id
-       WHERE rg.deleted_at IS NULL AND rg.is_active = true AND o.tenant_id = $1`,
+       WHERE rg.deleted_at IS NULL AND rg.is_active = true AND ($1::int IS NULL OR o.tenant_id = $1)`,
       [tid]
     ),
-    query(`SELECT COUNT(*)::INT AS n FROM organizations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM ens_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
-    query(`SELECT COUNT(*)::INT AS n FROM ers_configurations WHERE deleted_at IS NULL AND is_active = true AND tenant_id = $1`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM organizations WHERE deleted_at IS NULL AND is_active = true AND ($1::int IS NULL OR tenant_id = $1)`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ens_configurations WHERE deleted_at IS NULL AND is_active = true AND ($1::int IS NULL OR tenant_id = $1)`, [tid]),
+    query(`SELECT COUNT(*)::INT AS n FROM ers_configurations WHERE deleted_at IS NULL AND is_active = true AND ($1::int IS NULL OR tenant_id = $1)`, [tid]),
     // ens_notifications has no tenant_id — scope via ens_configurations join
     query(
       `SELECT COUNT(n.id)::INT AS n
        FROM ens_notifications n
        JOIN ens_configurations ec ON ec.id = n.ens_configuration_id
-       WHERE n.deleted_at IS NULL AND n.created_at >= CURRENT_DATE AND ec.tenant_id = $1`,
+       WHERE n.deleted_at IS NULL AND n.created_at >= CURRENT_DATE AND ($1::int IS NULL OR ec.tenant_id = $1)`,
       [tid]
     ),
     // ers_incidents has no direct tenant_id on existing databases — scope via ers_configurations
@@ -39,7 +40,7 @@ export const getMetrics = asyncHandler(async (req, res) => {
       `SELECT COUNT(i.id)::INT AS n
        FROM ers_incidents i
        JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
-       WHERE i.deleted_at IS NULL AND i.started_at >= CURRENT_DATE AND ec.tenant_id = $1`,
+       WHERE i.deleted_at IS NULL AND i.started_at >= CURRENT_DATE AND ($1::int IS NULL OR ec.tenant_id = $1)`,
       [tid]
     ),
     // Active conferences: live ESL registry. Seed from FreeSWITCH when the
@@ -57,7 +58,7 @@ export const getMetrics = asyncHandler(async (req, res) => {
       `SELECT COUNT(q.id)::INT AS n
        FROM ers_queues q
        JOIN ers_configurations ec ON ec.id = q.ers_configuration_id
-       WHERE q.status = 'QUEUED' AND ec.tenant_id = $1`,
+       WHERE q.status = 'QUEUED' AND ($1::int IS NULL OR ec.tenant_id = $1)`,
       [tid]
     ),
   ]);
@@ -78,7 +79,7 @@ export const getMetrics = asyncHandler(async (req, res) => {
 
 // GET /api/v1/dashboard/active  — real-time: active conferences and queued calls
 export const getActive = asyncHandler(async (req, res) => {
-  const tid = req.user.tenantId;
+  const tid = effectiveTenantId(req);
 
   // Seed conference registry if empty so dashboard shows live conferences
   // even when monitoring page hasn't been opened yet.
@@ -94,7 +95,7 @@ export const getActive = asyncHandler(async (req, res) => {
        EXTRACT(EPOCH FROM (now() - i.started_at))::INT AS duration_seconds
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND e.tenant_id = $1
+     WHERE i.status = 'ACTIVE' AND i.deleted_at IS NULL AND ($1::int IS NULL OR e.tenant_id = $1)
      ORDER BY i.started_at`,
     [tid]
   );
@@ -162,7 +163,7 @@ export const getActive = asyncHandler(async (req, res) => {
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
      LEFT JOIN ers_incidents i ON i.id = q.incident_id
-     WHERE q.status = 'QUEUED' AND e.tenant_id = $1
+     WHERE q.status = 'QUEUED' AND ($1::int IS NULL OR e.tenant_id = $1)
      ORDER BY q.position`,
     [tid]
   );
@@ -174,7 +175,7 @@ export const getActive = asyncHandler(async (req, res) => {
        n.created_at, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     WHERE n.deleted_at IS NULL AND e.tenant_id = $1
+     WHERE n.deleted_at IS NULL AND ($1::int IS NULL OR e.tenant_id = $1)
      ORDER BY n.created_at DESC LIMIT 5`,
     [tid]
   );
@@ -189,14 +190,14 @@ export const getChartData = asyncHandler(async (req, res) => {
   const interval  = intervals[period] || '7 days';
   const trunc     = period === 'day' ? 'hour' : 'day';
 
-  const tid = req.user.tenantId;
+  const tid = effectiveTenantId(req);
   const [notifRows, incidentRows] = await Promise.all([
     // ens_notifications has no tenant_id — scope via ens_configurations join
     query(
       `SELECT date_trunc($1, n.created_at) AS bucket, COUNT(*)::INT AS count
        FROM ens_notifications n
        JOIN ens_configurations ec ON ec.id = n.ens_configuration_id
-       WHERE n.created_at >= now() - $2::interval AND n.deleted_at IS NULL AND ec.tenant_id = $3
+       WHERE n.created_at >= now() - $2::interval AND n.deleted_at IS NULL AND ($3::int IS NULL OR ec.tenant_id = $3)
        GROUP BY bucket ORDER BY bucket`,
       [trunc, interval, tid]
     ),
@@ -205,7 +206,7 @@ export const getChartData = asyncHandler(async (req, res) => {
       `SELECT date_trunc($1, i.started_at) AS bucket, COUNT(*)::INT AS count
        FROM ers_incidents i
        JOIN ers_configurations ec ON ec.id = i.ers_configuration_id
-       WHERE i.started_at >= now() - $2::interval AND i.deleted_at IS NULL AND ec.tenant_id = $3
+       WHERE i.started_at >= now() - $2::interval AND i.deleted_at IS NULL AND ($3::int IS NULL OR ec.tenant_id = $3)
        GROUP BY bucket ORDER BY bucket`,
       [trunc, interval, tid]
     ),

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import {
   createCampaignByConfigId,
   pauseCampaign,
@@ -17,13 +18,12 @@ const TriggerSchema = z.object({
 });
 
 // Verify campaign belongs to the given tenant before any mutation.
-// Uses INNER JOIN so a missing or wrong-tenant config produces no row.
-// Returns false (→ 404) when tenantId is null — fail-closed by SQL semantics.
+// SUPER_ADMIN with null tenantId sees all campaigns (null-safe join pattern).
 async function campaignBelongsToTenant(campaignId, tenantId) {
   const { rows: [row] } = await query(
     `SELECT 1 FROM ens_campaigns c
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
-     WHERE c.id = $1 AND cfg.tenant_id = $2`,
+     WHERE c.id = $1 AND ($2::int IS NULL OR cfg.tenant_id = $2)`,
     [campaignId, tenantId]
   );
   return !!row;
@@ -36,7 +36,7 @@ export const listCampaigns = asyncHandler(async (req, res) => {
   const offset   = (page - 1) * limit;
   const status   = req.query.status || null;
   const configId = req.query.ens_configuration_id || null;
-  const tenantId = req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
 
   const { rows } = await query(
     `SELECT c.*,
@@ -47,7 +47,7 @@ export const listCampaigns = asyncHandler(async (req, res) => {
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
      LEFT JOIN users u ON u.id = c.triggered_by
      LEFT JOIN organizations o ON o.id = c.organization_id
-     WHERE cfg.tenant_id = $1
+     WHERE ($1::int IS NULL OR cfg.tenant_id = $1)
        AND ($2::text IS NULL OR c.status = $2)
        AND ($3::int  IS NULL OR c.ens_configuration_id = $3)
      ORDER BY c.created_at DESC
@@ -59,7 +59,7 @@ export const listCampaigns = asyncHandler(async (req, res) => {
     `SELECT COUNT(*)::INT AS total
      FROM ens_campaigns c
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
-     WHERE cfg.tenant_id = $1
+     WHERE ($1::int IS NULL OR cfg.tenant_id = $1)
        AND ($2::text IS NULL OR c.status = $2)
        AND ($3::int  IS NULL OR c.ens_configuration_id = $3)`,
     [tenantId, status, configId]
@@ -79,8 +79,8 @@ export const getCampaign = asyncHandler(async (req, res) => {
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
      LEFT JOIN users u ON u.id = c.triggered_by
      LEFT JOIN organizations o ON o.id = c.organization_id
-     WHERE c.id = $1 AND cfg.tenant_id = $2`,
-    [req.params.id, req.user.tenantId]
+     WHERE c.id = $1 AND ($2::int IS NULL OR cfg.tenant_id = $2)`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!c) return res.status(404).json({ error: 'Campaign not found' });
 
@@ -98,7 +98,7 @@ export const getCampaign = asyncHandler(async (req, res) => {
 
 // GET /api/v1/campaigns/:id/destinations
 export const listDestinations = asyncHandler(async (req, res) => {
-  const owned = await campaignBelongsToTenant(req.params.id, req.user.tenantId);
+  const owned = await campaignBelongsToTenant(req.params.id, effectiveTenantId(req));
   if (!owned) return res.status(404).json({ error: 'Campaign not found' });
 
   const status = req.query.status || null;
@@ -127,13 +127,11 @@ export const listDestinations = asyncHandler(async (req, res) => {
 
 // POST /api/v1/campaigns  — trigger a campaign from UI/API
 export const triggerCampaign = asyncHandler(async (req, res) => {
-  if (!req.user?.tenantId) {
-    return res.status(403).json({ error: 'No tenant context' });
-  }
+  const tenantId = requireTenantForWrite(req);
   const d = TriggerSchema.parse(req.body);
   const campaign = await createCampaignByConfigId({
     configId:        d.ens_configuration_id,
-    tenantId:        req.user.tenantId,
+    tenantId,
     triggeredBy:     req.user.id,
     triggeredVia:    'UI',
     messageAudioUrl: d.message_audio_url || null,
@@ -144,21 +142,21 @@ export const triggerCampaign = asyncHandler(async (req, res) => {
 
 // POST /api/v1/campaigns/:id/pause
 export const pause = asyncHandler(async (req, res) => {
-  const owned = await campaignBelongsToTenant(req.params.id, req.user.tenantId);
+  const owned = await campaignBelongsToTenant(req.params.id, effectiveTenantId(req));
   if (!owned) return res.status(404).json({ error: 'Campaign not found' });
   res.json(await pauseCampaign(req.params.id));
 });
 
 // POST /api/v1/campaigns/:id/resume
 export const resume = asyncHandler(async (req, res) => {
-  const owned = await campaignBelongsToTenant(req.params.id, req.user.tenantId);
+  const owned = await campaignBelongsToTenant(req.params.id, effectiveTenantId(req));
   if (!owned) return res.status(404).json({ error: 'Campaign not found' });
   res.json(await resumeCampaign(req.params.id));
 });
 
 // POST /api/v1/campaigns/:id/cancel
 export const cancel = asyncHandler(async (req, res) => {
-  const owned = await campaignBelongsToTenant(req.params.id, req.user.tenantId);
+  const owned = await campaignBelongsToTenant(req.params.id, effectiveTenantId(req));
   if (!owned) return res.status(404).json({ error: 'Campaign not found' });
   res.json(await cancelCampaign(req.params.id));
 });

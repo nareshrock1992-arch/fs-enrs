@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { deployGateway } from '../services/gatewayDeployment.js';
 
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
@@ -20,14 +21,15 @@ const GatewaySchema = z.object({
 
 // GET /api/v1/gateways
 export const listGateways = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `SELECT id, tenant_id, name, type, host, port, username, register,
             caller_id_in_from, is_default_outbound, is_active,
             last_deployed_at, last_deployment_status, created_at, updated_at
      FROM sip_gateways
-     WHERE tenant_id = $1 AND deleted_at IS NULL
+     WHERE ($1::int IS NULL OR tenant_id = $1) AND deleted_at IS NULL
      ORDER BY name`,
-    [req.user.tenantId]
+    [tenantId]
   );
   res.json({ gateways: rows });
 });
@@ -35,7 +37,7 @@ export const listGateways = asyncHandler(async (req, res) => {
 // POST /api/v1/gateways
 export const createGateway = asyncHandler(async (req, res) => {
   const d = GatewaySchema.parse(req.body);
-  const tenantId = req.user.tenantId;
+  const tenantId = requireTenantForWrite(req);
 
   const gw = await withTransaction(async tq => {
     if (d.is_default_outbound) {
@@ -59,11 +61,15 @@ export const createGateway = asyncHandler(async (req, res) => {
 // PUT /api/v1/gateways/:id
 export const updateGateway = asyncHandler(async (req, res) => {
   const d = GatewaySchema.partial().parse(req.body);
-  const tenantId = req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
 
   const gw = await withTransaction(async tq => {
     if (d.is_default_outbound) {
-      await tq(`UPDATE sip_gateways SET is_default_outbound = false WHERE tenant_id = $1 AND id != $2`, [tenantId, req.params.id]);
+      await tq(
+        `UPDATE sip_gateways SET is_default_outbound = false
+         WHERE ($1::int IS NULL OR tenant_id = $1) AND id != $2`,
+        [tenantId, req.params.id]
+      );
     }
     const { rows: [row] } = await tq(
       `UPDATE sip_gateways SET
@@ -78,7 +84,7 @@ export const updateGateway = asyncHandler(async (req, res) => {
          is_default_outbound = COALESCE($11, is_default_outbound),
          is_active           = COALESCE($12, is_active),
          updated_at          = now()
-       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL
        RETURNING *`,
       [req.params.id, tenantId, d.name, d.type, d.host, d.port, d.username,
        d.password, d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active]
@@ -92,9 +98,11 @@ export const updateGateway = asyncHandler(async (req, res) => {
 
 // DELETE /api/v1/gateways/:id
 export const deleteGateway = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rowCount } = await query(
-    `UPDATE sip_gateways SET deleted_at = now() WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
-    [req.params.id, req.user.tenantId]
+    `UPDATE sip_gateways SET deleted_at = now()
+     WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
+    [req.params.id, tenantId]
   );
   if (!rowCount) return res.status(404).json({ error: 'Gateway not found' });
   res.status(204).end();
@@ -102,9 +110,11 @@ export const deleteGateway = asyncHandler(async (req, res) => {
 
 // POST /api/v1/gateways/:id/deploy
 export const deployGatewayRoute = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [gw] } = await query(
-    `SELECT id FROM sip_gateways WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
-    [req.params.id, req.user.tenantId]
+    `SELECT id FROM sip_gateways
+     WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
+    [req.params.id, tenantId]
   );
   if (!gw) return res.status(404).json({ error: 'Gateway not found' });
 

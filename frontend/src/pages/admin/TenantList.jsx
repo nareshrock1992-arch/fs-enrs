@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api/client.js';
 
-const EMPTY = { name: '', code: '', contact_email: '', is_active: true };
+const EMPTY = { name: '', code: '', is_active: true };
 
 export default function TenantList() {
   const [tenants, setTenants] = useState([]);
@@ -69,7 +69,7 @@ export default function TenantList() {
         <table className="w-full text-sm">
           <thead className="bg-surface-panel border-b border-surface-border">
             <tr>
-              {['Name', 'Code', 'Contact Email', 'Users', 'Orgs', 'Status', 'Actions'].map(h => (
+              {['Name', 'Code', 'Users', 'Orgs', 'Status', 'Actions'].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-text-secondary uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -79,7 +79,6 @@ export default function TenantList() {
               <tr key={t.id} className="border-b border-surface-border hover:bg-surface-panel/50">
                 <td className="px-4 py-3 font-medium text-text-primary">{t.name}</td>
                 <td className="px-4 py-3 font-mono text-text-secondary">{t.code}</td>
-                <td className="px-4 py-3 text-text-secondary">{t.contact_email || '—'}</td>
                 <td className="px-4 py-3 tabular-nums text-text-secondary">{t.user_count ?? 0}</td>
                 <td className="px-4 py-3 tabular-nums text-text-secondary">{t.org_count ?? 0}</td>
                 <td className="px-4 py-3">
@@ -106,7 +105,7 @@ export default function TenantList() {
             ))}
             {tenants.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-text-secondary">No tenants yet.</td>
+                <td colSpan={6} className="px-4 py-8 text-center text-text-secondary">No tenants yet.</td>
               </tr>
             )}
           </tbody>
@@ -143,9 +142,6 @@ function TenantModal({ mode, initial, onSave, onClose, saving }) {
           </Field>
           <Field label="Code" required hint="Unique short identifier (e.g. ACME)">
             <input className="form-input w-full font-mono" value={form.code || ''} onChange={e => set('code', e.target.value.toUpperCase())} disabled={mode === 'edit'} />
-          </Field>
-          <Field label="Contact Email">
-            <input type="email" className="form-input w-full" value={form.contact_email || ''} onChange={e => set('contact_email', e.target.value)} />
           </Field>
           {mode === 'edit' && (
             <label className="flex items-center gap-2 cursor-pointer">

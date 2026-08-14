@@ -7,6 +7,7 @@ import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
 import { config } from '../../config/index.js';
+import { requireTenantForWrite } from '../../middleware/tenantScope.js';
 
 // Ensure upload directory exists
 mkdirSync(config.uploads.dir, { recursive: true });
@@ -69,7 +70,7 @@ router.post('/upload', adminOnly, upload.single('file'), asyncHandler(async (req
       req.file.path,
       req.file.size,
       req.body.category || 'general',
-      req.user.tenantId || null,
+      requireTenantForWrite(req),
     ]
   );
   res.status(201).json(record);

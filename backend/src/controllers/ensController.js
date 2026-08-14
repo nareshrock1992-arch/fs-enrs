@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 const intDef = (def, min = 0, max = 9999) => z.number().int().min(min).max(max).default(def);
@@ -141,16 +142,16 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
-       AND e.tenant_id = $4
+       AND ($4::int IS NULL OR e.tenant_id = $4)
        AND ($1::int IS NULL OR e.organization_id = $1)
      ORDER BY e.name
      LIMIT $2 OFFSET $3`,
-    [orgId, limit, offset, req.user.tenantId]
+    [orgId, limit, offset, effectiveTenantId(req)]
   );
   const { rows: cnt } = await query(
     `SELECT COUNT(*)::INT AS total FROM ens_configurations
-     WHERE deleted_at IS NULL AND tenant_id = $2 AND ($1::int IS NULL OR organization_id = $1)`,
-    [orgId, req.user.tenantId]
+     WHERE deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2) AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId, effectiveTenantId(req)]
   );
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
@@ -162,8 +163,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
     `SELECT e.*, o.name AS organization_name
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE e.id = $1 AND e.deleted_at IS NULL AND e.tenant_id = $2`,
-    [req.params.id, req.user.tenantId]
+     WHERE e.id = $1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.tenant_id = $2)`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
 
@@ -175,6 +176,7 @@ export const getConfiguration = asyncHandler(async (req, res) => {
 
 export const createConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.parse(req.body);
+  const tenantId = requireTenantForWrite(req);
 
   const { rows } = await query(
     `INSERT INTO ens_configurations (
@@ -195,7 +197,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
      ) RETURNING *`,
     [
-      d.organization_id, req.user.tenantId, d.name, d.description,
+      d.organization_id, tenantId, d.name, d.description,
       d.blast_clid, d.reply_clid, d.pin,
       d.max_concurrent_calls, d.calls_per_second,
       d.batch_size, d.retry_interval_sec,
@@ -268,7 +270,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        gateway_override          = CASE WHEN $35::boolean THEN $36 ELSE gateway_override END,
        tenant_id                 = COALESCE(tenant_id, $37),
        updated_at                = now()
-     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $37 RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND ($37::int IS NULL OR tenant_id = $37) RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -286,7 +288,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.is_active,
       gatewayOverrideInBody,   // $35 — boolean: was the key present in req.body?
       d.gateway_override,      // $36 — the validated value (null when cleared)
-      req.user.tenantId,       // $37
+      effectiveTenantId(req),  // $37
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
@@ -305,8 +307,8 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE ens_configurations SET is_active = NOT is_active, updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2 RETURNING id, is_active`,
-    [req.params.id, req.user.tenantId]
+     WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2) RETURNING id, is_active`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });
   res.json(rows[0]);
@@ -314,8 +316,8 @@ export const toggleActive = asyncHandler(async (req, res) => {
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
   const { rowCount } = await query(
-    `UPDATE ens_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2`,
-    [req.params.id, req.user.tenantId]
+    `UPDATE ens_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rowCount) return res.status(404).json({ error: 'ENS configuration not found' });
   res.status(204).end();
@@ -328,13 +330,13 @@ export const listNotifications = asyncHandler(async (req, res) => {
     `SELECT n.*, e.name AS ens_name
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
-     WHERE n.deleted_at IS NULL AND e.tenant_id = $3
+     WHERE n.deleted_at IS NULL AND ($3::int IS NULL OR e.tenant_id = $3)
      ORDER BY n.created_at DESC
      LIMIT $1 OFFSET $2`,
     [
       Number(req.query.limit) || 50,
       ((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50),
-      req.user.tenantId,
+      effectiveTenantId(req),
     ]
   );
   res.json(rows);
@@ -344,7 +346,7 @@ export const createNotification = asyncHandler(async (req, res) => {
   const { ens_configuration_id, recording_reference, triggered_via = 'API' } = req.body;
 
   // Verify the referenced ENS config belongs to the caller's tenant.
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [cfg] } = await query(
     `SELECT id FROM ens_configurations
      WHERE id = $1 AND deleted_at IS NULL

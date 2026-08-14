@@ -27,6 +27,7 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
 import { extractAudioMetadata, extractWaveformPeaks } from './mediaLibraryController.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 
 const MIME_MAP = {
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
@@ -130,7 +131,7 @@ export const listRecordings = asyncHandler(async (req, res) => {
 // ── Get single with full module context ───────────────────────────────────────
 
 export const getRecording = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `SELECT
        r.*,
@@ -188,7 +189,7 @@ async function resolveFile(rec) {
 // ── Stream (range-request) ────────────────────────────────────────────────────
 
 export const streamRecording = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -230,7 +231,7 @@ export const streamRecording = asyncHandler(async (req, res) => {
 // ── Download ──────────────────────────────────────────────────────────────────
 
 export const downloadRecording = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -250,7 +251,7 @@ export const downloadRecording = asyncHandler(async (req, res) => {
 // ── Waveform peaks ────────────────────────────────────────────────────────────
 
 export const getRecordingWaveform = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -282,7 +283,7 @@ export const getRecordingWaveform = asyncHandler(async (req, res) => {
 
 export const updateRecording = asyncHandler(async (req, res) => {
   const { notes, tags } = req.body;
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `UPDATE recordings
      SET notes = COALESCE($3, notes),
@@ -300,7 +301,7 @@ export const updateRecording = asyncHandler(async (req, res) => {
 // ── Archive ───────────────────────────────────────────────────────────────────
 
 export const archiveRecording = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `UPDATE recordings
      SET status = 'ARCHIVED', archived_at = now(), updated_at = now()
@@ -316,7 +317,7 @@ export const archiveRecording = asyncHandler(async (req, res) => {
 // ── Delete (soft) ─────────────────────────────────────────────────────────────
 
 export const deleteRecording = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [rec] } = await query(
     `UPDATE recordings SET deleted_at = now()
      WHERE id = $1 AND deleted_at IS NULL

@@ -74,7 +74,8 @@ export const createOrganization = asyncHandler(async (req, res) => {
   const data = OrgSchema.parse(req.body);
   let tenantId;
   if (req.user.role === 'SUPER_ADMIN') {
-    tenantId = data.tenant_id || null;
+    tenantId = data.tenant_id ? Number(data.tenant_id) : null;
+    if (!tenantId) return res.status(400).json({ error: 'Tenant context is required. Select a tenant before creating an organization.' });
   } else {
     tenantId = req.user.tenantId;
     if (!tenantId) return res.status(403).json({ error: 'Tenant context required' });

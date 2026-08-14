@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 
 const str    = (max) => z.string().max(max).optional().nullable();
 
@@ -191,16 +192,16 @@ export const listConfigurations = asyncHandler(async (req, res) => {
      FROM ers_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
-       AND e.tenant_id = $4
+       AND ($4::int IS NULL OR e.tenant_id = $4)
        AND ($1::int IS NULL OR e.organization_id = $1)
      ORDER BY e.name
      LIMIT $2 OFFSET $3`,
-    [orgId, limit, offset, req.user.tenantId]
+    [orgId, limit, offset, effectiveTenantId(req)]
   );
   const { rows: cnt } = await query(
     `SELECT COUNT(*)::INT AS total FROM ers_configurations
-     WHERE deleted_at IS NULL AND tenant_id = $2 AND ($1::int IS NULL OR organization_id = $1)`,
-    [orgId, req.user.tenantId]
+     WHERE deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2) AND ($1::int IS NULL OR organization_id = $1)`,
+    [orgId, effectiveTenantId(req)]
   );
   res.json({ configurations: rows, total: cnt[0].total, page, limit });
 });
@@ -212,8 +213,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
     `SELECT e.*, o.name AS organization_name
      FROM ers_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE e.id = $1 AND e.deleted_at IS NULL AND e.tenant_id = $2`,
-    [req.params.id, req.user.tenantId]
+     WHERE e.id = $1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.tenant_id = $2)`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
 
@@ -236,7 +237,8 @@ export const getConfiguration = asyncHandler(async (req, res) => {
 
 export const createConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.parse(req.body);
-  await validateGatewayTenant(d.sip_gateway_id, req.user.tenantId);
+  const tenantId = requireTenantForWrite(req);
+  await validateGatewayTenant(d.sip_gateway_id, tenantId);
 
   const { rows } = await query(
     `INSERT INTO ers_configurations (
@@ -261,7 +263,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
      ) RETURNING *`,
     [
-      d.organization_id, req.user.tenantId, d.name, d.description,
+      d.organization_id, tenantId, d.name, d.description,
       d.primary_bridge_number, d.secondary_bridge_number, d.conference_profile,
       d.max_concurrent_conferences, d.max_conference_duration_min,
       d.queue_enabled, d.queue_announcement_audio, d.queue_music_path,
@@ -295,7 +297,8 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
   const d = ErsConfigSchema.partial().parse(req.body);
-  await validateGatewayTenant(d.sip_gateway_id, req.user.tenantId);
+  const tenantId = effectiveTenantId(req);
+  await validateGatewayTenant(d.sip_gateway_id, tenantId);
 
   // Three-way gateway_override update semantics:
   //   key absent from body  → preserve existing DB value (CASE returns gateway_override)
@@ -347,7 +350,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        sip_gateway_id               = CASE WHEN $41::int IS NOT NULL THEN $41 ELSE sip_gateway_id END,
        gateway_override             = CASE WHEN $42::boolean THEN $43 ELSE gateway_override END,
        updated_at                   = now()
-     WHERE id = $1 AND deleted_at IS NULL AND COALESCE(tenant_id, $39) = $39 RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND ($39::int IS NULL OR tenant_id = $39) RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -365,7 +368,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.primary_retry_count, d.primary_retry_interval_sec,
       d.secondary_retry_count, d.secondary_retry_interval_sec,
       d.is_active,
-      req.user.tenantId,
+      tenantId,
       d.ring_timeout_seconds,
       d.sip_gateway_id ?? null,
       gatewayOverrideInBody,     // $42 — boolean: was gateway_override key present in body?
@@ -389,8 +392,8 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
 
 export const deleteConfiguration = asyncHandler(async (req, res) => {
   const { rowCount } = await query(
-    `UPDATE ers_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2`,
-    [req.params.id, req.user.tenantId]
+    `UPDATE ers_configurations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rowCount) return res.status(404).json({ error: 'ERS configuration not found' });
   res.status(204).end();
@@ -419,7 +422,7 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
   const d = BroadcastUsersSchema.parse(req.body);
 
   // Verify the target organization belongs to the caller's tenant.
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [org] } = await query(
     `SELECT id FROM organizations WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -497,8 +500,8 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
 export const toggleActive = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `UPDATE ers_configurations SET is_active = NOT is_active, updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL AND tenant_id = $2 RETURNING id, is_active`,
-    [req.params.id, req.user.tenantId]
+     WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2) RETURNING id, is_active`,
+    [req.params.id, effectiveTenantId(req)]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ERS configuration not found' });
   res.json(rows[0]);
@@ -507,7 +510,7 @@ export const toggleActive = asyncHandler(async (req, res) => {
 // ── Tier groups endpoint (GET / PUT) ─────────────────────────────────────────
 
 export const getTierGroups = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [cfg] } = await query(
     `SELECT id FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -519,7 +522,7 @@ export const getTierGroups = asyncHandler(async (req, res) => {
 });
 
 export const updateTierGroups = asyncHandler(async (req, res) => {
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { rows: [cfg] } = await query(
     `SELECT id FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
@@ -557,12 +560,12 @@ export const listIncidents = asyncHandler(async (req, res) => {
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
      WHERE i.deleted_at IS NULL
-       AND i.tenant_id = $3
+       AND ($3::int IS NULL OR i.tenant_id = $3)
        AND ($1::text IS NULL OR i.status = $1)
      GROUP BY i.id, e.name
      ORDER BY i.started_at DESC
      LIMIT $2`,
-    [status, Number(req.query.limit) || 50, req.user.tenantId]
+    [status, Number(req.query.limit) || 50, effectiveTenantId(req)]
   );
   res.json(rows);
 });
@@ -578,7 +581,7 @@ export const createIncident = asyncHandler(async (req, res) => {
   } = req.body;
 
   const incident = await withTransaction(async (tq) => {
-    const callerTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+    const callerTenantId = effectiveTenantId(req);
     const { rows: cfgRows } = await tq(
       `SELECT id, tenant_id, max_concurrent_conferences, queue_enabled
        FROM ers_configurations
@@ -640,7 +643,7 @@ export const completeIncident = asyncHandler(async (req, res) => {
   const where   = isUuid ? 'incident_uuid = $1' : 'id = $1';
   const { recording_file } = req.body || {};
 
-  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const result = await withTransaction(async (tq) => {
     const { rows } = await tq(
       `UPDATE ers_incidents
@@ -700,9 +703,9 @@ export const getQueue = asyncHandler(async (req, res) => {
      FROM ers_queues q
      JOIN ers_configurations e ON e.id = q.ers_configuration_id
      LEFT JOIN ers_incidents  i ON i.id = q.incident_id
-     WHERE q.status = 'QUEUED' AND e.tenant_id = $1
+     WHERE q.status = 'QUEUED' AND ($1::int IS NULL OR e.tenant_id = $1)
      ORDER BY q.ers_configuration_id, q.position`,
-    [req.user.tenantId]
+    [effectiveTenantId(req)]
   );
   res.json(rows);
 });
@@ -717,8 +720,8 @@ export const getIncident = asyncHandler(async (req, res) => {
             e.record_conferences, e.queue_enabled
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     WHERE i.incident_uuid = $1 AND i.deleted_at IS NULL AND i.tenant_id = $2`,
-    [uuid, req.user.tenantId]
+     WHERE i.incident_uuid = $1 AND i.deleted_at IS NULL AND ($2::int IS NULL OR i.tenant_id = $2)`,
+    [uuid, effectiveTenantId(req)]
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
@@ -759,7 +762,7 @@ export const completeIncidentExternal = asyncHandler(async (req, res) => {
 
 export const cancelQueuedIncident = asyncHandler(async (req, res) => {
   const { uuid } = req.params;
-  const cancelTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const cancelTenantId = effectiveTenantId(req);
   const result = await withTransaction(async tq => {
     const { rows: [incident] } = await tq(
       `UPDATE ers_incidents
@@ -807,7 +810,7 @@ async function verifyConferenceRoom(room, tenantId) {
 
 export const getConferenceMembers = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  const confTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const confTenantId = effectiveTenantId(req);
   await verifyConferenceRoom(room, confTenantId);
   const members = await confList(room);
   // Enrich with DB responder data where possible
@@ -849,7 +852,7 @@ export const getConferenceMembers = asyncHandler(async (req, res) => {
 
 export const kickConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
+  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { member_id } = req.body;
   if (!member_id) return res.status(400).json({ error: 'member_id required' });
   await confKick(room, member_id);
@@ -860,7 +863,7 @@ export const kickConferenceMember = asyncHandler(async (req, res) => {
 
 export const muteConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
+  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { member_id, muted } = req.body;
   if (!member_id) return res.status(400).json({ error: 'member_id required' });
   if (muted) {
@@ -875,7 +878,7 @@ export const muteConferenceMember = asyncHandler(async (req, res) => {
 
 export const playConferenceAudio = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
+  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { audio_path } = req.body;
   if (!audio_path) return res.status(400).json({ error: 'audio_path required' });
   await confPlay(room, audio_path);

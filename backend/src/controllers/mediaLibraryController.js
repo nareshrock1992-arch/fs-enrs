@@ -21,7 +21,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
-import { effectiveTenantId } from '../middleware/tenantScope.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 
@@ -370,6 +370,7 @@ export const listCategories = asyncHandler(async (_req, res) => {
 
 export const uploadMedia = asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Audio file required (field: file)' });
+  const uploadTenantId = requireTenantForWrite(req);
 
   const { category = 'general', description = '', name: customName } = req.body;
   const displayName = customName?.trim() || req.file.originalname;
@@ -409,7 +410,7 @@ export const uploadMedia = asyncHandler(async (req, res) => {
       meta.size_bytes ?? req.file.size,
       category,
       description,
-      req.user.tenantId || null,
+      uploadTenantId,
       meta.sample_rate  ?? null,
       meta.channels     ?? null,
       meta.codec        ?? null,

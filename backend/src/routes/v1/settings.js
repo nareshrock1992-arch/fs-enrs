@@ -4,6 +4,7 @@ import { adminOnly, adminOrSuper } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
 import { eslStatus } from '../../services/eslService.js';
+import { effectiveTenantId } from '../../middleware/tenantScope.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -32,9 +33,9 @@ router.get('/emergency-numbers', adminOrSuper, asyncHandler(async (req, res) => 
   const { rows: numbers } = await query(
     `SELECT id, number, type, description, is_active
      FROM emergency_numbers
-     WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active = true
+     WHERE ($1::int IS NULL OR tenant_id = $1) AND deleted_at IS NULL AND is_active = true
      ORDER BY number`,
-    [req.user.tenantId]
+    [effectiveTenantId(req)]
   );
   res.json({ numbers });
 }));

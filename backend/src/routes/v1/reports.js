@@ -3,6 +3,7 @@ import { requireAuth } from '../../middleware/auth.js';
 import { adminOrOp } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
+import { effectiveTenantId } from '../../middleware/tenantScope.js';
 
 const router = Router();
 router.use(requireAuth, adminOrOp);
@@ -17,14 +18,14 @@ router.get('/notifications', asyncHandler(async (req, res) => {
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
      WHERE n.deleted_at IS NULL
-       AND e.tenant_id = $5
+       AND ($5::int IS NULL OR e.tenant_id = $5)
        AND ($1::date IS NULL OR n.created_at >= $1::date)
        AND ($2::date IS NULL OR n.created_at <  $2::date + interval '1 day')
        AND ($3::text IS NULL OR n.status = $3)
        AND ($4::int  IS NULL OR o.id = $4)
      ORDER BY n.created_at DESC
      LIMIT 500`,
-    [from || null, to || null, status || null, org_id || null, req.user.tenantId]
+    [from || null, to || null, status || null, org_id || null, effectiveTenantId(req)]
   );
   res.json({ notifications: rows });
 }));
@@ -43,11 +44,11 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
      LEFT JOIN responder_group_members rgm ON rgm.emergency_contact_id = c.id
      LEFT JOIN ens_configuration_groups ecg ON ecg.responder_group_id = rgm.responder_group_id
      LEFT JOIN ers_incident_responders eir ON eir.emergency_contact_id = c.id
-     WHERE c.deleted_at IS NULL AND o.tenant_id = $1
+     WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR o.tenant_id = $1)
      GROUP BY c.id, o.name
      ORDER BY c.last_name, c.first_name
      LIMIT 500`,
-    [req.user.tenantId]
+    [effectiveTenantId(req)]
   );
   res.json({ contacts: rows });
 }));
@@ -68,12 +69,12 @@ router.get('/ens-broadcasts', asyncHandler(async (req, res) => {
      LEFT JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.recorded_by
      WHERE n.deleted_at IS NULL
-       AND e.tenant_id = $3
+       AND ($3::int IS NULL OR e.tenant_id = $3)
        AND ($1::date IS NULL OR n.created_at >= $1::date)
        AND ($2::date IS NULL OR n.created_at <  $2::date + interval '1 day')
      ORDER BY n.created_at DESC
      LIMIT 200`,
-    [from || null, to || null, req.user.tenantId]
+    [from || null, to || null, effectiveTenantId(req)]
   );
 
   const ids = broadcasts.map(b => b.id);
@@ -125,12 +126,12 @@ router.get('/ers', asyncHandler(async (req, res) => {
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      JOIN organizations o ON o.id = e.organization_id
      WHERE i.deleted_at IS NULL
-       AND i.tenant_id = $1
+       AND ($1::int IS NULL OR i.tenant_id = $1)
        AND ($2::date IS NULL OR i.started_at >= $2::date)
        AND ($3::date IS NULL OR i.started_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR i.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null]
   );
 
   const { rows } = await query(
@@ -151,7 +152,7 @@ router.get('/ers', asyncHandler(async (req, res) => {
      LEFT JOIN ers_incident_responders r ON r.ers_incident_id = i.id
      LEFT JOIN ers_incident_participants p ON p.incident_id = i.id
      WHERE i.deleted_at IS NULL
-       AND i.tenant_id = $1
+       AND ($1::int IS NULL OR i.tenant_id = $1)
        AND ($2::date IS NULL OR i.started_at >= $2::date)
        AND ($3::date IS NULL OR i.started_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR i.status = $4)
@@ -159,7 +160,7 @@ router.get('/ers', asyncHandler(async (req, res) => {
      GROUP BY i.id, e.name, e.id, o.name, o.id
      ORDER BY i.started_at DESC
      LIMIT $6 OFFSET $7`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null, limit, offset]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null, limit, offset]
   );
 
   res.json({ incidents: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -175,8 +176,8 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      LEFT JOIN organizations o ON o.id = e.organization_id
-     WHERE i.incident_uuid = $1 AND i.tenant_id = $2 AND i.deleted_at IS NULL`,
-    [incidentUuid, req.user.tenantId]
+     WHERE i.incident_uuid = $1 AND ($2::int IS NULL OR i.tenant_id = $2) AND i.deleted_at IS NULL`,
+    [incidentUuid, effectiveTenantId(req)]
   );
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
 
@@ -352,12 +353,12 @@ router.get('/ens', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
      JOIN organizations o ON o.id = e.organization_id
      WHERE n.deleted_at IS NULL
-       AND e.tenant_id = $1
+       AND ($1::int IS NULL OR e.tenant_id = $1)
        AND ($2::date IS NULL OR n.created_at >= $2::date)
        AND ($3::date IS NULL OR n.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR n.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null]
   );
 
   const { rows } = await query(
@@ -373,14 +374,14 @@ router.get('/ens', asyncHandler(async (req, res) => {
      JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
      WHERE n.deleted_at IS NULL
-       AND e.tenant_id = $1
+       AND ($1::int IS NULL OR e.tenant_id = $1)
        AND ($2::date IS NULL OR n.created_at >= $2::date)
        AND ($3::date IS NULL OR n.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR n.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)
      ORDER BY n.created_at DESC
      LIMIT $6 OFFSET $7`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null, limit, offset]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null, limit, offset]
   );
 
   res.json({ notifications: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -396,8 +397,8 @@ router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
      LEFT JOIN organizations o ON o.id = e.organization_id
      LEFT JOIN users u ON u.id = n.triggered_by_user_id
-     WHERE n.notification_uuid = $1 AND e.tenant_id = $2 AND n.deleted_at IS NULL`,
-    [notificationUuid, req.user.tenantId]
+     WHERE n.notification_uuid = $1 AND ($2::int IS NULL OR e.tenant_id = $2) AND n.deleted_at IS NULL`,
+    [notificationUuid, effectiveTenantId(req)]
   );
   if (!notification) return res.status(404).json({ error: 'Notification not found' });
 
@@ -444,12 +445,12 @@ router.get('/ens-campaigns', asyncHandler(async (req, res) => {
      FROM ens_campaigns c
      JOIN ens_configurations e ON e.id = c.ens_configuration_id
      JOIN organizations o ON o.id = c.organization_id
-     WHERE e.tenant_id = $1
+     WHERE ($1::int IS NULL OR e.tenant_id = $1)
        AND ($2::date IS NULL OR c.created_at >= $2::date)
        AND ($3::date IS NULL OR c.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR c.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null]
   );
 
   const { rows } = await query(
@@ -465,14 +466,14 @@ router.get('/ens-campaigns', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = c.ens_configuration_id
      JOIN organizations o ON o.id = c.organization_id
      LEFT JOIN users u ON u.id = c.triggered_by
-     WHERE e.tenant_id = $1
+     WHERE ($1::int IS NULL OR e.tenant_id = $1)
        AND ($2::date IS NULL OR c.created_at >= $2::date)
        AND ($3::date IS NULL OR c.created_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR c.status = $4)
        AND ($5::int  IS NULL OR o.id = $5)
      ORDER BY c.created_at DESC
      LIMIT $6 OFFSET $7`,
-    [req.user.tenantId, from || null, to || null, status || null, org_id || null, limit, offset]
+    [effectiveTenantId(req), from || null, to || null, status || null, org_id || null, limit, offset]
   );
 
   res.json({ campaigns: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -491,8 +492,8 @@ router.get('/ens-campaigns/:id', asyncHandler(async (req, res) => {
      JOIN ens_configurations e ON e.id = c.ens_configuration_id
      LEFT JOIN organizations o ON o.id = c.organization_id
      LEFT JOIN users u ON u.id = c.triggered_by
-     WHERE c.id = $1 AND e.tenant_id = $2`,
-    [id, req.user.tenantId]
+     WHERE c.id = $1 AND ($2::int IS NULL OR e.tenant_id = $2)`,
+    [id, effectiveTenantId(req)]
   );
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 

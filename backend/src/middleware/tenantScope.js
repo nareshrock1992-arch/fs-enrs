@@ -33,6 +33,27 @@ export function requireTenantScope(req, res, next) {
   next();
 }
 
+// For write operations that create tenant-owned resources (INSERT with tenant_id).
+// Normal users: always JWT tenantId (never from body).
+// SUPER_ADMIN: must supply tenant_id in body or query — throws 400 if missing.
+// This enforces §5 of the multi-tenant spec: SUPER_ADMIN must select a tenant
+// for writes; resources must never receive tenant_id = NULL.
+export function requireTenantForWrite(req) {
+  if (req.user?.role === 'SUPER_ADMIN') {
+    const tid = req.body?.tenant_id  ? Number(req.body.tenant_id)
+              : req.query?.tenant_id ? Number(req.query.tenant_id)
+              : null;
+    if (!tid) {
+      throw Object.assign(
+        new Error('SUPER_ADMIN must select a target tenant (tenant_id) when creating tenant-owned resources'),
+        { status: 400 }
+      );
+    }
+    return tid;
+  }
+  return req.user?.tenantId ?? null;
+}
+
 // Validate that a tenant_id from an explicit SUPER_ADMIN request exists and is active.
 // Returns the tenant row or throws a 400-class error.
 export async function validateTargetTenant(queryFn, tenantId) {

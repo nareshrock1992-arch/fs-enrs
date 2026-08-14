@@ -9,6 +9,7 @@
 import { query } from '../db/pool.js';
 import { v4 as uuidv4 } from 'uuid';
 import { fsPathService } from '../services/freeSwitchPathService.js';
+import { requireTenantForWrite } from '../middleware/tenantScope.js';
 
 // ── Template definitions ───────────────────────────────────────────────────────
 //
@@ -766,6 +767,7 @@ export async function createFromTemplate(req, res) {
     return res.status(404).json({ error: `Template '${id}' not found` });
   }
 
+  const tenantId   = requireTenantForWrite(req);
   const customName = req.body?.name;
   const flowUuid   = uuidv4();
   const name       = customName || tpl.name;
@@ -776,7 +778,7 @@ export async function createFromTemplate(req, res) {
      VALUES ($1, $2, $3, $4, $5, true, $6)
      RETURNING flow_uuid, name`,
     [
-      req.user.tenantId,
+      tenantId,
       flowUuid,
       name,
       tpl.description,

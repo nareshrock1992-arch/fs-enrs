@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { validateGraph } from '../utils/ivrGraphValidator.js';
+import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { publicNodeTypes } from '../nodeTypes/registry.js';
 import {
   CreateFlowSchema,
@@ -28,7 +29,7 @@ async function fetchFlow(flowUuid, tenantId) {
      FROM ivr_flows f
      LEFT JOIN users u1 ON u1.id = f.created_by
      LEFT JOIN users u2 ON u2.id = f.updated_by
-     WHERE f.flow_uuid = $1 AND f.tenant_id = $2 AND f.deleted_at IS NULL`,
+     WHERE f.flow_uuid = $1 AND ($2::int IS NULL OR f.tenant_id = $2) AND f.deleted_at IS NULL`,
     [flowUuid, tenantId]
   );
   return rows[0] || null;
@@ -58,13 +59,13 @@ async function fetchBoundNumbers(flowId) {
 // ── GET /ivr/flows ────────────────────────────────────────────────────────────
 
 export const listFlows = asyncHandler(async (req, res) => {
-  const tenantId = req.user.tenantId;
+  const tenantId = effectiveTenantId(req);
   const { org, search, page = 1, limit = 20 } = req.query;
   const pageNum   = Math.max(1, parseInt(page) || 1);
   const limitNum  = Math.min(100, parseInt(limit) || 20);
   const offset    = (pageNum - 1) * limitNum;
 
-  const conditions = ['f.tenant_id = $1', 'f.deleted_at IS NULL'];
+  const conditions = ['($1::int IS NULL OR f.tenant_id = $1)', 'f.deleted_at IS NULL'];
   const params     = [tenantId];
 
   if (org) {
@@ -114,7 +115,7 @@ export const createFlow = asyncHandler(async (req, res) => {
   }
 
   const { name, description, organization_id } = parsed.data;
-  const tenantId = req.user.tenantId;
+  const tenantId = requireTenantForWrite(req);
 
   const emptyGraph = JSON.stringify({ entry_node_id: '', nodes: {} });
 
@@ -131,7 +132,7 @@ export const createFlow = asyncHandler(async (req, res) => {
 // ── GET /ivr/flows/:uuid ──────────────────────────────────────────────────────
 
 export const getFlowById = asyncHandler(async (req, res) => {
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   const [latestVersion, boundNumbers] = await Promise.all([
@@ -150,7 +151,7 @@ export const updateFlow = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
   }
 
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   const { name, description, graph, is_test_flow } = parsed.data;
@@ -161,7 +162,7 @@ export const updateFlow = asyncHandler(async (req, res) => {
     // An empty graph (nodes:{}) is accepted — it represents a cleared canvas draft.
     const fullCheck = GraphSchema.safeParse(graph);
     if (fullCheck.success) {
-      const result = await validateGraph(graph, req.user.tenantId);
+      const result = await validateGraph(graph, effectiveTenantId(req));
       const structural = (result.errors || []).filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
       if (structural.length > 0) {
         return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
@@ -200,7 +201,7 @@ export const updateFlow = asyncHandler(async (req, res) => {
 // ── DELETE /ivr/flows/:uuid ───────────────────────────────────────────────────
 
 export const deleteFlow = asyncHandler(async (req, res) => {
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   await withTransaction(async tq => {
@@ -220,12 +221,12 @@ export const deleteFlow = asyncHandler(async (req, res) => {
 // ── POST /ivr/flows/:uuid/validate ───────────────────────────────────────────
 
 export const validateFlow = asyncHandler(async (req, res) => {
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   // Allow validating a candidate graph without saving it
   const graphToCheck = req.body?.graph ?? flow.graph;
-  const result = await validateGraph(graphToCheck, req.user.tenantId);
+  const result = await validateGraph(graphToCheck, effectiveTenantId(req));
 
   res.json(result);
 });
@@ -238,11 +239,11 @@ export const publishFlow = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
   }
 
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   // Full validation (all DB checks) must pass before publish
-  const result = await validateGraph(flow.graph, req.user.tenantId);
+  const result = await validateGraph(flow.graph, effectiveTenantId(req));
   if (!result.valid) {
     return res.status(400).json({
       error:    'Graph validation failed — fix errors before publishing',
@@ -273,7 +274,7 @@ export const publishFlow = asyncHandler(async (req, res) => {
 // ── GET /ivr/flows/:uuid/versions ─────────────────────────────────────────────
 
 export const listVersions = asyncHandler(async (req, res) => {
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   const { rows: versions } = await query(
@@ -292,7 +293,7 @@ export const listVersions = asyncHandler(async (req, res) => {
 // ── GET /ivr/flows/:uuid/versions/:vnum ──────────────────────────────────────
 
 export const getVersion = asyncHandler(async (req, res) => {
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   const vnum = parseInt(req.params.vnum);
@@ -318,13 +319,14 @@ export const bindNumber = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
   }
 
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
+  const tenantId = effectiveTenantId(req);
   const { rows: [num] } = await query(
     `SELECT id, number, type FROM emergency_numbers
-     WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
-    [parsed.data.emergency_number_id, req.user.tenantId]
+     WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
+    [parsed.data.emergency_number_id, tenantId]
   );
   if (!num) return res.status(404).json({ error: 'Emergency number not found' });
 
@@ -344,14 +346,15 @@ export const unbindNumber = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
   }
 
-  const flow = await fetchFlow(req.params.uuid, req.user.tenantId);
+  const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
+  const tenantId = effectiveTenantId(req);
   const { rows: [num] } = await query(
     `UPDATE emergency_numbers SET ivr_flow_id = NULL
-     WHERE id = $1 AND ivr_flow_id = $2 AND tenant_id = $3
+     WHERE id = $1 AND ivr_flow_id = $2 AND ($3::int IS NULL OR tenant_id = $3)
      RETURNING id, number`,
-    [parsed.data.emergency_number_id, flow.id, req.user.tenantId]
+    [parsed.data.emergency_number_id, flow.id, tenantId]
   );
 
   if (!num) return res.status(404).json({ error: 'Number not bound to this flow' });
