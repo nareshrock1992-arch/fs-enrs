@@ -21,6 +21,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query } from '../db/pool.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 
@@ -330,7 +331,9 @@ export const listMedia = asyncHandler(async (req, res) => {
      ORDER BY m.${sort} ${dir} NULLS LAST
      LIMIT $5 OFFSET $6`,
     [
-      req.user?.tenantId || null,
+      req.user?.role === 'SUPER_ADMIN'
+        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
+        : req.user?.tenantId,
       category,
       search,
       deployed !== null ? deployed === 'true' : null,
@@ -345,8 +348,13 @@ export const listMedia = asyncHandler(async (req, res) => {
        AND ($2::text IS NULL OR category  = $2)
        AND ($3::text IS NULL OR (name ILIKE '%' || $3 || '%' OR description ILIKE '%' || $3 || '%' OR $3 = ANY(tags)))
        AND ($4::boolean IS NULL OR is_deployed = $4)`,
-    [req.user?.tenantId || null, category, search,
-     deployed !== null ? deployed === 'true' : null]
+    [
+      req.user?.role === 'SUPER_ADMIN'
+        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
+        : req.user?.tenantId,
+      category, search,
+      deployed !== null ? deployed === 'true' : null,
+    ]
   );
 
   res.json({ files: rows, total, page, limit });
@@ -557,13 +565,15 @@ export const scanMedia = asyncHandler(async (req, res) => {
 // ── Get single ────────────────────────────────────────────────────────────────
 
 export const getMedia = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
     `SELECT m.*, u.email AS uploaded_by_email, o.name AS organization_name
      FROM media_files m
      LEFT JOIN users u ON u.id = m.uploaded_by_user_id
      LEFT JOIN organizations o ON o.id = m.organization_id
-     WHERE m.id = $1 AND m.deleted_at IS NULL`,
-    [req.params.id]
+     WHERE m.id = $1 AND m.deleted_at IS NULL
+       AND ($2::int IS NULL OR m.tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
   res.json({ file: record });
@@ -573,17 +583,19 @@ export const getMedia = asyncHandler(async (req, res) => {
 
 export const updateMedia = asyncHandler(async (req, res) => {
   const { name, category, description, notes, tags } = req.body;
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
     `UPDATE media_files SET
-       name        = COALESCE($2, name),
-       category    = COALESCE($3, category),
-       description = COALESCE($4, description),
-       notes       = COALESCE($5, notes),
-       tags        = COALESCE($6, tags),
+       name        = COALESCE($3, name),
+       category    = COALESCE($4, category),
+       description = COALESCE($5, description),
+       notes       = COALESCE($6, notes),
+       tags        = COALESCE($7, tags),
        updated_at  = now()
      WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
      RETURNING *`,
-    [req.params.id, name || null, category || null,
+    [req.params.id, tenantId, name || null, category || null,
      description ?? null, notes ?? null, tags ?? null]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
@@ -594,9 +606,11 @@ export const updateMedia = asyncHandler(async (req, res) => {
 // ── Deploy / re-deploy to FreeSWITCH ─────────────────────────────────────────
 
 export const deployMedia = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
-    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
 
@@ -622,9 +636,11 @@ export const streamMedia = asyncHandler(async (req, res) => {
   const mediaId = req.params.id;
   console.log(`[media-stream] request — id=${mediaId}`);
 
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
-    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL`,
-    [mediaId]
+    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [mediaId, tenantId]
   );
   if (!record) {
     console.warn(`[media-stream] id=${mediaId} — DB record not found`);
@@ -691,9 +707,11 @@ export const streamMedia = asyncHandler(async (req, res) => {
 // ── Download ──────────────────────────────────────────────────────────────────
 
 export const downloadMedia = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
-    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
 
@@ -716,9 +734,11 @@ export const downloadMedia = asyncHandler(async (req, res) => {
 // ── Waveform peaks ────────────────────────────────────────────────────────────
 
 export const getWaveform = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
-    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
 
@@ -760,9 +780,13 @@ export const getWaveform = asyncHandler(async (req, res) => {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 export const deleteMedia = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
-    `UPDATE media_files SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id]
+    `UPDATE media_files SET deleted_at = now()
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
+     RETURNING *`,
+    [req.params.id, tenantId]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
 

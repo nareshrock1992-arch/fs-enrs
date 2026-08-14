@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { parse } from 'csv-parse/sync';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 const emptyToNullEmail = z.preprocess(v => (v === '' ? null : v), z.string().email().nullable().optional());
@@ -22,8 +23,23 @@ const ContactSchema = z.object({
   { message: 'At least one of mobile_number or extension_number is required' }
 );
 
+// Verify that an organization belongs to the caller's effective tenant.
+async function verifyOrgTenant(orgId, tenantId) {
+  if (tenantId === null) return; // SUPER_ADMIN — no restriction
+  const { rows: [org] } = await query(
+    `SELECT id FROM organizations WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+    [orgId, tenantId]
+  );
+  if (!org) throw Object.assign(new Error('Organization not found'), { status: 404 });
+}
+
 // GET /api/v1/contacts?organization_id=&search=&page=&limit=
 export const listContacts = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
+  if (req.user.role !== 'SUPER_ADMIN' && !tenantId) {
+    return res.status(403).json({ error: 'Tenant context required' });
+  }
+
   const page   = Math.max(1, Number(req.query.page)  || 1);
   const limit  = Math.min(200, Number(req.query.limit) || 50);
   const offset = (page - 1) * limit;
@@ -36,39 +52,45 @@ export const listContacts = asyncHandler(async (req, res) => {
        l.name AS location_name,
        d.name AS department_name
      FROM emergency_contacts c
-     LEFT JOIN organizations o ON o.id = c.organization_id
-     LEFT JOIN locations     l ON l.id = c.location_id
-     LEFT JOIN departments   d ON d.id = c.department_id
+     JOIN organizations o ON o.id = c.organization_id
+     LEFT JOIN locations  l ON l.id = c.location_id
+     LEFT JOIN departments d ON d.id = c.department_id
      WHERE c.deleted_at IS NULL
-       AND ($1::int IS NULL OR c.organization_id = $1)
-       AND ($2::text IS NULL OR c.first_name ILIKE $2 OR c.last_name ILIKE $2
-            OR c.mobile_number ILIKE $2 OR c.email ILIKE $2)
+       AND ($1::int  IS NULL OR o.tenant_id = $1)
+       AND ($2::int  IS NULL OR c.organization_id = $2)
+       AND ($3::text IS NULL OR c.first_name ILIKE $3 OR c.last_name ILIKE $3
+            OR c.mobile_number ILIKE $3 OR c.email ILIKE $3)
      ORDER BY c.last_name, c.first_name
-     LIMIT $3 OFFSET $4`,
-    [orgId, search, limit, offset]
+     LIMIT $4 OFFSET $5`,
+    [tenantId, orgId, search, limit, offset]
   );
 
   const { rows: cnt } = await query(
-    `SELECT COUNT(*)::INT AS total FROM emergency_contacts
-     WHERE deleted_at IS NULL
-       AND ($1::int IS NULL OR organization_id = $1)
-       AND ($2::text IS NULL OR first_name ILIKE $2 OR last_name ILIKE $2
-            OR mobile_number ILIKE $2 OR email ILIKE $2)`,
-    [orgId, search]
+    `SELECT COUNT(*)::INT AS total
+     FROM emergency_contacts c
+     JOIN organizations o ON o.id = c.organization_id
+     WHERE c.deleted_at IS NULL
+       AND ($1::int  IS NULL OR o.tenant_id = $1)
+       AND ($2::int  IS NULL OR c.organization_id = $2)
+       AND ($3::text IS NULL OR c.first_name ILIKE $3 OR c.last_name ILIKE $3
+            OR c.mobile_number ILIKE $3 OR c.email ILIKE $3)`,
+    [tenantId, orgId, search]
   );
 
   res.json({ contacts: rows, total: cnt[0].total, page, limit });
 });
 
 export const getContact = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `SELECT c.*, o.name AS organization_name, l.name AS location_name, d.name AS department_name
      FROM emergency_contacts c
-     LEFT JOIN organizations o ON o.id = c.organization_id
-     LEFT JOIN locations     l ON l.id = c.location_id
-     LEFT JOIN departments   d ON d.id = c.department_id
-     WHERE c.id = $1 AND c.deleted_at IS NULL`,
-    [req.params.id]
+     JOIN organizations o ON o.id = c.organization_id
+     LEFT JOIN locations  l ON l.id = c.location_id
+     LEFT JOIN departments d ON d.id = c.department_id
+     WHERE c.id = $1 AND c.deleted_at IS NULL
+       AND ($2::int IS NULL OR o.tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Contact not found' });
   res.json(rows[0]);
@@ -76,6 +98,7 @@ export const getContact = asyncHandler(async (req, res) => {
 
 export const createContact = asyncHandler(async (req, res) => {
   const d = ContactSchema.parse(req.body);
+  await verifyOrgTenant(d.organization_id, effectiveTenantId(req));
   const { rows } = await query(
     `INSERT INTO emergency_contacts
        (organization_id, location_id, department_id, first_name, last_name,
@@ -89,20 +112,25 @@ export const createContact = asyncHandler(async (req, res) => {
 
 export const updateContact = asyncHandler(async (req, res) => {
   const d = ContactSchema.partial().parse(req.body);
+  const tenantId = effectiveTenantId(req);
   const { rows } = await query(
-    `UPDATE emergency_contacts SET
-       first_name       = COALESCE($2,  first_name),
-       last_name        = COALESCE($3,  last_name),
-       role             = COALESCE($4,  role),
-       mobile_number    = COALESCE($5,  mobile_number),
-       extension_number = COALESCE($6,  extension_number),
-       email            = COALESCE($7,  email),
-       location_id      = COALESCE($8,  location_id),
-       department_id    = COALESCE($9,  department_id),
-       is_active        = COALESCE($10, is_active),
+    `UPDATE emergency_contacts c SET
+       first_name       = COALESCE($3,  c.first_name),
+       last_name        = COALESCE($4,  c.last_name),
+       role             = COALESCE($5,  c.role),
+       mobile_number    = COALESCE($6,  c.mobile_number),
+       extension_number = COALESCE($7,  c.extension_number),
+       email            = COALESCE($8,  c.email),
+       location_id      = COALESCE($9,  c.location_id),
+       department_id    = COALESCE($10, c.department_id),
+       is_active        = COALESCE($11, c.is_active),
        updated_at       = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.first_name, d.last_name, d.role, d.mobile_number,
+     FROM organizations o
+     WHERE c.id = $1 AND c.deleted_at IS NULL
+       AND o.id = c.organization_id
+       AND ($2::int IS NULL OR o.tenant_id = $2)
+     RETURNING c.*`,
+    [req.params.id, tenantId, d.first_name, d.last_name, d.role, d.mobile_number,
      d.extension_number, d.email, d.location_id, d.department_id, d.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Contact not found' });
@@ -110,20 +138,26 @@ export const updateContact = asyncHandler(async (req, res) => {
 });
 
 export const deleteContact = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rowCount } = await query(
-    `UPDATE emergency_contacts SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `UPDATE emergency_contacts c SET deleted_at = now()
+     FROM organizations o
+     WHERE c.id = $1 AND c.deleted_at IS NULL
+       AND o.id = c.organization_id
+       AND ($2::int IS NULL OR o.tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rowCount) return res.status(404).json({ error: 'Contact not found' });
   res.status(204).end();
 });
 
-// POST /api/v1/contacts/bulk-upload  (multipart/form-data, field: file)
-// CSV columns: first_name, last_name, role, mobile_number, extension_number, email, is_active
+// POST /api/v1/contacts/bulk-upload
 export const bulkUpload = asyncHandler(async (req, res) => {
   const orgId = Number(req.body.organization_id);
   if (!orgId || isNaN(orgId)) return res.status(400).json({ error: 'organization_id required' });
   if (!req.file) return res.status(400).json({ error: 'CSV file required' });
+
+  await verifyOrgTenant(orgId, effectiveTenantId(req));
 
   const records = parse(req.file.buffer, {
     columns: true, skip_empty_lines: true, trim: true,
@@ -154,9 +188,7 @@ export const bulkUpload = asyncHandler(async (req, res) => {
   res.json({ inserted, errors, total: records.length });
 });
 
-// GET /api/v1/contacts/by-pin?pin=XXX  — DEPRECATED (use /internal/ens/lookup?number=)
-// B15 FIX — this endpoint breaks when ens_contacts and ers_responders are
-// separated into their own tables. Kept for backward compat, marked Sunset.
+// GET /api/v1/contacts/by-pin?pin=XXX — DEPRECATED
 export const getByPin = asyncHandler(async (req, res) => {
   res.setHeader('Deprecation', 'true');
   res.setHeader('Sunset', 'Mon, 31 Aug 2026 00:00:00 GMT');
@@ -164,16 +196,19 @@ export const getByPin = asyncHandler(async (req, res) => {
   const pin = req.query.pin;
   if (!pin) return res.status(400).json({ error: 'pin required' });
 
+  const tenantId = effectiveTenantId(req);
+
   const { rows: configs } = await query(
     `SELECT id FROM ens_configurations
-     WHERE pin = $1 AND is_active = true AND deleted_at IS NULL LIMIT 1`,
-    [pin]
+     WHERE pin = $1 AND is_active = true AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
+     LIMIT 1`,
+    [pin, tenantId]
   );
   if (!configs[0]) return res.status(404).json({ error: 'No ENS configuration found for PIN' });
 
   const configId = configs[0].id;
 
-  // Get contacts from groups + directly mapped contacts
   const { rows } = await query(
     `SELECT DISTINCT c.id, c.first_name, c.last_name, c.mobile_number,
        c.extension_number, c.email, c.role

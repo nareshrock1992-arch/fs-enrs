@@ -418,6 +418,15 @@ const BroadcastUsersSchema = z.object({
 export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
   const d = BroadcastUsersSchema.parse(req.body);
 
+  // Verify the target organization belongs to the caller's tenant.
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const { rows: [org] } = await query(
+    `SELECT id FROM organizations WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [d.organization_id, tenantId]
+  );
+  if (!org) return res.status(404).json({ error: 'Organization not found' });
+
   const summary = await withTransaction(async tq => {
     // Group: find-or-create by (organization, name)
     const { rows: [existingGroup] } = await tq(
@@ -498,11 +507,26 @@ export const toggleActive = asyncHandler(async (req, res) => {
 // ── Tier groups endpoint (GET / PUT) ─────────────────────────────────────────
 
 export const getTierGroups = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const { rows: [cfg] } = await query(
+    `SELECT id FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
+  );
+  if (!cfg) return res.status(404).json({ error: 'ERS configuration not found' });
   const tierData = await loadTierData(req.params.id);
   res.json(tierData);
 });
 
 export const updateTierGroups = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const { rows: [cfg] } = await query(
+    `SELECT id FROM ers_configurations WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
+  );
+  if (!cfg) return res.status(404).json({ error: 'ERS configuration not found' });
+
   const {
     primary_group_ids    = [],
     secondary_group_ids  = [],
@@ -554,12 +578,14 @@ export const createIncident = asyncHandler(async (req, res) => {
   } = req.body;
 
   const incident = await withTransaction(async (tq) => {
+    const callerTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
     const { rows: cfgRows } = await tq(
       `SELECT id, tenant_id, max_concurrent_conferences, queue_enabled
        FROM ers_configurations
        WHERE id = $1 AND is_active = true AND deleted_at IS NULL
+         AND ($2::int IS NULL OR tenant_id = $2)
        FOR UPDATE`,
-      [ers_configuration_id]
+      [ers_configuration_id, callerTenantId]
     );
     if (!cfgRows[0]) throw Object.assign(new Error('ERS configuration not found'), { status: 404 });
     const cfg = cfgRows[0];
@@ -614,14 +640,16 @@ export const completeIncident = asyncHandler(async (req, res) => {
   const where   = isUuid ? 'incident_uuid = $1' : 'id = $1';
   const { recording_file } = req.body || {};
 
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const result = await withTransaction(async (tq) => {
     const { rows } = await tq(
       `UPDATE ers_incidents
        SET status = 'COMPLETED', ended_at = now(),
-           recording_path = COALESCE($2, recording_path)
+           recording_path = COALESCE($3, recording_path)
        WHERE ${where} AND deleted_at IS NULL
+         AND ($2::int IS NULL OR tenant_id = $2)
        RETURNING *`,
-      [idParam, recording_file || null]
+      [idParam, tenantId, recording_file || null]
     );
     if (!rows[0]) throw Object.assign(new Error('Incident not found'), { status: 404 });
     const incident = rows[0];
@@ -731,13 +759,15 @@ export const completeIncidentExternal = asyncHandler(async (req, res) => {
 
 export const cancelQueuedIncident = asyncHandler(async (req, res) => {
   const { uuid } = req.params;
+  const cancelTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const result = await withTransaction(async tq => {
     const { rows: [incident] } = await tq(
       `UPDATE ers_incidents
        SET status = 'CANCELLED', cancelled_at = now()
        WHERE incident_uuid = $1 AND status = 'QUEUED' AND deleted_at IS NULL
+         AND ($2::int IS NULL OR tenant_id = $2)
        RETURNING *`,
-      [uuid]
+      [uuid, cancelTenantId]
     );
     if (!incident) throw Object.assign(new Error('Queued incident not found'), { status: 404 });
 
@@ -761,8 +791,24 @@ export const cancelQueuedIncident = asyncHandler(async (req, res) => {
 
 // ── Conference control — live member list ─────────────────────────────────────
 
+// Verify a conference room belongs to an active incident owned by the caller's tenant.
+async function verifyConferenceRoom(room, tenantId) {
+  if (tenantId === null) return; // SUPER_ADMIN
+  const { rows: [inc] } = await query(
+    `SELECT i.id FROM ers_incidents i
+     JOIN ers_configurations e ON e.id = i.ers_configuration_id
+     WHERE i.conference_room = $1 AND i.deleted_at IS NULL
+       AND e.tenant_id = $2
+     LIMIT 1`,
+    [room, tenantId]
+  );
+  if (!inc) throw Object.assign(new Error('Conference room not found or not accessible'), { status: 404 });
+}
+
 export const getConferenceMembers = asyncHandler(async (req, res) => {
   const { room } = req.params;
+  const confTenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  await verifyConferenceRoom(room, confTenantId);
   const members = await confList(room);
   // Enrich with DB responder data where possible
   const numbers = members.map(m => m.callerNum).filter(Boolean);
@@ -803,6 +849,7 @@ export const getConferenceMembers = asyncHandler(async (req, res) => {
 
 export const kickConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
+  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
   const { member_id } = req.body;
   if (!member_id) return res.status(400).json({ error: 'member_id required' });
   await confKick(room, member_id);
@@ -813,6 +860,7 @@ export const kickConferenceMember = asyncHandler(async (req, res) => {
 
 export const muteConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
+  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
   const { member_id, muted } = req.body;
   if (!member_id) return res.status(400).json({ error: 'member_id required' });
   if (muted) {
@@ -827,6 +875,7 @@ export const muteConferenceMember = asyncHandler(async (req, res) => {
 
 export const playConferenceAudio = asyncHandler(async (req, res) => {
   const { room } = req.params;
+  await verifyConferenceRoom(room, req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId);
   const { audio_path } = req.body;
   if (!audio_path) return res.status(400).json({ error: 'audio_path required' });
   await confPlay(room, audio_path);

@@ -13,15 +13,22 @@ export function requireRole(...roles) {
   };
 }
 
-// B-fix: named guards — SUPERVISOR added throughout (B1 / Phase 5)
-export const adminOnly          = requireRole('ADMIN');
-export const adminOrSuper       = requireRole('ADMIN', 'SUPERVISOR');
-export const adminOrOp          = requireRole('ADMIN', 'OPERATOR');
-export const canTriggerEns      = requireRole('ADMIN', 'SUPERVISOR', 'OPERATOR');
-export const canManageIncidents = requireRole('ADMIN', 'SUPERVISOR');
-export const canViewRecordings  = requireRole('ADMIN', 'SUPERVISOR');
-export const canExportReports   = requireRole('ADMIN', 'SUPERVISOR', 'OPERATOR');
-export const anyRole            = requireRole('ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER');
+// SUPER_ADMIN: platform-level administrator; no fixed tenant.
+// ADMIN: tenant-scoped administrator.
+// Note: adminOrSuper means ADMIN-or-SUPERVISOR (not a platform super-admin).
+
+export const superAdminOnly     = requireRole('SUPER_ADMIN');
+// Most management endpoints are accessible to SUPER_ADMIN and tenant ADMIN.
+export const superAdminOrAdmin  = requireRole('SUPER_ADMIN', 'ADMIN');
+// Legacy alias kept for clarity — means ADMIN or SUPERVISOR (not platform super-admin).
+export const adminOnly          = requireRole('SUPER_ADMIN', 'ADMIN');
+export const adminOrSuper       = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR');
+export const adminOrOp          = requireRole('SUPER_ADMIN', 'ADMIN', 'OPERATOR');
+export const canTriggerEns      = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR');
+export const canManageIncidents = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR');
+export const canViewRecordings  = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR');
+export const canExportReports   = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR');
+export const anyRole            = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER');
 
 // Internal key guard — for Lua script endpoints only
 export function requireInternalKey(req, res, next) {

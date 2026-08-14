@@ -79,7 +79,9 @@ export const listRecordings = asyncHandler(async (req, res) => {
      ORDER BY r.started_at DESC
      LIMIT $12 OFFSET $13`,
     [
-      req.user?.tenantId        || null,
+      req.user?.role === 'SUPER_ADMIN'
+        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
+        : req.user?.tenantId,
       status                    || null,
       conference_room           || null,
       incident_uuid             || null,
@@ -110,7 +112,10 @@ export const listRecordings = asyncHandler(async (req, res) => {
        AND ($10::timestamptz IS NULL OR r.started_at <= $10)
        AND ($11::text IS NULL OR r.recording_type = $11)`,
     [
-      req.user?.tenantId || null, status || null,
+      req.user?.role === 'SUPER_ADMIN'
+        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
+        : req.user?.tenantId,
+      status || null,
       conference_room || null, incident_uuid || null,
       ers_config_id || null, organization_id || null,
       tag || null, search || null,
@@ -125,6 +130,7 @@ export const listRecordings = asyncHandler(async (req, res) => {
 // ── Get single with full module context ───────────────────────────────────────
 
 export const getRecording = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
     `SELECT
        r.*,
@@ -137,8 +143,9 @@ export const getRecording = asyncHandler(async (req, res) => {
      LEFT JOIN ers_incidents      i ON i.incident_uuid = r.incident_uuid
      LEFT JOIN ers_configurations e ON e.id = r.ers_configuration_id
      LEFT JOIN organizations      o ON o.id = e.organization_id
-     WHERE r.id = $1 AND r.deleted_at IS NULL`,
-    [req.params.id]
+     WHERE r.id = $1 AND r.deleted_at IS NULL
+       AND ($2::int IS NULL OR r.tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Recording not found' });
 
@@ -181,9 +188,11 @@ async function resolveFile(rec) {
 // ── Stream (range-request) ────────────────────────────────────────────────────
 
 export const streamRecording = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
-    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Not found' });
 
@@ -221,9 +230,11 @@ export const streamRecording = asyncHandler(async (req, res) => {
 // ── Download ──────────────────────────────────────────────────────────────────
 
 export const downloadRecording = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
-    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Not found' });
 
@@ -239,9 +250,11 @@ export const downloadRecording = asyncHandler(async (req, res) => {
 // ── Waveform peaks ────────────────────────────────────────────────────────────
 
 export const getRecordingWaveform = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
-    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Not found' });
 
@@ -269,13 +282,16 @@ export const getRecordingWaveform = asyncHandler(async (req, res) => {
 
 export const updateRecording = asyncHandler(async (req, res) => {
   const { notes, tags } = req.body;
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
     `UPDATE recordings
-     SET notes = COALESCE($2, notes),
-         tags  = COALESCE($3, tags),
+     SET notes = COALESCE($3, notes),
+         tags  = COALESCE($4, tags),
          updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, notes ?? null, tags ?? null]
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
+     RETURNING *`,
+    [req.params.id, tenantId, notes ?? null, tags ?? null]
   );
   if (!rec) return res.status(404).json({ error: 'Not found' });
   res.json({ recording: rec });
@@ -284,11 +300,14 @@ export const updateRecording = asyncHandler(async (req, res) => {
 // ── Archive ───────────────────────────────────────────────────────────────────
 
 export const archiveRecording = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
     `UPDATE recordings
      SET status = 'ARCHIVED', archived_at = now(), updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL AND status != 'ARCHIVED' RETURNING *`,
-    [req.params.id]
+     WHERE id = $1 AND deleted_at IS NULL AND status != 'ARCHIVED'
+       AND ($2::int IS NULL OR tenant_id = $2)
+     RETURNING *`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Not found or already archived' });
   res.json({ recording: rec });
@@ -297,10 +316,13 @@ export const archiveRecording = asyncHandler(async (req, res) => {
 // ── Delete (soft) ─────────────────────────────────────────────────────────────
 
 export const deleteRecording = asyncHandler(async (req, res) => {
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
   const { rows: [rec] } = await query(
     `UPDATE recordings SET deleted_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id]
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
+     RETURNING *`,
+    [req.params.id, tenantId]
   );
   if (!rec) return res.status(404).json({ error: 'Not found' });
   res.status(204).end();

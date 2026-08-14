@@ -53,9 +53,17 @@ export const api = {
   dashActive:  () => request('GET', '/dashboard/active'),
   dashChart:   (p) => request('GET', `/dashboard/chart?period=${p || 'week'}`),
 
+  // Tenants (SUPER_ADMIN only)
+  tenants: {
+    list:   (q)      => request('GET',   `/tenants?${new URLSearchParams({ limit: 1000, ...(q || {}) })}`),
+    get:    (id)     => request('GET',   `/tenants/${id}`),
+    create: (d)      => request('POST',  '/tenants', d),
+    update: (id, d)  => request('PATCH', `/tenants/${id}`, d),
+  },
+
   // Users
   users: {
-    list:   ()       => request('GET',    '/users'),
+    list:   (q)      => request('GET',    `/users?${new URLSearchParams({ ...(q || {}) })}`),
     get:    (id)     => request('GET',    `/users/${id}`),
     create: (d)      => request('POST',   '/users', d),
     update: (id, d)  => request('PUT',    `/users/${id}`, d),

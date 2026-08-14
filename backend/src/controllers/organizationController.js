@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { query } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { effectiveTenantId } from '../middleware/tenantScope.js';
 
-// Coerce empty string → null for optional string fields so '' doesn't fail .email() etc.
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 const emptyToNullEmail = z.preprocess(v => (v === '' ? null : v), z.string().email().nullable().optional());
 
@@ -14,11 +14,18 @@ const OrgSchema = z.object({
   phone:       emptyToNull,
   email:       emptyToNullEmail,
   is_active:   z.boolean().default(true),
+  // Only trusted when caller is SUPER_ADMIN; otherwise derived from JWT.
   tenant_id:   z.number().int().positive().optional(),
 });
 
 // ── Organizations ────────────────────────────────────────────
+
 export const listOrganizations = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
+  if (req.user.role !== 'SUPER_ADMIN' && !tenantId) {
+    return res.status(403).json({ error: 'Tenant context required' });
+  }
+
   const page  = Math.max(1, Number(req.query.page)  || 1);
   const limit = Math.min(100, Number(req.query.limit) || 20);
   const offset = (page - 1) * limit;
@@ -26,30 +33,38 @@ export const listOrganizations = asyncHandler(async (req, res) => {
 
   const { rows } = await query(
     `SELECT o.id, o.tenant_id, o.name, o.code, o.description, o.address, o.phone, o.email,
-            o.is_active, o.created_at, o.updated_at, o.deleted_at,
+            o.is_active, o.is_system, o.created_at, o.updated_at,
             t.name AS tenant_name,
        (SELECT COUNT(*) FROM emergency_contacts c WHERE c.organization_id = o.id AND c.deleted_at IS NULL) AS contact_count
      FROM organizations o
      LEFT JOIN tenants t ON t.id = o.tenant_id
      WHERE o.deleted_at IS NULL
-       AND ($1::text IS NULL OR o.name ILIKE $1 OR o.code ILIKE $1)
+       AND ($1::int  IS NULL OR o.tenant_id = $1)
+       AND ($2::text IS NULL OR o.name ILIKE $2 OR o.code ILIKE $2)
      ORDER BY o.name ASC
-     LIMIT $2 OFFSET $3`,
-    [search, limit, offset]
+     LIMIT $3 OFFSET $4`,
+    [tenantId, search, limit, offset]
   );
-  const total = rows.length > 0
-    ? (await query(`SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL ${search ? 'AND (name ILIKE $1 OR code ILIKE $1)' : ''}`, search ? [search] : [])).rows[0].count
-    : 0;
+  const { rows: cntRows } = await query(
+    `SELECT COUNT(*)::INT AS total FROM organizations
+     WHERE deleted_at IS NULL
+       AND ($1::int  IS NULL OR tenant_id = $1)
+       AND ($2::text IS NULL OR name ILIKE $2 OR code ILIKE $2)`,
+    [tenantId, search]
+  );
 
-  res.json({ organizations: rows, total: Number(total), page, limit });
+  res.json({ organizations: rows, total: cntRows[0].total, page, limit });
 });
 
 export const getOrganization = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `SELECT id, tenant_id, name, code, description, address, phone, email,
-            is_active, created_at, updated_at, deleted_at
-     FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+            is_active, is_system, created_at, updated_at
+     FROM organizations
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Organization not found' });
   res.json(rows[0]);
@@ -57,10 +72,13 @@ export const getOrganization = asyncHandler(async (req, res) => {
 
 export const createOrganization = asyncHandler(async (req, res) => {
   const data = OrgSchema.parse(req.body);
-  // tenant_id always comes from the authenticated user — the UI never sends it,
-  // and trusting the body would allow NULL-tenant orgs whose services become
-  // invisible to every tenant-scoped query.
-  const tenantId = req.user.tenantId ?? data.tenant_id ?? null;
+  let tenantId;
+  if (req.user.role === 'SUPER_ADMIN') {
+    tenantId = data.tenant_id || null;
+  } else {
+    tenantId = req.user.tenantId;
+    if (!tenantId) return res.status(403).json({ error: 'Tenant context required' });
+  }
   const { rows } = await query(
     `INSERT INTO organizations (name, code, description, address, phone, email, is_active, tenant_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -71,34 +89,40 @@ export const createOrganization = asyncHandler(async (req, res) => {
 
 export const updateOrganization = asyncHandler(async (req, res) => {
   const data = OrgSchema.partial().parse(req.body);
+  const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `UPDATE organizations SET
-       name        = COALESCE($2, name),
-       code        = COALESCE($3, code),
-       description = COALESCE($4, description),
-       address     = COALESCE($5, address),
-       phone       = COALESCE($6, phone),
-       email       = COALESCE($7, email),
-       is_active   = COALESCE($8, is_active),
+       name        = COALESCE($3, name),
+       code        = COALESCE($4, code),
+       description = COALESCE($5, description),
+       address     = COALESCE($6, address),
+       phone       = COALESCE($7, phone),
+       email       = COALESCE($8, email),
+       is_active   = COALESCE($9, is_active),
        updated_at  = now()
      WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)
      RETURNING *`,
-    [req.params.id, data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active]
+    [req.params.id, tenantId, data.name, data.code, data.description, data.address, data.phone, data.email, data.is_active]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Organization not found' });
   res.json(rows[0]);
 });
 
 export const deleteOrganization = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const { rowCount } = await query(
-    `UPDATE organizations SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`,
-    [req.params.id]
+    `UPDATE organizations SET deleted_at = now()
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
   );
   if (!rowCount) return res.status(404).json({ error: 'Organization not found' });
   res.status(204).end();
 });
 
 // ── Locations ────────────────────────────────────────────────
+
 const LocationSchema = z.object({
   organization_id: z.number().int().positive(),
   name:       z.string().min(1).max(128),
@@ -109,19 +133,34 @@ const LocationSchema = z.object({
   is_active:  z.boolean().default(true),
 });
 
+// Verify an organization belongs to the caller's effective tenant.
+async function verifyOrgTenant(orgId, tenantId) {
+  if (tenantId === null) return; // SUPER_ADMIN — no restriction
+  const { rows: [org] } = await query(
+    `SELECT id FROM organizations WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+    [orgId, tenantId]
+  );
+  if (!org) throw Object.assign(new Error('Organization not found'), { status: 404 });
+}
+
 export const listLocations = asyncHandler(async (req, res) => {
-  const orgId = req.query.organization_id;
+  const tenantId = effectiveTenantId(req);
+  const orgId = req.query.organization_id || null;
   const { rows } = await query(
-    `SELECT * FROM locations
-     WHERE deleted_at IS NULL ${orgId ? 'AND organization_id = $1' : ''}
-     ORDER BY name ASC`,
-    orgId ? [orgId] : []
+    `SELECT l.* FROM locations l
+     JOIN organizations o ON o.id = l.organization_id
+     WHERE l.deleted_at IS NULL
+       AND ($1::int IS NULL OR o.tenant_id = $1)
+       AND ($2::int IS NULL OR l.organization_id = $2)
+     ORDER BY l.name ASC`,
+    [tenantId, orgId]
   );
   res.json({ locations: rows });
 });
 
 export const createLocation = asyncHandler(async (req, res) => {
   const d = LocationSchema.parse(req.body);
+  await verifyOrgTenant(d.organization_id, effectiveTenantId(req));
   const { rows } = await query(
     `INSERT INTO locations (organization_id, name, address, building, floor, room, is_active)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -131,29 +170,44 @@ export const createLocation = asyncHandler(async (req, res) => {
 });
 
 export const updateLocation = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const d = LocationSchema.partial().parse(req.body);
   const { rows } = await query(
-    `UPDATE locations SET
-       name      = COALESCE($2, name),
-       address   = COALESCE($3, address),
-       building  = COALESCE($4, building),
-       floor     = COALESCE($5, floor),
-       room      = COALESCE($6, room),
-       is_active = COALESCE($7, is_active),
+    `UPDATE locations l SET
+       name      = COALESCE($2, l.name),
+       address   = COALESCE($3, l.address),
+       building  = COALESCE($4, l.building),
+       floor     = COALESCE($5, l.floor),
+       room      = COALESCE($6, l.room),
+       is_active = COALESCE($7, l.is_active),
        updated_at = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.address, d.building, d.floor, d.room, d.is_active]
+     FROM organizations o
+     WHERE l.id = $1 AND l.deleted_at IS NULL
+       AND o.id = l.organization_id
+       AND ($8::int IS NULL OR o.tenant_id = $8)
+     RETURNING l.*`,
+    [req.params.id, d.name, d.address, d.building, d.floor, d.room, d.is_active, tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Location not found' });
   res.json(rows[0]);
 });
 
 export const deleteLocation = asyncHandler(async (req, res) => {
-  await query(`UPDATE locations SET deleted_at = now() WHERE id = $1`, [req.params.id]);
+  const tenantId = effectiveTenantId(req);
+  const { rowCount } = await query(
+    `UPDATE locations l SET deleted_at = now()
+     FROM organizations o
+     WHERE l.id = $1 AND l.deleted_at IS NULL
+       AND o.id = l.organization_id
+       AND ($2::int IS NULL OR o.tenant_id = $2)`,
+    [req.params.id, tenantId]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'Location not found' });
   res.status(204).end();
 });
 
 // ── Departments ──────────────────────────────────────────────
+
 const DeptSchema = z.object({
   organization_id: z.number().int().positive(),
   location_id:     z.number().int().positive().optional().nullable(),
@@ -165,19 +219,24 @@ const DeptSchema = z.object({
 });
 
 export const listDepartments = asyncHandler(async (req, res) => {
-  const orgId = req.query.organization_id;
+  const tenantId = effectiveTenantId(req);
+  const orgId = req.query.organization_id || null;
   const { rows } = await query(
     `SELECT d.*, l.name AS location_name FROM departments d
      LEFT JOIN locations l ON l.id = d.location_id
-     WHERE d.deleted_at IS NULL ${orgId ? 'AND d.organization_id = $1' : ''}
+     JOIN organizations o ON o.id = d.organization_id
+     WHERE d.deleted_at IS NULL
+       AND ($1::int IS NULL OR o.tenant_id = $1)
+       AND ($2::int IS NULL OR d.organization_id = $2)
      ORDER BY d.name ASC`,
-    orgId ? [orgId] : []
+    [tenantId, orgId]
   );
   res.json({ departments: rows });
 });
 
 export const createDepartment = asyncHandler(async (req, res) => {
   const d = DeptSchema.parse(req.body);
+  await verifyOrgTenant(d.organization_id, effectiveTenantId(req));
   const { rows } = await query(
     `INSERT INTO departments (organization_id, location_id, name, extension, type, notes, is_active)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -187,24 +246,38 @@ export const createDepartment = asyncHandler(async (req, res) => {
 });
 
 export const updateDepartment = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
   const d = DeptSchema.partial().parse(req.body);
   const { rows } = await query(
-    `UPDATE departments SET
-       name        = COALESCE($2, name),
-       location_id = COALESCE($3, location_id),
-       extension   = COALESCE($4, extension),
-       type        = COALESCE($5, type),
-       notes       = COALESCE($6, notes),
-       is_active   = COALESCE($7, is_active),
+    `UPDATE departments dep SET
+       name        = COALESCE($2, dep.name),
+       location_id = COALESCE($3, dep.location_id),
+       extension   = COALESCE($4, dep.extension),
+       type        = COALESCE($5, dep.type),
+       notes       = COALESCE($6, dep.notes),
+       is_active   = COALESCE($7, dep.is_active),
        updated_at  = now()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
-    [req.params.id, d.name, d.location_id, d.extension, d.type, d.notes, d.is_active]
+     FROM organizations o
+     WHERE dep.id = $1 AND dep.deleted_at IS NULL
+       AND o.id = dep.organization_id
+       AND ($8::int IS NULL OR o.tenant_id = $8)
+     RETURNING dep.*`,
+    [req.params.id, d.name, d.location_id, d.extension, d.type, d.notes, d.is_active, tenantId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Department not found' });
   res.json(rows[0]);
 });
 
 export const deleteDepartment = asyncHandler(async (req, res) => {
-  await query(`UPDATE departments SET deleted_at = now() WHERE id = $1`, [req.params.id]);
+  const tenantId = effectiveTenantId(req);
+  const { rowCount } = await query(
+    `UPDATE departments dep SET deleted_at = now()
+     FROM organizations o
+     WHERE dep.id = $1 AND dep.deleted_at IS NULL
+       AND o.id = dep.organization_id
+       AND ($2::int IS NULL OR o.tenant_id = $2)`,
+    [req.params.id, tenantId]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'Department not found' });
   res.status(204).end();
 });

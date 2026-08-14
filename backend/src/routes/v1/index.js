@@ -22,6 +22,7 @@ import monitoringRoutes   from './monitoring.js';
 import mediaLibraryRoutes from './mediaLibrary.js';
 import recordingRoutes    from './recordings.js';
 import platformConfigRoutes from './platformConfig.js';
+import tenantRoutes         from './tenants.js';
 
 const router = Router();
 
@@ -49,5 +50,6 @@ router.use('/monitoring',    monitoringRoutes);
 router.use('/media-library', mediaLibraryRoutes);
 router.use('/recordings',    recordingRoutes);
 router.use('/platform/config', platformConfigRoutes);
+router.use('/tenants',         tenantRoutes);
 
 export default router;

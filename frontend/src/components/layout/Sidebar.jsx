@@ -51,6 +51,7 @@ const NAV = [
 
   // Admin-only items
   { label: 'User Management', icon: Users, to: '/users', adminOnly: true },
+  { label: 'Tenant Management', icon: Building2, to: '/tenants', superAdminOnly: true },
   {
     label: 'Settings', icon: Settings, adminOnly: true, children: [
       { label: 'General',            to: '/settings' },
@@ -112,7 +113,11 @@ function NavItem({ item, depth = 0 }) {
 export default function Sidebar({ collapsed, onToggle }) {
   const user = useAuthStore(s => s.user);
 
-  const visible = NAV.filter(n => !n.adminOnly || user?.role === 'ADMIN');
+  const visible = NAV.filter(n => {
+    if (n.superAdminOnly) return user?.role === 'SUPER_ADMIN';
+    if (n.adminOnly) return user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+    return true;
+  });
 
   return (
     <aside className={`

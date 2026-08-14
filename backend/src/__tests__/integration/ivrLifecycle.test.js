@@ -111,7 +111,7 @@ afterAll(async () => {
 // ── Test 1: Create flow — tenant_id set correctly ─────────────────────────────
 
 describe('LC-T01: Create flow stamps correct tenant_id', () => {
-  it('flow is created with the admin's tenant_id', async () => {
+  it("flow is created with the admin's tenant_id", async () => {
     const res = await request(server)
       .post('/api/v1/ivr/flows')
       .set('Authorization', `Bearer ${adminA}`)

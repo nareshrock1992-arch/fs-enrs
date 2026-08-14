@@ -42,6 +42,7 @@ import DeploymentDashboard from './pages/deployment/DeploymentDashboard.jsx';
 import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
 import CampaignDashboard   from './pages/ens/CampaignDashboard.jsx';
 import ErrorBoundary        from './components/ui/ErrorBoundary.jsx';
+import TenantList          from './pages/admin/TenantList.jsx';
 
 function RequireAuth({ children }) {
   const token = useAuthStore(s => s.token);
@@ -51,7 +52,14 @@ function RequireAuth({ children }) {
 function RequireAdmin({ children }) {
   const user = useAuthStore(s => s.user);
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== 'ADMIN') return <Navigate to="/" replace />;
+  if (user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') return <Navigate to="/" replace />;
+  return children;
+}
+
+function RequireSuperAdmin({ children }) {
+  const user = useAuthStore(s => s.user);
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'SUPER_ADMIN') return <Navigate to="/" replace />;
   return children;
 }
 
@@ -111,6 +119,7 @@ export default function App() {
 
         {/* Admin-only */}
         <Route path="users"    element={<RequireAdmin><UserList /></RequireAdmin>} />
+        <Route path="tenants"  element={<RequireSuperAdmin><TenantList /></RequireSuperAdmin>} />
         <Route path="settings" element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
         <Route path="settings/gateways" element={<RequireAdmin><TelephonyGateways /></RequireAdmin>} />
 

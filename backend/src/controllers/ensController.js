@@ -343,6 +343,16 @@ export const listNotifications = asyncHandler(async (req, res) => {
 export const createNotification = asyncHandler(async (req, res) => {
   const { ens_configuration_id, recording_reference, triggered_via = 'API' } = req.body;
 
+  // Verify the referenced ENS config belongs to the caller's tenant.
+  const tenantId = req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId;
+  const { rows: [cfg] } = await query(
+    `SELECT id FROM ens_configurations
+     WHERE id = $1 AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [ens_configuration_id, tenantId]
+  );
+  if (!cfg) return res.status(404).json({ error: 'ENS configuration not found' });
+
   const { rows: tgt } = await query(
     `SELECT COUNT(DISTINCT c.id)::INT AS total
      FROM emergency_contacts c

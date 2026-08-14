@@ -58,7 +58,7 @@ export const login = asyncHandler(async (req, res) => {
 
   res.json({
     token: accessToken,
-    user:  { id: user.id, email: user.email, fullName: user.full_name, role: user.role },
+    user:  { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tenantId: user.tenant_id ?? null },
   });
 });
 
