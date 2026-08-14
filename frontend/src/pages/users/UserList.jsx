@@ -61,7 +61,7 @@ export default function UserList() {
       const d = { ...form };
       if (!d.password) delete d.password;
       if (!isSuperAdmin) delete d.tenant_id;
-      if (d.tenant_id === '') d.tenant_id = null;
+      if (d.tenant_id === '' || d.tenant_id == null) delete d.tenant_id;
 
       if (modal === 'create') {
         await api.users.create(d);
@@ -70,7 +70,14 @@ export default function UserList() {
       }
       setModal(null);
       load();
-    } catch (e) { setError(e.message); } finally { setSaving(false); }
+    } catch (e) {
+      const issues = e.data?.issues;
+      if (issues?.length) {
+        setError(issues.map(i => (i.path ? `${i.path}: ` : '') + i.message).join(' · '));
+      } else {
+        setError(e.message);
+      }
+    } finally { setSaving(false); }
   }
 
   async function handleDelete(u) {

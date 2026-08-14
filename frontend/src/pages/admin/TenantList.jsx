@@ -3,12 +3,19 @@ import { api } from '../../api/client.js';
 
 const EMPTY = { name: '', code: '', is_active: true };
 
+function formatApiError(e) {
+  const issues = e.data?.issues;
+  if (issues?.length) return issues.map(i => (i.path ? `${i.path}: ` : '') + i.message).join(' · ');
+  return e.message || 'An error occurred';
+}
+
 export default function TenantList() {
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [modal, setModal]     = useState(null); // null | { mode: 'create'|'edit', data }
   const [saving, setSaving]   = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   async function load() {
     try {
@@ -25,7 +32,7 @@ export default function TenantList() {
   useEffect(() => { load(); }, []);
 
   async function save(form) {
-    setSaving(true);
+    setSaving(true); setSaveError('');
     try {
       if (modal.mode === 'create') {
         await api.tenants.create(form);
@@ -35,7 +42,7 @@ export default function TenantList() {
       setModal(null);
       await load();
     } catch (e) {
-      alert(e.message);
+      setSaveError(formatApiError(e));
     } finally {
       setSaving(false);
     }
@@ -46,7 +53,7 @@ export default function TenantList() {
       await api.tenants.update(tenant.id, { is_active: !tenant.is_active });
       await load();
     } catch (e) {
-      alert(e.message);
+      setError(formatApiError(e));
     }
   }
 
@@ -117,15 +124,16 @@ export default function TenantList() {
           mode={modal.mode}
           initial={modal.data}
           onSave={save}
-          onClose={() => setModal(null)}
+          onClose={() => { setModal(null); setSaveError(''); }}
           saving={saving}
+          error={saveError}
         />
       )}
     </div>
   );
 }
 
-function TenantModal({ mode, initial, onSave, onClose, saving }) {
+function TenantModal({ mode, initial, onSave, onClose, saving, error }) {
   const [form, setForm] = useState({ ...initial });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -151,7 +159,8 @@ function TenantModal({ mode, initial, onSave, onClose, saving }) {
           )}
         </div>
 
-        <div className="flex justify-end gap-3 mt-6">
+        {error && <p className="text-sm text-red-500 mt-3">{error}</p>}
+        <div className="flex justify-end gap-3 mt-4">
           <button onClick={onClose} className="btn-secondary px-4 py-2 text-sm" disabled={saving}>Cancel</button>
           <button onClick={() => onSave(form)} className="btn-primary px-4 py-2 text-sm" disabled={saving}>
             {saving ? 'Saving…' : 'Save'}

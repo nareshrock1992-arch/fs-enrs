@@ -21,7 +21,7 @@ const UserSchema = z.object({
     message: 'Must contain uppercase, lowercase, digit, and special character',
   }).optional(),
   is_active: z.boolean().default(true),
-  tenant_id: z.number().int().positive().optional(),
+  tenant_id: z.coerce.number().int().positive().optional(),
 });
 
 // Derive the target tenant for the current request.
@@ -105,9 +105,15 @@ router.post('/', asyncHandler(async (req, res) => {
 
   let tenantId;
   if (req.user.role === 'SUPER_ADMIN') {
-    if (!d.tenant_id) return res.status(400).json({ error: 'tenant_id is required when creating a user as SUPER_ADMIN' });
-    await validateTargetTenant(query, d.tenant_id);
-    tenantId = d.tenant_id;
+    if (d.role === 'SUPER_ADMIN') {
+      // Platform-level accounts have no tenant; tenant_id must be absent.
+      if (d.tenant_id) return res.status(400).json({ error: 'SUPER_ADMIN accounts must not have a tenant_id' });
+      tenantId = null;
+    } else {
+      if (!d.tenant_id) return res.status(400).json({ error: 'tenant_id is required when creating a tenant user' });
+      await validateTargetTenant(query, d.tenant_id);
+      tenantId = d.tenant_id;
+    }
   } else {
     // ADMIN: always scoped to own tenant; body tenant_id is ignored.
     if (!req.user.tenantId) return res.status(403).json({ error: 'Tenant context required' });
@@ -147,6 +153,9 @@ router.put('/:id', asyncHandler(async (req, res) => {
   let hash = null;
   if (d.password) hash = await bcrypt.hash(d.password, 12);
 
+  // Promoting to SUPER_ADMIN must clear tenant_id — platform accounts have no tenant.
+  const promotingToSuperAdmin = d.role === 'SUPER_ADMIN';
+
   const { rows } = await query(
     `UPDATE users SET
        email         = COALESCE($3, email),
@@ -154,11 +163,12 @@ router.put('/:id', asyncHandler(async (req, res) => {
        role          = COALESCE($5, role),
        is_active     = COALESCE($6, is_active),
        password_hash = COALESCE($7, password_hash),
+       tenant_id     = CASE WHEN $8 THEN NULL ELSE tenant_id END,
        updated_at    = now()
      WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)
      RETURNING id, email, full_name, role, is_active, tenant_id`,
-    [req.params.id, tenantId, d.email?.toLowerCase(), d.full_name, d.role, d.is_active, hash]
+    [req.params.id, tenantId, d.email?.toLowerCase(), d.full_name, d.role, d.is_active, hash, promotingToSuperAdmin]
   );
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
   res.json(rows[0]);

@@ -36,6 +36,16 @@ export const login = asyncHandler(async (req, res) => {
   if (!user || !user.is_active)
     return res.status(401).json({ error: 'Invalid email or password' });
 
+  // Tenant-scoped users cannot authenticate if their tenant is deactivated or deleted.
+  // SUPER_ADMIN has tenant_id = NULL and is exempt from this check.
+  if (user.tenant_id) {
+    const { rows: [tenant] } = await query(
+      `SELECT id FROM tenants WHERE id = $1 AND is_active = true AND deleted_at IS NULL`,
+      [user.tenant_id]
+    );
+    if (!tenant) return res.status(401).json({ error: 'Your account is not available' });
+  }
+
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
 
@@ -82,6 +92,14 @@ export const refresh = asyncHandler(async (req, res) => {
   const user = rows[0];
   if (!user || !user.is_active) return res.status(401).json({ error: 'User not found' });
 
+  if (user.tenant_id) {
+    const { rows: [tenant] } = await query(
+      `SELECT id FROM tenants WHERE id = $1 AND is_active = true AND deleted_at IS NULL`,
+      [user.tenant_id]
+    );
+    if (!tenant) return res.status(401).json({ error: 'Your account is not available' });
+  }
+
   const valid = await bcrypt.compare(refreshToken, user.refresh_token_hash || '');
   if (!valid) return res.status(401).json({ error: 'Refresh token mismatch' });
 
@@ -102,7 +120,7 @@ export const logout = asyncHandler(async (req, res) => {
 export const me = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT id, email, full_name, role, tenant_id, last_login_at, created_at
-     FROM users WHERE id = $1`,
+     FROM users WHERE id = $1 AND deleted_at IS NULL`,
     [req.user.id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
