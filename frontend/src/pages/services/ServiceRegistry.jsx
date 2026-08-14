@@ -6,6 +6,7 @@ import {
   Plus, Pencil, Trash2,
 } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 
@@ -386,6 +387,8 @@ function ServiceModal({ editRow, orgs, ensList, ersList, flowList, onClose, onSa
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ServiceRegistry() {
+  const activeTenantId = useAuthStore(s => s.activeTenantId);
+
   const [services, setServices]   = useState([]);
   const [orgs,     setOrgs]       = useState([]);
   const [ensList,  setEnsList]    = useState([]);
@@ -414,9 +417,16 @@ export default function ServiceRegistry() {
       setErsList(ers.configurations || []);
       setFlowList(ivr.flows || []);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
-  }, []);
+  }, [activeTenantId]);
 
-  useEffect(() => { load(); }, [load]);
+  // Reload all data (services + dropdown lists) when active tenant changes.
+  // Also close any open edit/create modal so stale form state from the
+  // previous tenant cannot be submitted against the new tenant.
+  useEffect(() => {
+    setEditRow(null);
+    setTrigger(null);
+    load();
+  }, [load]);
 
   const visible = filter === 'ALL' ? services : services.filter(s => s.service_type === filter);
 
