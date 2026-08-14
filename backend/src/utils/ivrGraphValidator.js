@@ -282,20 +282,20 @@ export async function validateGraph(graph, tenantId) {
   }
 
   if (audioFileIds.length > 0) {
-    // media_files uses organization_id (not tenant_id) — join to resolve tenant
+    // media_files.tenant_id (added in migration 007) is the authoritative ownership
+    // column.  Files with tenant_id IS NULL are shared/system audio accessible to
+    // all tenants.  Files with a non-matching tenant_id fail the check.
     checks.push(
       query(
-        `SELECT mf.id
-         FROM media_files mf
-         LEFT JOIN organizations o ON o.id = mf.organization_id
-         WHERE mf.id = ANY($1)
-           AND mf.deleted_at IS NULL
-           AND (o.tenant_id = $2 OR mf.organization_id IS NULL)`,
+        `SELECT id FROM media_files
+         WHERE id = ANY($1)
+           AND deleted_at IS NULL
+           AND (tenant_id = $2 OR tenant_id IS NULL)`,
         [audioFileIds, tenantId]
       ).then(r => {
         const found = new Set(r.rows.map(x => x.id));
         for (const id of audioFileIds) {
-          if (!found.has(id)) errors.push(`audio_file_id ${id} not found`);
+          if (!found.has(id)) errors.push(`audio_file_id ${id} not found or belongs to a different tenant`);
         }
       }).catch(() => {
         warnings.push('Media file FK check skipped (schema upgrade pending)');

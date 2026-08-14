@@ -136,8 +136,11 @@ async function deployLuaExecutor() {
   const luaPath = fsPathService.getExecutorLuaFile();
   await fs.writeFile(luaPath, luaContent, 'utf8');
 
-  // Ensure readable by freeswitch process
-  await fs.chmod(luaPath, 0o644).catch(() => {});
+  // Readable by owner + group (freeswitch process) only — not world-readable.
+  // 0o640 prevents any shell user who is not in the freeswitch group from reading
+  // the embedded API key.  Requires the freeswitch process to run as a user that
+  // owns or is in the group for this file (the default on Debian FreeSWITCH packages).
+  await fs.chmod(luaPath, 0o640).catch(() => {});
 
   return luaPath;
 }
@@ -202,13 +205,21 @@ async function deployDialplanXml() {
 // ── Main deploy function ──────────────────────────────────────────────────────
 
 export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
+  // Tenant context is mandatory — a NULL tenantId would bypass ownership checks.
+  if (!tenantId) {
+    throw Object.assign(
+      new Error('Tenant context required to deploy. Your account has no tenant assigned.'),
+      { status: 403 }
+    );
+  }
+
   const report = makeReport();
   let versionNumber = null;
   let luaPath       = null;
   let xmlPath       = null;
 
   try {
-    // 1. Fetch the most recently published version
+    // 1. Fetch the most recently published version — scoped to the authenticated tenant.
     const flow = await runStep(report, 'fetch_published_version', async () => {
       const { rows } = await query(
         `SELECT f.id, f.name, f.flow_uuid,
@@ -216,10 +227,10 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
          FROM ivr_flows f
          JOIN ivr_flow_versions v ON v.ivr_flow_id = f.id
          WHERE f.flow_uuid = $1
-           AND ($2::int IS NULL OR f.tenant_id = $2)
+           AND f.tenant_id = $2
          ORDER BY v.version_number DESC
          LIMIT 1`,
-        [flowUuid, tenantId || null]
+        [flowUuid, tenantId]
       );
       if (!rows[0]) throw new Error(`No published version found for flow ${flowUuid}`);
       return rows[0];
@@ -444,14 +455,15 @@ export async function getDeploymentHistory(flowUuid, limit = 10) {
 // ── Generate preview (no file write) ─────────────────────────────────────────
 
 export async function previewDeployment(flowUuid, tenantId) {
+  if (!tenantId) return null;
   const { rows: [flow] } = await query(
     `SELECT f.name, f.flow_uuid, v.version_number, v.graph AS published_graph
      FROM ivr_flows f
      JOIN ivr_flow_versions v ON v.ivr_flow_id = f.id
      WHERE f.flow_uuid = $1
-       AND ($2::int IS NULL OR f.tenant_id = $2)
+       AND f.tenant_id = $2
      ORDER BY v.version_number DESC LIMIT 1`,
-    [flowUuid, tenantId || null]
+    [flowUuid, tenantId]
   );
   if (!flow) return null;
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Workflow, Plus, Pencil, Trash2, Search, Phone, LayoutTemplate } from 'lucide-react';
+import { Workflow, Plus, Pencil, Trash2, Search, Phone, LayoutTemplate, ChevronLeft, ChevronRight } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
@@ -20,9 +20,11 @@ export default function IvrList() {
   const [flows,     setFlows]     = useState([]);
   const [total,     setTotal]     = useState(0);
   const [search,    setSearch]    = useState('');
+  const [page,      setPage]      = useState(1);
   const [loading,   setLoading]   = useState(true);
   const [templates, setTemplates] = useState([]);
   const [tplLoading, setTplLoading] = useState(false);
+  const PAGE_SIZE = 20;
   const navigate = useNavigate();
   const user = useAuthStore(s => s.user);
   const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
@@ -30,7 +32,7 @@ export default function IvrList() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.ivr.list({ search: search || undefined });
+      const r = await api.ivr.list({ search: search || undefined, page, limit: PAGE_SIZE });
       setFlows(r.flows || []);
       setTotal(r.total || 0);
     } catch (e) {
@@ -38,9 +40,12 @@ export default function IvrList() {
     } finally {
       setLoading(false);
     }
-  }, [search]);
+  }, [search, page]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Reset to page 1 whenever the search term changes
+  useEffect(() => { setPage(1); }, [search]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -114,33 +119,7 @@ export default function IvrList() {
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       )}
 
-      {!loading && flows.length === 0 && !search && canEdit && templates.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-text-muted text-xs mb-3">
-            <LayoutTemplate size={12} />
-            <span>Start from a template</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {templates.map(tpl => (
-              <button
-                key={tpl.id}
-                disabled={tplLoading}
-                onClick={() => createFromTemplate(tpl)}
-                className="card text-left hover:bg-surface-hover transition-colors p-4 disabled:opacity-50"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <LayoutTemplate size={13} className="text-brand shrink-0" />
-                  <span className="text-xs font-semibold text-text-primary truncate">{tpl.name}</span>
-                </div>
-                <p className="text-[10px] text-text-muted line-clamp-2">{tpl.description}</p>
-                <p className="text-[9px] text-text-muted mt-2">{tpl.node_count} nodes</p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!loading && flows.length === 0 && (search || !canEdit || templates.length === 0) && (
+      {!loading && flows.length === 0 && (
         <div className="card text-center py-12">
           <Workflow size={32} className="mx-auto text-text-muted mb-3" />
           <p className="text-sm text-text-muted">{search ? 'No flows match your search' : 'No IVR flows yet'}</p>
@@ -210,6 +189,60 @@ export default function IvrList() {
           </div>
         ))}
       </div>
+      {/* Pagination */}
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between text-xs text-text-muted pt-1">
+          <span>
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total} flows
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="btn-ghost p-1 disabled:opacity-40"
+              aria-label="Previous page"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="px-2">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
+            <button
+              onClick={() => setPage(p => p + 1)}
+              disabled={page * PAGE_SIZE >= total}
+              className="btn-ghost p-1 disabled:opacity-40"
+              aria-label="Next page"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Templates — always shown for editors as a creation shortcut, never mixed with flows */}
+      {!loading && canEdit && !search && templates.length > 0 && (
+        <div className="mt-6 space-y-2">
+          <div className="flex items-center gap-2 text-text-muted text-xs mb-3">
+            <LayoutTemplate size={12} />
+            <span>Start from a template</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {templates.map(tpl => (
+              <button
+                key={tpl.id}
+                disabled={tplLoading}
+                onClick={() => createFromTemplate(tpl)}
+                className="card text-left hover:bg-surface-hover transition-colors p-4 disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <LayoutTemplate size={13} className="text-brand shrink-0" />
+                  <span className="text-xs font-semibold text-text-primary truncate">{tpl.name}</span>
+                </div>
+                <p className="text-[10px] text-text-muted line-clamp-2">{tpl.description}</p>
+                <p className="text-[9px] text-text-muted mt-2">{tpl.node_count} nodes</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
