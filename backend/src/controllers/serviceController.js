@@ -117,6 +117,22 @@ export const getService = asyncHandler(async (req, res) => {
   res.json(row);
 });
 
+// ── Ownership check helper ────────────────────────────────────────────────────
+// Verifies that a referenced configuration row belongs to the caller's
+// authorized tenant. SUPER_ADMIN in global mode (tenantId = null) bypasses
+// the check — they are operating across all tenants intentionally.
+async function assertConfigOwnership(table, id, tenantId, label) {
+  const { rows: [row] } = await query(
+    `SELECT tenant_id FROM ${table} WHERE id = $1 AND deleted_at IS NULL`,
+    [id]
+  );
+  if (!row) return { notFound: true, label };
+  if (tenantId !== null && row.tenant_id !== tenantId) {
+    return { forbidden: true, label };
+  }
+  return { ok: true };
+}
+
 // ── Create service (emergency number) ────────────────────────────────────────
 
 export const createService = asyncHandler(async (req, res) => {
@@ -129,7 +145,6 @@ export const createService = asyncHandler(async (req, res) => {
   const tenantId = requireTenantForWrite(req);
 
   // If an organization is supplied, it must belong to the authorized tenant.
-  // An ADMIN cannot reference an organization from another tenant.
   if (d.organization_id) {
     const { rows: [org] } = await query(
       `SELECT tenant_id FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
@@ -139,6 +154,25 @@ export const createService = asyncHandler(async (req, res) => {
     if (org.tenant_id !== tenantId) {
       return res.status(403).json({ error: 'Organization does not belong to the authorized tenant' });
     }
+  }
+
+  // Each referenced configuration must belong to the authorized tenant.
+  // This prevents an ADMIN from linking another tenant's ENS/ERS/IVR config,
+  // which would route FreeSWITCH calls through a foreign tenant's configuration.
+  if (d.ens_configuration_id) {
+    const r = await assertConfigOwnership('ens_configurations', d.ens_configuration_id, tenantId, 'ENS configuration');
+    if (r.notFound)  return res.status(404).json({ error: 'ENS configuration not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'ENS configuration does not belong to the authorized tenant' });
+  }
+  if (d.ers_configuration_id) {
+    const r = await assertConfigOwnership('ers_configurations', d.ers_configuration_id, tenantId, 'ERS configuration');
+    if (r.notFound)  return res.status(404).json({ error: 'ERS configuration not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'ERS configuration does not belong to the authorized tenant' });
+  }
+  if (d.ivr_flow_id) {
+    const r = await assertConfigOwnership('ivr_flows', d.ivr_flow_id, tenantId, 'IVR flow');
+    if (r.notFound)  return res.status(404).json({ error: 'IVR flow not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'IVR flow does not belong to the authorized tenant' });
   }
 
   const { rows: [row] } = await query(
@@ -165,9 +199,8 @@ export const updateServiceMeta = asyncHandler(async (req, res) => {
   const d = ServicePatchSchema.parse(req.body);
   const tenantId = effectiveTenantId(req);
 
-  // If organization_id is being updated, verify the new org belongs to the
-  // caller's authorized tenant. tenant_id on the record is never reassigned
-  // by an update — it is immutable after creation.
+  // Validate all FK references against the caller's authorized tenant.
+  // tenant_id on the record is immutable after creation.
   if (d.organization_id != null) {
     const { rows: [org] } = await query(
       `SELECT tenant_id FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
@@ -177,6 +210,21 @@ export const updateServiceMeta = asyncHandler(async (req, res) => {
     if (tenantId !== null && org.tenant_id !== tenantId) {
       return res.status(403).json({ error: 'Organization does not belong to the authorized tenant' });
     }
+  }
+  if (d.ens_configuration_id != null) {
+    const r = await assertConfigOwnership('ens_configurations', d.ens_configuration_id, tenantId, 'ENS configuration');
+    if (r.notFound)  return res.status(404).json({ error: 'ENS configuration not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'ENS configuration does not belong to the authorized tenant' });
+  }
+  if (d.ers_configuration_id != null) {
+    const r = await assertConfigOwnership('ers_configurations', d.ers_configuration_id, tenantId, 'ERS configuration');
+    if (r.notFound)  return res.status(404).json({ error: 'ERS configuration not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'ERS configuration does not belong to the authorized tenant' });
+  }
+  if (d.ivr_flow_id != null) {
+    const r = await assertConfigOwnership('ivr_flows', d.ivr_flow_id, tenantId, 'IVR flow');
+    if (r.notFound)  return res.status(404).json({ error: 'IVR flow not found' });
+    if (r.forbidden) return res.status(403).json({ error: 'IVR flow does not belong to the authorized tenant' });
   }
 
   const { rows: [row] } = await query(
