@@ -177,6 +177,7 @@ export default function IvrBuilder() {
             onDisconnect={graph.disconnect}
             onAddNode={graph.addNode}
             onDuplicateNode={graph.duplicateNode}
+            onSetEntry={graph.setEntry}
             onUndo={graph.undo}
             onRedo={graph.redo}
             savedViewport={graph.viewport}

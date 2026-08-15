@@ -30,7 +30,7 @@ export default function NodePalette({ onAdd }) {
     <div className="flex flex-col h-full">
       <div className="px-4 py-3 border-b border-surface-border">
         <p className="text-xs font-semibold text-text-muted uppercase tracking-wider">Node Types</p>
-        <p className="text-[10px] text-text-muted mt-0.5">Click to add to canvas</p>
+        <p className="text-[10px] text-text-muted mt-0.5">Click or drag to canvas</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
@@ -46,9 +46,14 @@ export default function NodePalette({ onAdd }) {
               {group.types.map(n => (
                 <button
                   key={n.type}
+                  draggable
+                  onDragStart={e => {
+                    e.dataTransfer.setData('application/ivr-node-type', n.type);
+                    e.dataTransfer.effectAllowed = 'copy';
+                  }}
                   onClick={() => onAdd(n.type)}
                   className="w-full text-left px-3 py-2 rounded-lg border transition-all
-                             hover:brightness-110 hover:translate-x-0.5 active:scale-95"
+                             hover:brightness-110 hover:translate-x-0.5 active:scale-95 cursor-grab active:cursor-grabbing"
                   style={{ background: n.bg, borderColor: n.border, color: n.color }}
                 >
                   <div className="flex items-center gap-2">
@@ -67,8 +72,8 @@ export default function NodePalette({ onAdd }) {
 
       <div className="px-4 py-3 border-t border-surface-border">
         <p className="text-[10px] text-text-muted leading-relaxed">
-          <span className="text-brand font-medium">Tip:</span> Drag output dots to connect.
-          Double-click edge to disconnect. Delete key removes selected node.
+          <span className="text-brand font-medium">Tip:</span> Click or drag node types to add.
+          Drag output dots to connect. Double-click edge to disconnect.
         </p>
       </div>
     </div>

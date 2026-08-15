@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Grid } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, Grid, Copy, Star, Trash2 } from 'lucide-react';
 import { useZoomPan } from '../../../hooks/useZoomPan.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortKeysForNode } from './nodePorts.js';
@@ -133,6 +133,7 @@ export default function FlowCanvas({
   onConnect, onDisconnect,
   onAddNode,
   onDuplicateNode,
+  onSetEntry,
   onUndo,
   onRedo,
   savedViewport,
@@ -140,16 +141,18 @@ export default function FlowCanvas({
 }) {
   const canvasRef  = useRef(null);
   const { transform, setTransform, transformRef, cssTransform, onWheel, pan, zoomTo, reset, toCanvas } = useZoomPan();
-  const { byType } = useNodeTypes();
+  const { byType, nodeTypes } = useNodeTypes();
   const portKeysFor = useCallback(
     (node) => getPortKeysForNode(node, byType[node.type]?.ports),
     [byType]
   );
 
-  const [draft,     setDraft]     = useState(null);
-  const [guides,    setGuides]    = useState([]);
-  const [snapGrid,  setSnapGrid]  = useState(false);
-  const [spaceDown, setSpaceDown] = useState(false);
+  const [draft,          setDraft]          = useState(null);
+  const [guides,         setGuides]         = useState([]);
+  const [snapGrid,       setSnapGrid]       = useState(false);
+  const [spaceDown,      setSpaceDown]      = useState(false);
+  const [contextMenu,    setContextMenu]    = useState(null); // { nodeId, x, y } in container coords
+  const [dblClickMenu,   setDblClickMenu]   = useState(null); // { x, y, canvasX, canvasY }
 
   // ── Viewport persistence ──────────────────────────────────────────────────
   // Restore the saved pan+zoom once when the flow first loads (savedViewport
@@ -186,6 +189,26 @@ export default function FlowCanvas({
 
   // Clipboard for copy/paste
   const clipboardRef = useRef(null);
+
+  // Node context menu (right-click)
+  const handleContextMenu = useCallback((nodeId, e) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.min(e.clientX - rect.left, rect.width  - 168);
+    const y = Math.min(e.clientY - rect.top,  rect.height - 120);
+    setContextMenu({ nodeId, x, y });
+  }, []);
+
+  // Palette drag-and-drop onto canvas
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    const nodeType = e.dataTransfer.getData('application/ivr-node-type');
+    if (!nodeType) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const { x, y } = toCanvas(e.clientX, e.clientY, rect);
+    onAddNode(nodeType, x - NODE_WIDTH / 2, y - NODE_HEIGHT / 2);
+  }, [toCanvas, onAddNode]);
 
   // Current dragging node id (for alignment guides)
   const draggingIdRef  = useRef(null);
@@ -283,9 +306,16 @@ export default function FlowCanvas({
     if (e.target === canvasRef.current || e.target.classList.contains('canvas-bg')) {
       const rect = canvasRef.current.getBoundingClientRect();
       const { x, y } = toCanvas(e.clientX, e.clientY, rect);
-      onAddNode('play', x - NODE_WIDTH / 2, y - NODE_HEIGHT / 2);
+      const menuX = Math.min(e.clientX - rect.left, rect.width  - 224);
+      const menuY = Math.min(e.clientY - rect.top,  rect.height - 280);
+      setDblClickMenu({
+        canvasX: x - NODE_WIDTH  / 2,
+        canvasY: y - NODE_HEIGHT / 2,
+        x: menuX,
+        y: menuY,
+      });
     }
-  }, [toCanvas, onAddNode]);
+  }, [toCanvas]);
 
   // Drag start/end callbacks for FlowNode
   const handleNodeDragStart = useCallback((id) => {
@@ -389,6 +419,13 @@ export default function FlowCanvas({
     const onKeyDown = (e) => {
       if (e.key === ' ') setSpaceDown(true);
 
+      // Close floating menus on Escape
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setDblClickMenu(null);
+        return;
+      }
+
       const tag = document.activeElement?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
@@ -491,6 +528,8 @@ export default function FlowCanvas({
       onPointerDown={(e) => { handleCanvasPointerDown(e); handleMiddleDown(e); }}
       onClick={handleCanvasClick}
       onDoubleClick={handleCanvasDblClick}
+      onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+      onDrop={handleDrop}
     >
       {/* Dual dot-grid background */}
       <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
@@ -594,6 +633,7 @@ export default function FlowCanvas({
             onPortDragStart={handlePortDragStart}
             onDragStart={handleNodeDragStart}
             onDragEnd={handleNodeDragEnd}
+            onContextMenu={handleContextMenu}
             onPortClick={(targetId) => {
               if (draft) {
                 onConnect(draft.fromNode, draft.fromPort, targetId);
@@ -657,8 +697,89 @@ export default function FlowCanvas({
       <div className="absolute top-3 right-4 text-[9px] text-text-muted
                       bg-surface-panel/80 border border-surface-border rounded-lg px-2.5 py-1.5 z-10
                       pointer-events-none opacity-50 leading-relaxed">
-        <span>Del · Ctrl+Z/Y · Ctrl+C/V/D · Arrows · G snap · F fit</span>
+        <span>Del · Ctrl+Z/Y · Ctrl+C/V/D · Arrows · G snap · F fit · Right-click node: menu · Dbl-click edge: disconnect</span>
       </div>
+
+      {/* ── Right-click context menu ────────────────────────────────────────── */}
+      {contextMenu && (
+        <>
+          {/* Invisible backdrop — closes menu on any click outside */}
+          <div
+            className="fixed inset-0 z-[199]"
+            onPointerDown={() => setContextMenu(null)}
+          />
+          <div
+            style={{ position: 'absolute', left: contextMenu.x, top: contextMenu.y, zIndex: 200 }}
+            className="bg-surface-panel border border-surface-border rounded-lg shadow-xl py-1 min-w-[156px]"
+            onPointerDown={e => e.stopPropagation()}
+          >
+            {contextMenu.nodeId !== entryNodeId && (
+              <button
+                className="w-full text-left px-3 py-1.5 text-[11px] text-brand
+                           hover:bg-surface-hover flex items-center gap-2 transition-colors"
+                onClick={() => { onSetEntry?.(contextMenu.nodeId); setContextMenu(null); }}
+              >
+                <Star size={10} /> Set as Start Node
+              </button>
+            )}
+            <button
+              className="w-full text-left px-3 py-1.5 text-[11px] text-text-primary
+                         hover:bg-surface-hover flex items-center gap-2 transition-colors"
+              onClick={() => {
+                const src = nodes[contextMenu.nodeId];
+                if (src) onDuplicateNode(src, src.x + 24, src.y + 24);
+                setContextMenu(null);
+              }}
+            >
+              <Copy size={10} /> Duplicate
+            </button>
+            <div className="border-t border-surface-border my-1" />
+            <button
+              className="w-full text-left px-3 py-1.5 text-[11px] text-red-400
+                         hover:bg-red-500/10 flex items-center gap-2 transition-colors"
+              onClick={() => { onDeleteNode(contextMenu.nodeId); setContextMenu(null); }}
+            >
+              <Trash2 size={10} /> Delete
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Double-click node-type picker ───────────────────────────────────── */}
+      {dblClickMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[199]"
+            onPointerDown={() => setDblClickMenu(null)}
+          />
+          <div
+            style={{ position: 'absolute', left: dblClickMenu.x, top: dblClickMenu.y, zIndex: 200 }}
+            className="bg-surface-panel border border-surface-border rounded-lg shadow-xl
+                       p-1.5 w-[210px] max-h-[272px] overflow-y-auto"
+            onPointerDown={e => e.stopPropagation()}
+          >
+            <p className="text-[9px] text-text-muted uppercase tracking-widest px-2 pt-0.5 pb-1.5">
+              Add node at this position
+            </p>
+            {nodeTypes.map(n => (
+              <button
+                key={n.type}
+                className="w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2
+                           hover:bg-surface-hover transition-colors"
+                onClick={() => {
+                  onAddNode(n.type, dblClickMenu.canvasX, dblClickMenu.canvasY);
+                  setDblClickMenu(null);
+                }}
+              >
+                <span className="text-sm leading-none shrink-0">{n.icon}</span>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium text-text-primary truncate">{n.label}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

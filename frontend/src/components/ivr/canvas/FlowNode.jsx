@@ -36,6 +36,7 @@ export default function FlowNode({
   onPortClick,
   onDragStart,
   onDragEnd,
+  onContextMenu,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
@@ -91,6 +92,7 @@ export default function FlowNode({
       }}
       onClick={e => { e.stopPropagation(); }}
       onPointerUp={e => { e.stopPropagation(); onPortClick?.(node.id); }}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(node.id, e); }}
     >
       {isEntry && (
         <div
