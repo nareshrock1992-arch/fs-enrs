@@ -54,7 +54,9 @@ export default function IvrList() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.ivr.list({ search: search || undefined, page, limit: PAGE_SIZE });
+      const params = { page, limit: PAGE_SIZE };
+      if (search) params.search = search;
+      const r = await api.ivr.list(params);
       setFlows(r.flows || []);
       setTotal(r.total || 0);
     } catch (e) {
