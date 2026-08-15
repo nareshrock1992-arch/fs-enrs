@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical } from 'lucide-react';
+import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
 
@@ -24,6 +24,36 @@ export default function BuilderToolbar({
   const [validating,  setValidating]  = useState(false);
   const [lastValidation, setLastValidation] = useState(null);
   const [savingTestFlag, setSavingTestFlag] = useState(false);
+
+  // Rename flow from builder
+  const [showRename,  setShowRename]  = useState(false);
+  const [renameName,  setRenameName]  = useState('');
+  const [renameError, setRenameError] = useState('');
+  const [renaming,    setRenaming]    = useState(false);
+
+  function openRename() {
+    setRenameName(flow?.name || '');
+    setRenameError('');
+    setShowRename(true);
+  }
+
+  async function handleRename(e) {
+    e.preventDefault();
+    const name = renameName.trim();
+    if (!name) { setRenameError('Flow name is required.'); return; }
+    if (name === flow?.name) { setShowRename(false); return; }
+    setRenaming(true);
+    setRenameError('');
+    try {
+      const r = await api.ivr.update(flow.flow_uuid, { name });
+      onFlowChange?.(r.flow);
+      setShowRename(false);
+    } catch (err) {
+      setRenameError(err.message || 'Failed to rename flow.');
+    } finally {
+      setRenaming(false);
+    }
+  }
 
   async function toggleTestFlow() {
     if (!flow?.flow_uuid) return;
@@ -95,14 +125,26 @@ export default function BuilderToolbar({
     <>
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-surface-border
                       bg-surface-panel shrink-0 min-w-0 overflow-x-auto">
-        {/* Flow name */}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-text-primary truncate">
-            {flow?.name || 'IVR Flow'}
-          </p>
-          <p className="text-[10px] text-text-muted">
-            {flow?.organization_name || 'IVR Builder'}
-          </p>
+        {/* Flow name + rename */}
+        <div className="flex items-center gap-1.5 flex-1 min-w-0 group">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-primary truncate">
+              {flow?.name || 'IVR Flow'}
+            </p>
+            <p className="text-[10px] text-text-muted">
+              {flow?.organization_name || 'IVR Builder'}
+            </p>
+          </div>
+          {flow?.flow_uuid && (
+            <button
+              onClick={openRename}
+              title="Rename flow"
+              className="opacity-0 group-hover:opacity-100 focus:opacity-100 btn-ghost p-1
+                         text-text-muted hover:text-brand transition-opacity shrink-0"
+            >
+              <Pencil size={12} />
+            </button>
+          )}
         </div>
 
         {/* Save status */}
@@ -193,6 +235,46 @@ export default function BuilderToolbar({
             <span className="text-[10px] text-yellow-500 shrink-0">+{warnings.length - 1} more</span>
           )}
         </div>
+      )}
+
+      {/* Rename modal */}
+      {showRename && (
+        <Modal title="Rename Flow" onClose={() => setShowRename(false)} size="sm">
+          <form onSubmit={handleRename} className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-text-muted mb-1.5 uppercase tracking-wide">
+                Flow Name
+              </label>
+              <input
+                autoFocus
+                value={renameName}
+                onChange={e => { setRenameName(e.target.value); setRenameError(''); }}
+                maxLength={128}
+                className="w-full bg-surface border border-surface-border rounded-lg px-3 py-2
+                           text-sm text-text-primary focus:outline-none focus:border-brand transition-colors"
+              />
+              {renameError && (
+                <p className="text-xs text-red-400 mt-1.5">{renameError}</p>
+              )}
+            </div>
+            <div className="flex gap-2 justify-end pt-1">
+              <button type="button" onClick={() => setShowRename(false)} className="btn-ghost text-sm px-4 py-2">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={renaming}
+                className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg
+                           bg-brand text-white hover:bg-brand/90 font-medium transition-colors
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {renaming
+                  ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                  : 'Save Name'}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
 
       {/* Publish modal */}
