@@ -325,19 +325,24 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
 
       {/* Actions */}
       <div className="px-4 py-3 border-t border-surface-border space-y-2 shrink-0">
+        {isEntry && (
+          <div
+            title="This node executes first when a call arrives. Select another node to reassign the Start."
+            className="flex items-center justify-center gap-1.5 text-[10px] font-semibold
+                       text-brand bg-brand/10 border border-brand/25 rounded-lg py-1.5 cursor-default select-none"
+          >
+            <Star size={10} fill="currentColor" /> Start node — executes first
+          </div>
+        )}
         {!isEntry && (
           <button
             onClick={() => onSetEntry(node.id)}
+            title="Make this node the first to execute when a call arrives"
             className="w-full flex items-center justify-center gap-1.5 text-xs py-1.5
                        rounded-lg bg-brand/10 text-brand border border-brand/20 hover:bg-brand/20 transition-colors"
           >
             <Star size={11} /> Set as Entry Node
           </button>
-        )}
-        {isEntry && (
-          <div className="flex items-center justify-center gap-1.5 text-[10px] text-brand opacity-70">
-            <Star size={10} /> Entry node
-          </div>
         )}
         <button
           onClick={() => { if (window.confirm('Delete this node?')) onDelete(node.id); }}

@@ -1022,3 +1022,90 @@ A successful implementation is measured by:
 > Never introduce new infrastructure because it is cleaner or more elegant.
 > Only introduce it when there is a demonstrated technical limitation that cannot be solved
 > by extending the existing generic framework.
+
+---
+
+## Multi-Repository Governance
+
+This project consists of three repositories with strictly defined, non-overlapping responsibilities.
+
+### Repository Roles
+
+| Repository | Role | Authoritative For |
+|---|---|---|
+| **fs-enrs** | ENRS application development | All ENRS backend, frontend, migrations, tests, business logic, APIs, auth, UI |
+| **fs-cc** | Contact Center development | All CC backend, frontend, migrations, tests, business logic, APIs, auth, UI |
+| **fs-cp** | Integration + deployment ONLY | Docker Compose, Nginx, production Dockerfiles, deployment scripts, integration environment config |
+
+### Direction of Flow — Non-Negotiable
+
+```
+fs-enrs  ────────────────► fs-cp/fs-enrs   (development → integration)
+fs-cc    ────────────────► fs-cp/fs-cc     (development → integration)
+```
+
+**This direction is never reversed.** fs-cp is a consumer of tested application code, never a producer.
+
+### Source-of-Truth Priority
+
+```
+ENRS application code:       fs-enrs  > fs-cp
+CC application code:         fs-cc    > fs-cp
+Integration/deployment code: fs-cp    (authoritative)
+```
+
+If fs-cp contains application code that differs from fs-enrs or fs-cc, **fs-enrs or fs-cc wins**, unless the difference is explicitly identified as an fs-cp-specific deployment modification.
+
+### Prohibited Actions
+
+- Do NOT author or modify ENRS application code in fs-cp.
+- Do NOT author or modify CC application code in fs-cp.
+- Do NOT copy fs-cp application code back into fs-enrs or fs-cc without explicit review and approval as source-recovery work.
+- Do NOT assume fs-cp is the authoritative version of any application file merely because it is present there or appears newer there.
+
+### Bug Fix Rule
+
+If an application bug is discovered during fs-cp integration testing:
+
+1. Identify whether the bug belongs to ENRS (`fs-enrs`) or CC (`fs-cc`).
+2. Fix it in the authoritative source repository.
+3. Test and commit it there.
+4. Promote that commit into fs-cp.
+5. Rebuild the integrated Docker image.
+6. Test again.
+
+Never fix application code directly in fs-cp.
+
+### Drift Classification
+
+When fs-cp differs from the authoritative source, every difference must be classified before any file is modified:
+
+| Category | Description | Authoritative Source |
+|---|---|---|
+| A — ENRS application source | Controllers, routes, middleware, services, migrations, frontend pages, tests, auth, ENRS config | fs-enrs |
+| B — CC application source | CC controllers, routes, services, migrations, frontend, CC config | fs-cc |
+| C — Deployment / integration | docker-compose.yml, Nginx config, production Dockerfiles, deployment scripts, integration env templates | fs-cp |
+| D — Unknown / ambiguous | Do NOT modify; report for manual approval | — |
+
+### Integration Sequence
+
+Only after source repositories are verified and committed:
+
+1. Copy fs-enrs HEAD into `fs-cp/fs-enrs/`.
+2. Copy fs-cc HEAD into `fs-cp/fs-cc/`.
+3. Preserve all `fs-cp`-authoritative deployment files (docker-compose, Nginx, scripts).
+4. Commit the integration update to fs-cp.
+5. Build Docker images.
+6. Run integration tests.
+
+### Phase Protocol for Multi-Repo Work
+
+Any task touching more than one repository must proceed in phases:
+
+- **Phase 0 — Read-only audit:** Inspect all three repos. Collect HEAD SHAs, working tree status, branch states. Do not modify anything.
+- **Phase 1 — Classify differences:** Determine ownership of every difference. Produce LIST 1 (safe to sync), LIST 2 (must move to source repo first), LIST 3 (do not touch).
+- **Phase 2 — Source-repo commits:** Make all application changes in fs-enrs and/or fs-cc. Test there.
+- **Phase 3 — fs-cp integration:** Promote tested source commits into fs-cp. Preserve deployment files.
+- **Phase 4 — Build and test:** Docker build, integration test, report results.
+
+**Stop at the end of each phase. Do not proceed to the next phase without explicit approval.**

@@ -2,13 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository Role — ENRS Authoritative Source
+
+**fs-enrs is the authoritative development repository for the ENRS application.**
+
+All ENRS application development happens here. The latest valid ENRS code must come from this repository. Code flows **out** of fs-enrs into fs-cp — never the reverse. See `GOVERNANCE.md` — Multi-Repository Governance for the full three-repo governance model.
+
 ## Mandatory Reading Before Any Development
 
 **Read these two files at the start of every session before writing any code:**
 
 - [`GOVERNANCE.md`](GOVERNANCE.md) — permanent development governance rules; defines the mandatory
-  Design Impact Assessment process, the decision order (reuse → extend → create), and the
-  anti-pattern catalogue. No code may be written without following it.
+  Design Impact Assessment process, the decision order (reuse → extend → create), the
+  anti-pattern catalogue, and the **Multi-Repository Governance** rules (appended at the end).
+  No code may be written without following it.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — frozen architectural specification; defines the approved
   pipeline, object models, and invariants. Any proposal conflicting with it requires explicit

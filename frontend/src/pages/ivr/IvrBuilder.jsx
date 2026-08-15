@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Star, X } from 'lucide-react';
 
 import { useIvrGraph } from '../../hooks/useIvrGraph.js';
 import { api } from '../../api/client.js';
@@ -35,6 +35,30 @@ export default function IvrBuilder() {
   const [showHistory,   setShowHistory]   = useState(false);
   const [showBind,      setShowBind]      = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const [showStartHint, setShowStartHint] = useState(false);
+
+  // First-node onboarding: show a one-time dismissible hint when the first node
+  // is added to an empty flow. Dismissed state is stored per-flow in localStorage
+  // so it never re-appears for flows the user has already worked with.
+  const prevNodeCountRef = useRef(0);
+  const nodeCount = Object.keys(graph.nodes).length;
+  const hintStorageKey = `ivr_start_hint_${uuid}`;
+  useEffect(() => {
+    if (nodeCount === 1 && prevNodeCountRef.current === 0 && graph.entryNodeId) {
+      if (!localStorage.getItem(hintStorageKey)) {
+        setShowStartHint(true);
+      }
+    }
+    prevNodeCountRef.current = nodeCount;
+  }, [nodeCount, graph.entryNodeId, hintStorageKey]);
+
+  const dismissStartHint = useCallback(() => {
+    localStorage.setItem(hintStorageKey, '1');
+    setShowStartHint(false);
+  }, [hintStorageKey]);
+
+  // Derived: entry was lost (nodes exist but no entry is assigned).
+  const entryLost = nodeCount > 0 && !graph.entryNodeId;
 
   // Add node at canvas centre when clicking palette chip
   const handlePaletteAdd = useCallback((nodeType) => {
@@ -98,6 +122,35 @@ export default function IvrBuilder() {
         onFlowChange={flow => graph.dispatch({ type: 'UPDATE_META', patch: flow })}
         onSaveNow={graph.saveNow}
       />
+
+      {/* Entry loss warning — persistent until a new Start node is assigned */}
+      {entryLost && (
+        <div className="px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-2 shrink-0">
+          <AlertTriangle size={12} className="text-amber-500 shrink-0" />
+          <p className="text-[11px] text-amber-500 flex-1">
+            <strong>No Start node assigned.</strong>{' '}
+            Select another node and choose "Set as Entry Node" in the Properties panel to continue.
+          </p>
+        </div>
+      )}
+
+      {/* First-node hint — one-time dismissible, suppressed if entry was just lost */}
+      {showStartHint && !entryLost && (
+        <div className="px-4 py-2.5 bg-brand/10 border-b border-brand/20 flex items-center gap-2 shrink-0">
+          <Star size={12} className="text-brand shrink-0" />
+          <p className="text-[11px] text-brand/90 flex-1">
+            This node is now your <strong>Start node</strong> — it executes first when a call arrives.
+            To change it, select any other node and choose "Set as Entry Node" in the Properties panel.
+          </p>
+          <button
+            onClick={dismissStartHint}
+            className="text-brand/50 hover:text-brand ml-1 shrink-0 transition-colors"
+            title="Dismiss"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       {/* Main 3-column layout */}
       <div className="flex flex-1 min-h-0">
