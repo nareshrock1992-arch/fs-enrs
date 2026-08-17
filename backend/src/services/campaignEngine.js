@@ -455,7 +455,17 @@ async function processCampaign(campaign) {
   // priority chain: contact.gateway_id → cfg.sip_gateway → platform default).
   // The execution engine never re-reads emergency_contacts — phone_number and
   // gateway_name in ens_campaign_destinations are the authoritative snapshot.
-  const clid = campaign.sip_caller_id || campaign.trigger_number || '999';
+  // ENS caller-ID source: always the configured blast_clid, captured as sip_caller_id
+  // at campaign creation. trigger_number is the person who triggered the blast —
+  // intentionally NOT used as the outbound CLI (ERS uses inbound CLI; ENS uses config).
+  const clid = campaign.sip_caller_id;
+  if (!clid) {
+    // Not reachable in normal flow: createCampaignByConfigId rejects null blast_clid.
+    // Guard here so a legacy campaign row with null sip_caller_id never silently
+    // reaches the gateway with '999'.
+    logger.error({ module: 'campaignEngine', campaignId: campaign.id }, 'campaign sip_caller_id is null — aborting dispatch to prevent invalid CLI reaching gateway');
+    return;
+  }
 
   // Resolve playback content in priority order:
   //   recording_file    — absolute FS path recorded via Lua (blast trigger)
@@ -736,6 +746,19 @@ export async function createCampaignByConfigId({
     [configId, tenantId]
   );
   if (!cfg) throw Object.assign(new Error('ENS configuration not found'), { status: 404 });
+
+  // blast_clid is the configured outbound caller ID shown to blast recipients.
+  // Reject null, undefined, empty string, AND whitespace-only values.
+  // A whitespace-only string passes a simple falsy check but is invalid as a SIP identity.
+  // Fail early here so the operator gets a clear error at campaign creation rather than
+  // a silent invalid identity reaching production Session Manager.
+  const blastClidTrimmed = (cfg.blast_clid || '').trim();
+  if (!blastClidTrimmed) {
+    throw Object.assign(
+      new Error('ENS configuration is missing blast_clid — configure a valid outbound caller ID before blasting'),
+      { status: 422 }
+    );
+  }
 
   if (!recordingFile && !messageAudioUrl && !messageText) {
     throw Object.assign(

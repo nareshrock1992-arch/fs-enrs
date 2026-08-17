@@ -1750,10 +1750,27 @@ export async function originateCampaignCall({
     throw resolveErr;
   }
 
+  // ENS outbound identity: source is always the configured blast_clid (via clid param).
+  // clid must be non-empty — callers must validate before invoking (campaignEngine guards
+  // this at both createCampaignByConfigId and dispatchReadyDestinations).
+  // Falling back to `number` (the destination phone) would make the call appear to originate
+  // FROM the person being called — that is never correct.
+  if (!clid || !String(clid).trim()) {
+    throw new Error('originateCampaignCall: clid (blast_clid) is required — refusing to originate with empty caller identity');
+  }
+  const ensCli = String(clid).trim();
+
+  // Both origination_* and effective_* must be set.
+  // effective_caller_id_number: FreeSWITCH reads this for PAI when the gateway has sip_cid_type/cid-type=pai.
+  // effective_caller_id_name: used in From display name when caller-id-in-from=true.
+  // Setting only origination_* leaves effective_* unset, which means PAI defaults to empty
+  // and From URI user falls back to the gateway username (e.g. "CallCenter").
   const varParts = {
     origination_uuid:             callUuid,
-    origination_caller_id_number: clid || number,
+    origination_caller_id_number: ensCli,
     origination_caller_id_name:   'Emergency',
+    effective_caller_id_number:   ensCli,
+    effective_caller_id_name:     'Emergency',
     ignore_early_media:           'true',
     originate_timeout:            String(timeout),
     enrs_campaign_id:             String(campaignId),
