@@ -1,0 +1,261 @@
+-- =========================================================
+-- ERS OPEN RETRY (Primary / Secondary)
+-- Handles: 7344-7348 (primary retry), 7349-7353 (secondary retry)
+-- Maps:
+--   7344 → ers_7334_primary
+--   7345 → ers_7335_primary
+--   7346 → ers_7336_primary
+--   7347 → ers_7337_primary
+--   7348 → ers_7338_primary
+--   7349 → ers_7334_secondary
+--   7350 → ers_7335_secondary
+--   7351 → ers_7336_secondary
+--   7352 → ers_7337_secondary
+--   7353 → ers_7338_secondary
+--
+-- Logic:
+--   - No membership/initiator checks
+--   - If conference is active → join immediately
+--   - If not active → play "no active emergency" and hangup
+-- =========================================================
+
+if not session or not session:ready() then return end
+
+local fapi = freeswitch.API()
+local luasql = require("luasql.postgres")
+
+local sounds = "/usr/share/freeswitch/sounds/en/us/callie/blast_call"
+local db_name = "omni"
+local db_user = "postgres"
+local db_pass = "root"
+local db_host = "127.0.0.1"
+local db_port = 5433
+
+-------------------------------
+-- HELPERS
+-------------------------------
+
+local function conf_member_count(room)
+    local result = fapi:executeString("conference " .. room .. " list count")
+    return tonumber(result) or 0
+end
+
+-------------------------------
+-- GET DIALED NUMBER
+-------------------------------
+
+local dest = session:getVariable("destination_number")
+if not dest then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY-GROUP] No destination_number\n")
+    return
+end
+
+local dest_num = tonumber(dest)
+if not dest_num then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY-GROUP] Invalid destination_number: " .. dest .. "\n")
+    return
+end
+
+-------------------------------
+-- MAP DIALED NUMBER → (GROUP, SIDE)
+-------------------------------
+
+local group_num = nil
+local side = nil
+
+if dest_num >= 7344 and dest_num <= 7348 then
+    -- Primary retry: 7344-7348 → group 7334-7338
+    group_num = tostring(dest_num - 10)   -- 7344→7334, 7345→7335, etc.
+    side = "primary"
+elseif dest_num >= 7349 and dest_num <= 7353 then
+    -- Secondary retry: 7349-7353 → group 7334-7338
+    group_num = tostring(dest_num - 15)   -- 7349→7334, 7350→7335, etc.
+    side = "secondary"
+else
+    freeswitch.consoleLog("ERR",
+        "[ERS-RETRY-GROUP] Unexpected destination " .. dest .. "\n")
+    return
+end
+
+local target_room = "ers_" .. group_num .. "_" .. side
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY-GROUP] Dialed " .. dest .. " → " .. target_room .. "\n")
+
+-------------------------------
+-- GET CALLER ID (for logging)
+-------------------------------
+
+local caller = session:getVariable("effective_caller_id_number")
+if not caller or caller == "" then
+    caller = session:getVariable("caller_id_number") or "unknown"
+end
+
+freeswitch.consoleLog("INFO", "[ERS-RETRY-GROUP] Caller: " .. caller .. "\n")
+
+-------------------------------
+-- ANSWER
+-------------------------------
+
+session:answer()
+session:sleep(500)
+
+-------------------------------
+-- CHECK IF CONFERENCE IS ACTIVE
+-------------------------------
+
+local count = conf_member_count(target_room)
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY-GROUP] " .. target_room .. " members=" .. count .. "\n")
+
+if count == 0 then
+    freeswitch.consoleLog("INFO",
+        "[ERS-RETRY-GROUP] No active conference " .. target_room .. ". Playing busy prompt.\n")
+    session:streamFile(sounds .. "/NoActiveEmergency.wav")
+    session:sleep(1000)
+    session:hangup()
+    return
+end
+
+-------------------------------
+-- UPDATE/INSERT ATTENDANCE ROW FOR OPEN RETRY CALLER
+-------------------------------
+
+local function sql_escape(v)
+    return tostring(v):gsub("'", "''")
+end
+
+local env = luasql.postgres()
+local db = env:connect(db_name, db_user, db_pass, db_host, db_port)
+if db then
+    local session_id = nil
+    local caller_id_for_row = caller
+    local record_start = os.date("%Y-%m-%d %H:%M:%S")
+    local recording_file = ""
+    local recording_name = ""
+    local recording_format = "wav"
+    local recording_url = ""
+
+    -- Resolve active ERS session for this room (most recent one).
+    local ses_sql = string.format([[
+        SELECT id
+        FROM ers_sessions
+        WHERE conf_room = '%s'
+        ORDER BY created_at DESC
+        LIMIT 1
+    ]], sql_escape(target_room))
+    local cur_ses = db:execute(ses_sql)
+    local row_ses = cur_ses and cur_ses:fetch({})
+    if cur_ses then cur_ses:close() end
+    if row_ses then session_id = row_ses[1] end
+
+    -- If no ers_sessions row exists, fall back to latest ERS blast row for this room/group.
+    if not session_id then
+        local like_pat = "/var/lib/freeswitch/recordings/blast/ers_" .. group_num .. "_%"
+        local fb_sql = string.format([[
+            SELECT callid
+            FROM blast_logs
+            WHERE module='ers'
+              AND recording_file LIKE '%s'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ]], sql_escape(like_pat))
+        local cur_fb = db:execute(fb_sql)
+        local row_fb = cur_fb and cur_fb:fetch({})
+        if cur_fb then cur_fb:close() end
+        if row_fb then session_id = row_fb[1] end
+    end
+
+    if session_id then
+        local meta_sql = string.format([[
+            SELECT caller_id, record_start, recording_file, recording_name, recording_format, recording_url
+            FROM blast_logs
+            WHERE module='ers'
+              AND callid='%s'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ]], sql_escape(session_id))
+        local cur_meta = db:execute(meta_sql)
+        local row_meta = cur_meta and cur_meta:fetch({}, "a")
+        if cur_meta then cur_meta:close() end
+
+        if row_meta then
+            caller_id_for_row = row_meta.caller_id or caller_id_for_row
+            record_start = row_meta.record_start or record_start
+            recording_file = row_meta.recording_file or recording_file
+            recording_name = row_meta.recording_name or recording_name
+            recording_format = row_meta.recording_format or recording_format
+            recording_url = row_meta.recording_url or recording_url
+        end
+
+        local exists_sql = string.format([[
+            SELECT 1
+            FROM blast_logs
+            WHERE module='ers'
+              AND callid='%s'
+              AND blasted_to='%s'
+            LIMIT 1
+        ]], sql_escape(session_id), sql_escape(caller))
+        local cur_ex = db:execute(exists_sql)
+        local row_ex = cur_ex and cur_ex:fetch({})
+        if cur_ex then cur_ex:close() end
+
+        local answered_time = os.date("%Y-%m-%d %H:%M:%S")
+        
+        if row_ex then
+            local upd_sql = string.format([[
+                UPDATE blast_logs
+                SET attendance_status='ATTENDED',
+                    answered_at = COALESCE(answered_at, '%s')
+                WHERE module='ers'
+                  AND callid='%s'
+                  AND blasted_to='%s'
+            ]], answered_time, sql_escape(session_id), sql_escape(caller))
+            db:execute(upd_sql)
+        else
+            local ins_sql = string.format([[
+                INSERT INTO blast_logs (
+                    callid, caller_id, record_start,
+                    recording_file, blasted_to, attendance_status,
+                    recording_name, recording_format, recording_url,
+                    module, group_type, answered_at, created_at
+                ) VALUES (
+                    '%s','%s','%s',
+                    '%s','%s','ATTENDED',
+                    '%s','%s','%s',
+                    'ers','%s', '%s', '%s'
+                )
+            ]],
+                sql_escape(session_id),
+                sql_escape(caller_id_for_row),
+                sql_escape(record_start),
+                sql_escape(recording_file),
+                sql_escape(caller),
+                sql_escape(recording_name),
+                sql_escape(recording_format),
+                sql_escape(recording_url),
+                sql_escape(side),
+                answered_time,
+                answered_time
+            )
+            db:execute(ins_sql)
+        end
+    end
+
+    db:close()
+    env:close()
+else
+    env:close()
+end
+
+-------------------------------
+-- JOIN CONFERENCE
+-------------------------------
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY-GROUP] " .. caller .. " joining " .. target_room .. "\n")
+
+session:execute("conference", target_room .. "@default")
+
+session:hangup()

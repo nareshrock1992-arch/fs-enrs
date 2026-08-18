@@ -1,0 +1,292 @@
+-- =========================================================
+-- ERS BACKGROUND RETRY CALLER (per-number retries)
+-- Runs via: bgapi luarun ers_retry_caller.lua
+--   <room> <numbers_csv> <retries> <gateway> <group_num> <callid> <initiator>
+--
+-- Logic:
+--   - Retries ONLY numbers that have NOT joined the conference yet
+--   - Uses conference member list (not uuid_exists) to detect real joins
+--   - Stops only when ALL numbers joined OR retries exhausted
+--   - Updates blast_logs (module='ers') attendance_status:
+--       ATTENDED     - joined at least once
+--       NOT_ATTENDED - never joined after all retries
+-- =========================================================
+
+local api    = freeswitch.API()
+local luasql = require("luasql.postgres")
+
+-------------------------------
+-- PARSE ARGUMENTS
+-------------------------------
+
+local conf_room        = argv[1]
+local numbers_csv      = argv[2]
+local configured_retry = tonumber(argv[3]) or 0  -- value from API ("retry" = extra retries)
+local gateway          = argv[4] or "avaya"
+local group_num        = argv[5] or "unknown"
+local callid           = argv[6] or nil
+local initiator        = argv[7] or group_num  -- show the original caller's number as CLI
+
+if not conf_room or conf_room == "" then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY] Missing conf_room argument\n")
+    return
+end
+
+if not numbers_csv or numbers_csv == "" then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY] Missing numbers_csv argument\n")
+    return
+end
+
+-------------------------------
+-- DB CONFIG / CONNECT
+-------------------------------
+
+local db_name = "omni"
+local db_user = "postgres"
+local db_pass = "root"
+local db_host = "127.0.0.1"
+local db_port = 5433
+
+local env = luasql.postgres()
+local db  = env:connect(db_name, db_user, db_pass, db_host, db_port)
+
+if not db then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY] DB connection failed; attendance will not be logged\n")
+end
+
+-------------------------------
+-- PARSE NUMBERS
+-------------------------------
+
+local all_numbers = {}
+for num in numbers_csv:gmatch("[^,]+") do
+    local trimmed = num:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then
+        table.insert(all_numbers, trimmed)
+    end
+end
+
+if #all_numbers == 0 then
+    freeswitch.consoleLog("ERR", "[ERS-RETRY] No valid numbers to call\n")
+    return
+end
+
+-------------------------------
+-- EFFECTIVE ATTEMPTS
+-- Always place at least 1 call even if retry=0.
+-- Semantics:
+--   configured_retry = 0  → total_attempts = 1  (1 call)
+--   configured_retry = 1  → total_attempts = 2  (1 call + 1 retry)
+--   configured_retry = N  → total_attempts = N+1
+-------------------------------
+
+local total_attempts = configured_retry + 1
+if total_attempts < 1 then total_attempts = 1 end
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY] Starting | room=" .. conf_room ..
+    " numbers=" .. numbers_csv ..
+    " configured_retries=" .. configured_retry ..
+    " total_attempts=" .. total_attempts ..
+    " gateway=" .. gateway .. "\n")
+
+-------------------------------
+-- HELPERS
+-------------------------------
+
+local ORIGINATE_TIMEOUT_SEC = 30
+
+local function conf_member_count(room)
+    local result = api:executeString("conference " .. room .. " list count")
+    return tonumber(result) or 0
+end
+
+local function sleep_ms(ms)
+    freeswitch.msleep(ms)
+end
+
+local function get_conf_members(room)
+    local out = {}
+    local list = api:executeString("conference " .. room .. " list")
+    if not list or list == "" then
+        return out
+    end
+
+    for line in list:gmatch("[^\r\n]+") do
+        local num = line:match("sofia/[^/]+/(%d+)")
+        if num then
+            out[num] = true
+        end
+    end
+
+    return out
+end
+
+-------------------------------
+-- STARTUP DELAY
+-------------------------------
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY] Waiting 3s for caller to join " .. conf_room .. "...\n")
+sleep_ms(3000)
+
+-------------------------------
+-- RETRY LOOP
+-------------------------------
+
+local answered = {}
+
+for attempt = 1, total_attempts do
+
+    local to_call = {}
+    for _, n in ipairs(all_numbers) do
+        if not answered[n] then
+            table.insert(to_call, n)
+        end
+    end
+
+    if #to_call == 0 then
+        freeswitch.consoleLog("INFO",
+            "[ERS-RETRY] All numbers have joined " .. conf_room .. ". Stopping.\n")
+        return
+    end
+
+    if conf_member_count(conf_room) == 0 then
+        freeswitch.consoleLog("INFO",
+            "[ERS-RETRY] Conference " .. conf_room ..
+            " is empty (caller left). Stopping retries.\n")
+        return
+    end
+
+    freeswitch.consoleLog("INFO",
+            "[ERS-RETRY] Attempt " .. attempt .. "/" .. total_attempts ..
+        " for " .. conf_room ..
+        " | calling: " .. table.concat(to_call, ",") .. "\n")
+
+    for _, number in ipairs(to_call) do
+        local uuid = api:executeString("create_uuid")
+
+        local cmd = string.format(
+            "bgapi originate {origination_uuid=%s," ..
+            "origination_caller_id_number=%s," ..
+            "origination_caller_id_name=%s," ..
+            "sip_h_P-Asserted-Identity=sip:%s@yerp.com," ..
+            "originate_timeout=%d," ..
+            "ignore_early_media=true," ..
+            "hangup_after_bridge=true}" ..
+            "sofia/gateway/%s/%s &conference(%s@default)",
+            uuid,
+            initiator,
+            initiator,
+            initiator,
+            ORIGINATE_TIMEOUT_SEC,
+            gateway,
+            number,
+            conf_room
+        )
+
+        api:executeString(cmd)
+        freeswitch.consoleLog("INFO",
+            "[ERS-RETRY] Dialing " .. number .. " uuid=" .. uuid .. "\n")
+    end
+
+    local poll_limit = (ORIGINATE_TIMEOUT_SEC + 5) * 1000
+    local polled     = 0
+
+    while polled < poll_limit do
+        sleep_ms(1000)
+        polled = polled + 1000
+
+        if conf_member_count(conf_room) == 0 then
+            freeswitch.consoleLog("INFO",
+                "[ERS-RETRY] Conference emptied during retry wait. Stopping.\n")
+            return
+        end
+
+        local member_set = get_conf_members(conf_room)
+        local all_joined = true
+        for _, n in ipairs(to_call) do
+            if member_set[n] then
+                if not answered[n] then
+                    answered[n] = true
+                    freeswitch.consoleLog("INFO",
+                        "[ERS-RETRY] " .. n .. " joined " .. conf_room .. "\n")
+
+                    -- Mark this responder as ATTENDED in blast_logs
+                    if db and callid then
+                        local answered_time = os.date("%Y-%m-%d %H:%M:%S")
+                        local up_sql = string.format(
+                            "UPDATE blast_logs SET attendance_status='ATTENDED', " ..
+                            "answered_at = COALESCE(answered_at, '%s') " ..
+                            "WHERE module='ers' AND callid='%s' AND blasted_to='%s'",
+                            answered_time, callid, n
+                        )
+                        local ok_up, err_up = db:execute(up_sql)
+                        if not ok_up then
+                            freeswitch.consoleLog("ERR",
+                                "[ERS-RETRY] Failed to update ATTENDED for " .. n ..
+                                ": " .. tostring(err_up) .. "\n")
+                        end
+                    end
+                end
+            else
+                all_joined = false
+            end
+        end
+
+        if all_joined then
+            freeswitch.consoleLog("INFO",
+                "[ERS-RETRY] All called numbers joined on attempt " .. attempt .. ". Stopping.\n")
+            return
+        end
+    end
+
+    local still_missing = {}
+    for _, n in ipairs(to_call) do
+        if not answered[n] then
+            table.insert(still_missing, n)
+        end
+    end
+
+    if #still_missing > 0 then
+        freeswitch.consoleLog("INFO",
+            "[ERS-RETRY] Attempt " .. attempt .. " done. Still missing: " ..
+            table.concat(still_missing, ",") ..
+            (attempt < total_attempts and " — will retry.\n" or " — no more retries.\n"))
+    end
+
+end
+
+local remaining = {}
+for _, n in ipairs(all_numbers) do
+    if not answered[n] then
+        table.insert(remaining, n)
+
+        -- Mark remaining as NOT_ATTENDED in blast_logs
+        if db and callid then
+            local up_sql = string.format(
+                "UPDATE blast_logs SET attendance_status='NOT_ATTENDED' " ..
+                "WHERE module='ers' AND callid='%s' AND blasted_to='%s'",
+                callid, n
+            )
+            local ok_up, err_up = db:execute(up_sql)
+            if not ok_up then
+                freeswitch.consoleLog("ERR",
+                    "[ERS-RETRY] Failed to update NOT_ATTENDED for " .. n ..
+                    ": " .. tostring(err_up) .. "\n")
+            end
+        end
+    end
+end
+
+freeswitch.consoleLog("INFO",
+    "[ERS-RETRY] All " .. configured_retry ..
+    " retries completed for " .. conf_room ..
+    ". Unanswered: " ..
+    (#remaining > 0 and table.concat(remaining, ",") or "none") ..
+    ". Caller stays in conference.\n")
+
+if db then
+    db:close()
+    env:close()
+end

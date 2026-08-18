@@ -1,0 +1,315 @@
+-- =========================================================
+-- ERS CALLBACK HANDLER
+-- Handles: 7339-7343 (one per emergency group)
+-- Maps:    7339→7334, 7340→7335, 7341→7336, 7342→7337, 7343→7338
+--
+-- Priority routing:
+--   1. Caller is a primary group member  → join primary conf  (if active)
+--   2. Caller is a secondary group member → join secondary conf (if active)
+--   3. Caller was the original initiator  → join their original room (DB lookup)
+--   4. Nothing active                     → announce + hangup
+-- =========================================================
+
+local http   = require("socket.http")
+local ltn12  = require("ltn12")
+local cjson  = require("cjson")
+local luasql = require("luasql.postgres")
+
+-------------------------------
+-- CONFIG
+------------------------------- 
+
+local db_name  = "omni"
+local db_user  = "postgres"
+local db_pass  = "root"
+local db_host  = "127.0.0.1"
+local db_port  = 5433
+local api_base = "http://10.128.14.91:8080/api"
+
+-------------------------------
+-- INIT
+-------------------------------
+
+if not session or not session:ready() then return end
+
+local fapi = freeswitch.API()
+
+-------------------------------
+-- HELPERS
+-------------------------------
+
+local function conf_member_count(room)
+    local result = fapi:executeString("conference " .. room .. " list count")
+    return tonumber(result) or 0
+end
+
+local function fetch_json(url)
+    local body = {}
+    local _, code = http.request{
+        url    = url,
+        method = "GET",
+        sink   = ltn12.sink.table(body)
+    }
+    if code ~= 200 then return nil end
+    local ok, decoded = pcall(cjson.decode, table.concat(body))
+    if not ok then return nil end
+    return decoded
+end
+
+local function in_list(list, value)
+    for _, v in ipairs(list) do
+        if v == value then return true end
+    end
+    return false
+end
+
+-------------------------------
+-- GET CALLBACK DEST + MAP TO GROUP
+-------------------------------
+
+local dest = session:getVariable("destination_number")   -- "7339"–"7343"
+if not dest then
+    freeswitch.consoleLog("ERR", "[ERS-CB] No destination_number\n")
+    return
+end
+
+local group_num = tostring(tonumber(dest) - 5)            -- "7334"–"7338"
+
+freeswitch.consoleLog("INFO",
+    "[ERS-CB] Callback " .. dest .. " → group " .. group_num .. "\n")
+
+local function caller_is_initiator_for_group(caller_id)
+    -- If caller isn't listed in API, allow rejoin ONLY if they were the
+    -- original initiator of an ERS call for this group recently.
+    --
+    -- We infer this from blast_logs rows created by dial_911_conference.lua:
+    -- it inserts rows with module='ers' and caller_id = initiator.
+    local env = luasql.postgres()
+    local db  = env:connect(db_name, db_user, db_pass, db_host, db_port)
+    if not db then
+        freeswitch.consoleLog("ERR", "[ERS-CB] DB connect failed for initiator check\n")
+        env:close()
+        return false
+    end
+
+    local like_pat = "/var/lib/freeswitch/recordings/blast/ers_" .. group_num .. "_%"
+    local sql = string.format([[
+        SELECT 1
+        FROM blast_logs
+        WHERE module = 'ers'
+          AND caller_id = '%s'
+          AND recording_file LIKE '%s'
+          AND created_at >= NOW() - INTERVAL '24 HOURS'
+        ORDER BY created_at DESC
+        LIMIT 1
+    ]], caller_id, like_pat)
+
+    local cur = db:execute(sql)
+    local row = cur and cur:fetch({})
+    if cur then cur:close() end
+    db:close()
+    env:close()
+    return row ~= nil
+end
+
+-------------------------------
+-- GET CALLER ID
+-------------------------------
+
+local caller = session:getVariable("effective_caller_id_number")
+if not caller or caller == "" then
+    caller = session:getVariable("caller_id_number") or "unknown"
+end
+
+freeswitch.consoleLog("INFO", "[ERS-CB] Caller: " .. caller .. "\n")
+
+-------------------------------
+-- CONFERENCE ROOM NAMES
+-------------------------------
+
+local primary_room   = "ers_" .. group_num .. "_primary"
+local secondary_room = "ers_" .. group_num .. "_secondary"
+
+local primary_count   = conf_member_count(primary_room)
+local secondary_count = conf_member_count(secondary_room)
+
+local function any_active_room()
+    if primary_count and primary_count > 0 then return primary_room end
+    if secondary_count and secondary_count > 0 then return secondary_room end
+    return nil
+end
+
+freeswitch.consoleLog("INFO",
+    "[ERS-CB] " .. primary_room .. "=" .. primary_count ..
+    " | " .. secondary_room .. "=" .. secondary_count .. "\n")
+
+-------------------------------
+-- FETCH GROUP CONFIG FOR MEMBER LOOKUP
+-------------------------------
+
+local primary_numbers   = {}
+local secondary_numbers = {}
+
+local cfg_data = fetch_json(api_base .. "/responder_contacts?type=ers&number=" .. group_num)
+if cfg_data and cfg_data.success and cfg_data.data and #cfg_data.data > 0 then
+    primary_numbers   = cfg_data.data[1].primary  or {}
+    secondary_numbers = cfg_data.data[1].secondary or {}
+end
+
+-------------------------------
+-- DETERMINE TARGET ROOM
+-------------------------------
+
+local target_room = nil
+
+-- Priority 1: caller is a primary group member
+if in_list(primary_numbers, caller) then
+    if primary_count > 0 then
+        target_room = primary_room
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] " .. caller .. " is a primary member → " .. primary_room .. "\n")
+    else
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] " .. caller .. " is a primary member but primary conf is inactive\n")
+    end
+end
+
+-- Priority 2: caller is a secondary group member
+if not target_room and in_list(secondary_numbers, caller) then
+    if secondary_count > 0 then
+        target_room = secondary_room
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] " .. caller .. " is a secondary member → " .. secondary_room .. "\n")
+    else
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] " .. caller .. " is a secondary member but secondary conf is inactive\n")
+    end
+end
+
+-- Priority 3: was the caller the original initiator? (DB lookup)
+if not target_room then
+    local env = luasql.postgres()
+    local db  = env:connect(db_name, db_user, db_pass, db_host, db_port)
+
+    if db then
+        local sql = string.format([[
+            SELECT conf_room FROM ers_sessions
+            WHERE caller_id = '%s'
+              AND group_number = '%s'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ]], caller, group_num)
+
+        local cur = db:execute(sql)
+        local row = cur and cur:fetch({})
+        if cur then cur:close() end
+        db:close()
+        env:close()
+
+        if row then
+            local last_room = row[1]
+            local lcount    = conf_member_count(last_room)
+            if lcount > 0 then
+                target_room = last_room
+                freeswitch.consoleLog("INFO",
+                    "[ERS-CB] Initiator DB match → " .. last_room ..
+                    " (members=" .. lcount .. ")\n")
+            else
+                freeswitch.consoleLog("INFO",
+                    "[ERS-CB] Initiator's last room " .. last_room ..
+                    " is no longer active\n")
+            end
+        end
+    else
+        freeswitch.consoleLog("ERR", "[ERS-CB] DB connect failed for initiator lookup\n")
+        env:close()
+    end
+end
+
+-- Fallback: allow ONLY the original initiator to rejoin if ANY room is active.
+-- This covers the case where the initiator is not in API responder lists.
+if not target_room then
+    local active = any_active_room()
+    if active and caller_is_initiator_for_group(caller) then
+        target_room = active
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] Initiator fallback: active room found → " .. target_room .. "\n")
+    end
+end
+
+-------------------------------
+-- ANSWER CALLER
+-------------------------------
+
+session:answer()
+session:sleep(500)
+
+-------------------------------
+-- HANDLE NO ACTIVE CONFERENCE
+-------------------------------
+
+if not target_room then
+    freeswitch.consoleLog("INFO",
+        "[ERS-CB] No active conference for group " .. group_num ..
+        ". Caller=" .. caller .. "\n")
+    -- Avoid TTS dependency (flite) which may not be installed.
+    session:streamFile("/usr/share/freeswitch/sounds/en/us/callie/blast_call/Noactiveemergency.wav")
+    session:sleep(2000)
+    session:hangup()
+    return
+end
+
+-------------------------------
+-- UPDATE blast_logs TO ATTENDED (if caller was a responder)
+-------------------------------
+
+local env_upd = luasql.postgres()
+local db_upd  = env_upd:connect(db_name, db_user, db_pass, db_host, db_port)
+
+if db_upd then
+    -- Find the most recent ERS blast_logs entry for this caller in this group
+    -- and mark it as ATTENDED (callback rejoin counts as attendance)
+    local answered_time = os.date("%Y-%m-%d %H:%M:%S")
+    local update_sql = string.format([[
+        UPDATE blast_logs
+        SET attendance_status = 'ATTENDED',
+            answered_at = COALESCE(answered_at, '%s')
+        WHERE module = 'ers'
+          AND blasted_to = '%s'
+          AND attendance_status != 'ATTENDED'
+          AND created_at = (
+              SELECT MAX(created_at)
+              FROM blast_logs
+              WHERE module = 'ers'
+                AND blasted_to = '%s'
+                AND created_at >= NOW() - INTERVAL '24 HOURS'
+          )
+    ]], answered_time, caller, caller)
+
+    local ok_upd, err_upd = db_upd:execute(update_sql)
+    if ok_upd then
+        freeswitch.consoleLog("INFO",
+            "[ERS-CB] Marked " .. caller .. " as ATTENDED via callback rejoin\n")
+    else
+        freeswitch.consoleLog("ERR",
+            "[ERS-CB] Failed to update attendance for " .. caller ..
+            ": " .. tostring(err_upd) .. "\n")
+    end
+
+    db_upd:close()
+    env_upd:close()
+else
+    freeswitch.consoleLog("ERR", "[ERS-CB] DB connect failed for attendance update\n")
+    env_upd:close()
+end
+
+-------------------------------
+-- JOIN CONFERENCE
+-------------------------------
+
+freeswitch.consoleLog("INFO",
+    "[ERS-CB] " .. caller .. " rejoining " .. target_room .. "\n")
+
+session:execute("conference", target_room .. "@default")
+
+session:hangup()

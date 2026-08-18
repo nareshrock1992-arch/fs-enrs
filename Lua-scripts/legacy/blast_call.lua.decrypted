@@ -1,0 +1,918 @@
+-- =========================================================
+-- ENTERPRISE BLAST ANNOUNCEMENT SYSTEM (ESL VERSION)
+-- Parallel Blast + ESL Attendance Tracking + One-Time Replay
+-- =========================================================
+
+-------------------------------
+-- CONFIGURATION
+-------------------------------
+
+local http = require("socket.http")
+local ltn12 = require("ltn12")
+local cjson = require("cjson")
+
+local sounds = "/usr/share/freeswitch/sounds/en/us/callie/blast_call"
+local recording_path = "/var/lib/freeswitch/recordings/blast/"
+local gateway_name = "avaya"
+
+-- DB CONFIG
+local luasql = require "luasql.postgres"
+local env = luasql.postgres()
+
+local db_name = "omni"
+local db_user = "postgres"
+local db_pass = "root"
+local db_host = "127.0.0.1"
+local db_port = 5433
+
+
+-----------------------------------------------------------
+-- GET DIALED NUMBER (ENS NUMBER LIKE 9995)
+-----------------------------------------------------------
+
+local dialed_number = session:getVariable("destination_number")
+
+if not dialed_number or dialed_number == "" then
+    freeswitch.consoleLog("ERR", "[BLAST] Unable to determine dialed ENS number\n")
+    session:hangup()
+    return
+end
+
+freeswitch.consoleLog("INFO", "[BLAST] Dialed ENS Number: " .. dialed_number .. "\n")
+
+-----------------------------------------------------------
+-- FETCH CONFIG FROM API (DYNAMIC)
+-----------------------------------------------------------
+
+local api_url = "http://10.128.14.91:8080/api/responder_contacts?type=ens&number=" .. dialed_number
+
+freeswitch.consoleLog("INFO", "[BLAST] Calling API: " .. api_url .. "\n")
+
+local response_body = {}
+
+local res, code = http.request{
+    url = api_url,
+    method = "GET",
+    sink = ltn12.sink.table(response_body)
+}
+
+if not res then
+    freeswitch.consoleLog("ERR", "[BLAST] HTTP Request Failed\n")
+    session:hangup()
+    return
+end
+
+if code ~= 200 then
+    freeswitch.consoleLog("ERR", "[BLAST] API returned status: " .. tostring(code) .. "\n")
+    session:hangup()
+    return
+end
+
+local json_string = table.concat(response_body)
+
+freeswitch.consoleLog("INFO", "[BLAST] API Raw Response: " .. json_string .. "\n")
+
+local decoded = cjson.decode(json_string)
+
+if not decoded or not decoded.success then
+    freeswitch.consoleLog("ERR", "[BLAST] API returned success=false\n")
+    session:hangup()
+    return
+end
+
+if not decoded.data then
+    freeswitch.consoleLog("ERR", "[BLAST] API response missing data field\n")
+    session:hangup()
+    return
+end
+
+-- API returns array -> take first record
+local api_data = decoded.data[1]
+
+if not api_data then
+    freeswitch.consoleLog("ERR", "[BLAST] API returned empty data array\n")
+    session:hangup()
+    return
+end
+
+local authorized_pin = api_data.pin
+local listeners      = api_data.phone
+local retry_count    = tonumber(api_data.retry) or 0
+local retry_number   = api_data.retry_number  -- used as CLI so missed call shows the callback number
+if not authorized_pin then
+    freeswitch.consoleLog("ERR", "[BLAST] PIN not received from API\n")
+    session:hangup()
+    return
+end
+
+if not listeners or #listeners == 0 then
+    freeswitch.consoleLog("ERR", "[BLAST] No listener numbers received from API\n")
+    session:hangup()
+    return
+end
+
+freeswitch.consoleLog("INFO", "[BLAST] Authorized PIN: " .. authorized_pin .. "\n")
+freeswitch.consoleLog("INFO", "[BLAST] Total Listeners: " .. tostring(#listeners) .. "\n")
+freeswitch.consoleLog("INFO", "[BLAST] Retry Count: " .. tostring(retry_count) .. "\n")
+
+local module_type = "ens"
+-----------------------------------------------------------
+-- PREPARE
+-----------------------------------------------------------
+
+os.execute("mkdir -p " .. recording_path)
+
+if not session:ready() then return end
+
+local api = freeswitch.API()
+
+local caller = session:getVariable("effective_caller_id_number")
+if not caller or caller == "" then
+    caller = session:getVariable("caller_id_number") or "unknown"
+end
+
+freeswitch.consoleLog("INFO", "[BLAST] Caller: " .. caller .. "\n")
+
+local db = env:connect(db_name, db_user, db_pass, db_host, db_port)
+if not db then
+    freeswitch.consoleLog("ERR", "DB Connection Failed\n")
+    return
+end
+
+-----------------------------------------------------------
+-- RECORD MODE (PRESS # TO STOP RECORDING)
+-----------------------------------------------------------
+
+session:execute("ring_ready")
+session:sleep(3000)
+session:answer()
+
+-----------------------------------------------------------
+-- 🔐 PIN ENTRY (EXACT DIGIT COUNT, NO # NEEDED)
+-- PIN is accepted as soon as the correct number of digits are entered.
+-- If no input for 30s → play No PIN.wav, repeat twice, then hangup.
+-----------------------------------------------------------
+
+session:flushDigits()
+
+session:streamFile(sounds .. "/ivr_enter_pin.wav")
+
+local pin_len        = #tostring(authorized_pin)  -- accept exactly this many digits
+local max_attempts   = 2
+local attempts       = 0
+local no_pin_timeout = 30  -- seconds of silence before playing No PIN.wav
+local max_no_pin     = 2   -- play No PIN.wav this many times before hangup
+
+while session:ready() and attempts < max_attempts do
+
+    -- Collect exactly pin_len digits; terminate early if # pressed
+    -- 30s timeout per collection attempt so no-input is detected
+    session:flushDigits()
+    local entered_pin = session:getDigits(pin_len, "#", no_pin_timeout * 1000)
+
+    if not session:ready() then break end
+
+    -- No input (timeout or caller pressed # immediately with nothing)
+    if not entered_pin or entered_pin == "" or #entered_pin == 0 then
+        local no_pin_plays = 0
+        while session:ready() and no_pin_plays < max_no_pin do
+            freeswitch.consoleLog("INFO", "[BLAST] No PIN entered — playing No PIN prompt\n")
+            session:flushDigits()
+            session:sleep(200)
+            session:streamFile(sounds .. "/No PIN.wav")
+            no_pin_plays = no_pin_plays + 1
+            -- Always wait 30s after every announcement (including the last)
+            session:flushDigits()
+            entered_pin = session:getDigits(pin_len, "#", no_pin_timeout * 1000)
+            if entered_pin and #entered_pin > 0 then
+                break  -- got something, fall through to PIN check below
+            end
+            entered_pin = ""
+        end
+        if not entered_pin or #entered_pin == 0 then
+            freeswitch.consoleLog("INFO", "[BLAST] Still no PIN after prompts — auto-disconnecting\n")
+            session:hangup()
+            db:close()
+            env:close()
+            return
+        end
+    end
+
+    freeswitch.consoleLog("INFO", "[BLAST] PIN entered: '" .. entered_pin .. "'\n")
+
+    if entered_pin == tostring(authorized_pin) then
+        freeswitch.consoleLog("INFO", "[BLAST] PIN correct on attempt " .. (attempts + 1) .. "\n")
+        goto pin_ok
+    else
+        attempts = attempts + 1
+        freeswitch.consoleLog("INFO",
+            "[BLAST] Invalid PIN attempt " .. attempts .. " (entered='" .. entered_pin .. "')\n")
+        if attempts >= max_attempts then
+            session:flushDigits()
+            session:sleep(800)
+            session:streamFile(sounds .. "/Invalidpin-goodbye.wav")
+            session:hangup()
+            db:close()
+            env:close()
+            return
+        else
+            session:flushDigits()
+            session:sleep(200)
+            session:streamFile(sounds .. "/InvalidPIN.wav")
+        end
+    end
+
+end
+
+::pin_ok::
+
+
+----------------------------------------------------------
+-- 🎙 PREPARE RECORDING VARIABLES
+-----------------------------------------------------------
+
+local callid = api:executeString("create_uuid")
+local recording_file = recording_path .. "blast_" .. os.date("%Y%m%d%H%M%S") .. ".wav"
+
+-----------------------------------------------------------
+-- 🎙 RECORD WITH HASH VALIDATION (MP3 VERSION)
+-----------------------------------------------------------
+
+local hash_pressed = false
+
+session:streamFile(sounds .. "/ivr_after_recording_press_hash.wav")
+session:streamFile(sounds .. "/ivr_beepsound.wav")
+
+local record_start_epoch = os.time()
+local record_start = os.date("%Y-%m-%d %H:%M:%S")
+
+session:execute("record_session", recording_file)
+
+freeswitch.consoleLog("INFO", "[BLAST] Recording started...\n")
+
+while session:ready() do
+    local digit = session:getDigits(1, "", 1000)
+
+    if digit == "#" then
+        hash_pressed = true
+        freeswitch.consoleLog("INFO", "[BLAST] # pressed. Stopping recording.\n")
+        session:execute("stop_record_session", recording_file)
+        session:sleep(1000)
+        break
+    end
+end
+
+-- If caller hung up without pressing #
+if not hash_pressed then
+    freeswitch.consoleLog("INFO", "[BLAST] Caller hung up without #. Discarding recording.\n")
+
+    -- DO NOT call stop_record_session here (already stopped automatically)
+    os.remove(recording_file)
+
+    db:close()
+    env:close()
+    return
+end
+
+local record_end = os.date("%Y-%m-%d %H:%M:%S")
+
+-- Calculate recording duration
+local record_duration = os.time() - record_start_epoch
+
+if record_duration < 0 then
+    record_duration = 0
+end
+
+-----------------------------------------------------------
+-- VALIDATE RECORDING (minimum duration AND file size)
+-----------------------------------------------------------
+
+-- Get file size first
+local file_handle = io.open(recording_file, "rb")
+local recording_size = 0
+
+if file_handle then
+    recording_size = file_handle:seek("end") or 0
+    file_handle:close()
+end
+
+-- Minimum requirements:
+-- - At least 2 seconds duration (os.time() based)
+-- - At least 16KB file size (8000 Hz * 1 byte * 2 seconds = 16000 bytes for mono 8-bit)
+-- WAV header is ~44 bytes, so a nearly empty file will be very small
+local MIN_RECORDING_DURATION = 1  -- seconds
+local MIN_RECORDING_SIZE = 16000   -- bytes (~2 seconds of 8kHz mono audio)
+
+freeswitch.consoleLog("INFO", 
+    string.format("[BLAST] Recording check: duration=%d sec, size=%d bytes\n", 
+        record_duration, recording_size))
+
+if record_duration < MIN_RECORDING_DURATION or recording_size < MIN_RECORDING_SIZE then
+    freeswitch.consoleLog("WARNING", 
+        string.format("[BLAST] Recording too short (duration=%d sec, size=%d bytes, min_duration=%d, min_size=%d) - discarding\n", 
+            record_duration, recording_size, MIN_RECORDING_DURATION, MIN_RECORDING_SIZE))
+    os.remove(recording_file)
+    session:streamFile(sounds .. "/recording_too_short.wav")
+    session:hangup()
+    db:close()
+    env:close()
+    return
+end
+
+session:streamFile(sounds .. "/MsgRecorded.wav")
+
+-- Small delay to ensure audio completes before disconnect
+session:sleep(500)
+
+freeswitch.consoleLog("INFO", "[BLAST] Recording validated (" .. record_duration .. " sec, " .. recording_size .. " bytes). Checking queue...\n")
+
+-- Fully disconnect the caller
+if session:ready() then
+    session:hangup("NORMAL_CLEARING")
+    freeswitch.consoleLog("INFO", "[BLAST] Caller disconnected after recording\n")
+else
+    freeswitch.consoleLog("INFO", "[BLAST] Caller already disconnected\n")
+end
+
+-----------------------------------------------------------
+-- RECORDING METADATA
+-----------------------------------------------------------
+
+-- Extract recording name
+local recording_name = recording_file:match("([^/]+)$")
+
+-- Extract format (wav/mp3/etc)
+local recording_format = recording_name:match("%.([^%.]+)$") or "wav"
+
+-- Store duration again
+local recording_duration_sec = record_duration
+
+-- Generate URL (change IP/domain accordingly)
+local recording_url = "http://10.128.14.91/recordings/blast/" .. recording_name
+
+-----------------------------------------------------------
+-- QUEUE SYSTEM: Wait for any active blast to complete
+-- Checks if there's an ongoing blast for this ENS number
+-- If yes, wait until it completes before starting ours
+-- 
+-- Logic: A blast is considered "active" if there are rows
+-- created in the last 2 minutes with a DIFFERENT callid.
+-- (2 minutes is enough for a full blast cycle to start)
+-----------------------------------------------------------
+
+local QUEUE_CHECK_INTERVAL = 5000  -- Check every 5 seconds
+local QUEUE_MAX_WAIT = 600         -- Max wait 10 minutes (600 seconds)
+local queue_waited = 0
+
+while true do
+    -- Check for active blast: any blast that is still IN_PROGRESS for this ENS
+    local active_sql = string.format([[
+        SELECT DISTINCT callid
+        FROM blast_logs 
+        WHERE module = 'ens' 
+          AND ens_number = '%s'
+          AND blast_status = 'IN_PROGRESS'
+          AND callid != '%s'
+        LIMIT 1
+    ]], dialed_number, callid)
+    
+    local cur_active = db:execute(active_sql)
+    local row_active = cur_active and cur_active:fetch({}, "a")
+    if cur_active then cur_active:close() end
+    
+    if not row_active then
+        -- No active blast, we can proceed
+        freeswitch.consoleLog("INFO", 
+            string.format("[BLAST] Queue clear for ENS %s - proceeding with blast\n", dialed_number))
+        break
+    end
+    
+    local other_callid = row_active.callid or "unknown"
+    
+    -- Another blast is running, wait
+    freeswitch.consoleLog("INFO", 
+        string.format("[BLAST] ENS %s has active blast (callid=%s) - waiting in queue (waited %d sec)\n", 
+            dialed_number, other_callid, queue_waited))
+    
+    -- Check if we've waited too long
+    if queue_waited >= QUEUE_MAX_WAIT then
+        freeswitch.consoleLog("WARNING", 
+            string.format("[BLAST] Queue timeout for ENS %s after %d seconds - proceeding anyway\n", 
+                dialed_number, queue_waited))
+        break
+    end
+    
+    -- Wait and check again
+    freeswitch.msleep(QUEUE_CHECK_INTERVAL)
+    queue_waited = queue_waited + (QUEUE_CHECK_INTERVAL / 1000)
+end
+
+-----------------------------------------------------------
+-- INSERT PENDING ROWS FIRST (FULL DATA INSERT)
+-----------------------------------------------------------
+
+-- Track current attempt number (1 = initial, 2 = retry-1, 3 = retry-2, etc.)
+local current_attempt = 1
+
+db:execute("BEGIN")
+
+for _, number in ipairs(listeners) do
+    local insert_sql = string.format([[
+    INSERT INTO blast_logs (
+        callid,
+        caller_id,
+        record_start,
+        ens_number,
+        record_end,
+        record_duration,
+        recording_file,
+        blasted_to,
+        attendance_status,
+        recording_name,
+        recording_size,
+        recording_format,
+        recording_duration_sec,
+        recording_url,
+        module,
+        attempt_number,
+        blast_status,
+        created_at
+    ) VALUES (
+        '%s','%s','%s','%s','%s','%s','%s','%s',
+        'PENDING',
+        '%s','%s','%s','%s','%s','ens',
+        %d,
+        'IN_PROGRESS',
+        NOW()
+    )
+    ]],
+    callid,
+    caller,
+    record_start,
+    dialed_number,
+    record_end,
+    record_duration,
+    recording_file,
+    number,
+    recording_name,
+    recording_size,
+    recording_format,
+    recording_duration_sec,
+    recording_url,
+    current_attempt
+    )
+
+    local res, err = db:execute(insert_sql)
+
+    if not res then
+        freeswitch.consoleLog("ERR", "[BLAST] Insert Failed: " .. tostring(err) .. "\n")
+        db:execute("ROLLBACK")
+        return
+    end
+end
+
+db:execute("COMMIT")
+
+freeswitch.consoleLog("INFO", "[BLAST] All metadata inserted successfully\n")
+
+-----------------------------------------------------------
+-- CHANNEL-AWARE CONCURRENT BLAST (QUEUE MODEL)
+-- Asynchronous originates, but never more than the number of
+-- channels the system can actually handle in parallel.
+-- As each leg finishes, the next queued number is dialed.
+-----------------------------------------------------------
+
+-- Optional hard cap from API (api_data.max_concurrent); 0 / missing = auto
+local api_max_concurrent = tonumber(api_data.max_concurrent) or 0
+
+-- Absolute safety ceiling regardless of what the box says
+local ABSOLUTE_CEILING = 200
+
+-- Reserve some system capacity for inbound / other traffic (10%, min 5)
+local function detect_cap()
+    if api_max_concurrent and api_max_concurrent > 0 then
+        return api_max_concurrent
+    end
+
+    local max_s = 0
+    local cur_s = 0
+
+    local max_str = api:executeString("fsctl max_sessions") or ""
+    local cur_str = api:executeString("show channels count") or ""
+
+    max_s = tonumber(tostring(max_str):match("(%d+)")) or 0
+    cur_s = tonumber(tostring(cur_str):match("(%d+)")) or 0
+
+    local headroom = math.max(5, math.floor(max_s * 0.1))
+    local avail = max_s - cur_s - headroom
+
+    if avail < 1 then avail = 1 end
+    if avail > ABSOLUTE_CEILING then avail = ABSOLUTE_CEILING end
+
+    freeswitch.consoleLog("INFO",
+        string.format("[BLAST] Channel capacity: max_sessions=%d current=%d headroom=%d -> cap=%d\n",
+            max_s, cur_s, headroom, avail))
+
+    return avail
+end
+
+-- =====================================================
+-- EVENT CONSUMERS: Track ANSWER and HANGUP events
+-- =====================================================
+local answer_consumer = freeswitch.EventConsumer("CHANNEL_ANSWER")
+local hangup_consumer = freeswitch.EventConsumer("CHANNEL_HANGUP_COMPLETE")
+
+-- Track call outcomes: uuid -> {number, answered, hangup_cause}
+local call_outcomes = {}
+
+-- Failure causes that should trigger immediate retry
+local RETRIABLE_CAUSES = {
+    ["NORMAL_TEMPORARY_FAILURE"] = true,
+    ["RECOVERY_ON_TIMER_EXPIRE"] = true,
+    ["DESTINATION_OUT_OF_ORDER"] = true,
+    ["NETWORK_OUT_OF_ORDER"] = true,
+    ["CALL_REJECTED"] = true,
+    ["SERVICE_UNAVAILABLE"] = true,
+    ["CHAN_NOT_IMPLEMENTED"] = true,
+    ["GATEWAY_DOWN"] = true,
+    ["BEARERCAPABILITY_NOTAVAIL"] = true,
+    ["FACILITY_NOT_SUBSCRIBED"] = true,
+    ["OUTGOING_CALL_BARRED"] = true,
+    ["INCOMPATIBLE_DESTINATION"] = true,
+    ["SWITCH_CONGESTION"] = true,
+    ["REQUESTED_CHAN_UNAVAIL"] = true,
+    ["SUBSCRIBER_ABSENT"] = true,
+    ["UNALLOCATED_NUMBER"] = true,  -- Wrong number, but retry in case temp issue
+}
+
+-- Drain CHANNEL_ANSWER events and track which calls were answered
+local function drain_answer_events()
+    while true do
+        local evt = answer_consumer:pop(0)
+        if not evt then break end
+        
+        local evt_callid = evt:getHeader("variable_blast_callid")
+        local evt_number = evt:getHeader("variable_blast_user")
+        local evt_uuid = evt:getHeader("Unique-ID")
+        
+        if evt_callid == callid and evt_number and evt_uuid then
+            call_outcomes[evt_uuid] = call_outcomes[evt_uuid] or {number = evt_number}
+            call_outcomes[evt_uuid].answered = true
+            
+            -- Mark ATTENDED in DB immediately
+            local answered_time = os.date("%Y-%m-%d %H:%M:%S")
+            local upd_sql = string.format([[
+                UPDATE blast_logs
+                SET attendance_status = 'ATTENDED',
+                    answered_at = COALESCE(answered_at, '%s'),
+                    attempt_number = %d
+                WHERE module = 'ens'
+                  AND callid = '%s'
+                  AND blasted_to = '%s'
+                  AND attendance_status NOT IN ('ATTENDED', 'REPLAYED')
+            ]], answered_time, current_attempt, callid, evt_number)
+            
+            local ok, err = db:execute(upd_sql)
+            if ok then
+                freeswitch.consoleLog("INFO",
+                    string.format("[BLAST] Marked ATTENDED for %s attempt=%d (via CHANNEL_ANSWER)\n", 
+                        evt_number, current_attempt))
+            end
+        end
+    end
+end
+
+-- Drain CHANNEL_HANGUP_COMPLETE events and track failure causes
+local function drain_hangup_events()
+    while true do
+        local evt = hangup_consumer:pop(0)
+        if not evt then break end
+        
+        local evt_callid = evt:getHeader("variable_blast_callid")
+        local evt_number = evt:getHeader("variable_blast_user")
+        local evt_uuid = evt:getHeader("Unique-ID")
+        local hangup_cause = evt:getHeader("Hangup-Cause") or "UNKNOWN"
+        
+        if evt_callid == callid and evt_number and evt_uuid then
+            call_outcomes[evt_uuid] = call_outcomes[evt_uuid] or {number = evt_number}
+            call_outcomes[evt_uuid].hangup_cause = hangup_cause
+            call_outcomes[evt_uuid].completed = true
+            
+            freeswitch.consoleLog("INFO",
+                string.format("[BLAST] Hangup %s cause=%s answered=%s\n",
+                    evt_number, hangup_cause,
+                    tostring(call_outcomes[evt_uuid].answered or false)))
+        end
+    end
+end
+
+-- Drain all events
+local function drain_all_events()
+    drain_answer_events()
+    drain_hangup_events()
+end
+
+-- Count UUIDs still alive; prune dead ones and collect failures
+local function count_active(in_flight, wave_failures)
+    local active = 0
+    local now = os.time()
+    
+    for uuid, info in pairs(in_flight) do
+        if (now - info.submitted) < 1 then
+            active = active + 1
+        else
+            local res = api:executeString("uuid_exists " .. uuid) or ""
+            if tostring(res):match("true") then
+                active = active + 1
+            else
+                -- Channel gone - check outcome
+                local outcome = call_outcomes[uuid]
+                if outcome then
+                    local cause = outcome.hangup_cause or "UNKNOWN"
+                    local answered = outcome.answered or false
+                    
+                    -- If NOT answered AND cause is retriable, add to failures
+                    if not answered and RETRIABLE_CAUSES[cause] then
+                        table.insert(wave_failures, info.number)
+                        freeswitch.consoleLog("WARNING",
+                            string.format("[BLAST] %s failed with retriable cause %s - will retry\n",
+                                info.number, cause))
+                    end
+                end
+                in_flight[uuid] = nil
+            end
+        end
+    end
+    return active
+end
+
+local function submit_originate(number)
+    local uuid = api:executeString("create_uuid")
+    local cli_number = tostring(retry_number or "9999")
+
+    local originate_cmd = string.format(
+        "bgapi originate {origination_uuid=%s,origination_caller_id_number=%s,origination_caller_id_name=%s,sip_h_P-Asserted-Identity=sip:%s@yerp.com,ignore_early_media=true,originate_timeout=30,blast_callid=%s,blast_user=%s}"..
+        "sofia/gateway/%s/%s &playback(%s)",
+        uuid,
+        cli_number,
+        cli_number,
+        cli_number,
+        callid,
+        number,
+        gateway_name,
+        number,
+        recording_file
+    )
+
+    api:executeString(originate_cmd)
+    
+    -- Brief delay then verify channel was created (catches throttle failures)
+    freeswitch.msleep(100)
+    local exists = api:executeString("uuid_exists " .. uuid) or ""
+    if not tostring(exists):match("true") then
+        freeswitch.consoleLog("WARNING",
+            string.format("[BLAST] Originate may have failed for %s (uuid=%s) - will retry in next wave\n",
+                number, uuid))
+        return nil  -- Signal failure
+    end
+    
+    return uuid
+end
+
+-- Drain a list of numbers through a concurrency-limited queue.
+-- Returns after every submitted leg has finished (uuid no longer exists).
+-- Returns: {originate_failed = {...}, call_failed = {...}}
+-- - originate_failed: Numbers where bgapi originate itself failed (throttle)
+-- - call_failed: Numbers where call connected but failed (NORMAL_TEMPORARY_FAILURE, etc)
+local function blast_queue(numbers, label)
+    if not numbers or #numbers == 0 then return {originate_failed = {}, call_failed = {}} end
+
+    local cap = detect_cap()
+
+    freeswitch.consoleLog("INFO",
+        string.format("[BLAST] %s wave: %d numbers, concurrency cap=%d\n",
+            label, #numbers, cap))
+
+    local pending = {}
+    for _, n in ipairs(numbers) do
+        table.insert(pending, n)
+    end
+
+    local in_flight = {}
+    local originate_failed = {}  -- Numbers that failed to originate (throttle)
+    local call_failed = {}       -- Numbers that failed during call (retriable SIP errors)
+
+    while #pending > 0 or next(in_flight) ~= nil do
+        -- Drain events first
+        drain_all_events()
+        
+        local active = count_active(in_flight, call_failed)
+
+        while active < cap and #pending > 0 do
+            local number = table.remove(pending, 1)
+            local uuid = submit_originate(number)
+            
+            if uuid then
+                in_flight[uuid] = {
+                    uuid = uuid,
+                    number = number,
+                    submitted = os.time(),
+                }
+                call_outcomes[uuid] = {number = number, answered = false}
+                active = active + 1
+                freeswitch.consoleLog("INFO",
+                    string.format("[BLAST] %s submitted %s (uuid=%s) | in-flight=%d pending=%d\n",
+                        label, number, uuid, active, #pending))
+            else
+                -- Originate failed (throttle/error), save for retry
+                table.insert(originate_failed, number)
+                freeswitch.consoleLog("WARNING",
+                    string.format("[BLAST] %s ORIGINATE FAILED %s | will retry later\n",
+                        label, number))
+                -- Brief pause before next attempt to let system recover
+                freeswitch.msleep(500)
+            end
+        end
+
+        if #pending > 0 or next(in_flight) ~= nil then
+            freeswitch.msleep(200)
+        end
+    end
+
+    -- Final drain to catch any late events
+    drain_all_events()
+
+    -- Log summary
+    freeswitch.consoleLog("INFO",
+        string.format("[BLAST] %s wave complete | originate_failed=%d call_failed=%d\n",
+            label, #originate_failed, #call_failed))
+    
+    if #originate_failed > 0 then
+        freeswitch.consoleLog("WARNING",
+            string.format("[BLAST] %s originate failures: %s\n",
+                label, table.concat(originate_failed, ", ")))
+    end
+    
+    if #call_failed > 0 then
+        freeswitch.consoleLog("WARNING",
+            string.format("[BLAST] %s call failures (retriable): %s\n",
+                label, table.concat(call_failed, ", ")))
+    end
+    
+    return {originate_failed = originate_failed, call_failed = call_failed}
+end
+
+-----------------------------------------------------------
+-- FIRST ATTEMPT (queued, asynchronous, channel-limited)
+-----------------------------------------------------------
+
+local initial_result = blast_queue(listeners, "INITIAL")
+
+-- Combine all failures for immediate recovery
+local all_initial_failures = {}
+for _, num in ipairs(initial_result.originate_failed) do
+    table.insert(all_initial_failures, num)
+end
+for _, num in ipairs(initial_result.call_failed) do
+    table.insert(all_initial_failures, num)
+end
+
+-- If any numbers failed during initial wave, retry them immediately
+if #all_initial_failures > 0 then
+    freeswitch.consoleLog("INFO",
+        string.format("[BLAST] INITIAL-RECOVERY: Retrying %d failed numbers (originate=%d, call=%d)\n",
+            #all_initial_failures,
+            #initial_result.originate_failed,
+            #initial_result.call_failed))
+    freeswitch.msleep(3000)  -- Pause for system to recover
+    
+    local recovery_result = blast_queue(all_initial_failures, "INITIAL-RECOVERY")
+    local still_failed = #recovery_result.originate_failed + #recovery_result.call_failed
+    
+    if still_failed > 0 then
+        freeswitch.consoleLog("WARNING",
+            string.format("[BLAST] %d numbers still failed after INITIAL-RECOVERY (will retry in retry waves)\n",
+                still_failed))
+    end
+end
+
+freeswitch.consoleLog("INFO", "[BLAST] First blast finished\n")
+
+-----------------------------------------------------------
+-- RETRY LOGIC (same queue model)
+-----------------------------------------------------------
+
+for attempt = 1, retry_count do
+
+    -- Update current attempt number (attempt 1 = retry-1 = overall attempt 2)
+    current_attempt = attempt + 1
+    
+    freeswitch.consoleLog("INFO",
+        "[BLAST] Starting retry attempt "..attempt.." (attempt_number="..current_attempt..") immediately\n")
+
+    -------------------------------------------------------
+    -- CHECK FAILED USERS
+    -------------------------------------------------------
+
+    local retry_sql = string.format([[
+        SELECT DISTINCT blasted_to
+        FROM blast_logs
+        WHERE module = 'ens'
+          AND callid = '%s'
+          AND attendance_status NOT IN ('ATTENDED', 'REPLAYED')
+    ]], callid)
+
+    local cur_retry = db:execute(retry_sql)
+
+    local retry_list = {}
+
+    if cur_retry then
+        local row = cur_retry:fetch({}, "a")
+
+        while row do
+            table.insert(retry_list, row.blasted_to)
+            row = cur_retry:fetch({}, "a")
+        end
+
+        cur_retry:close()
+    end
+
+    if #retry_list == 0 then
+        freeswitch.consoleLog("INFO",
+        "[BLAST] No users left to retry\n")
+        break
+    end
+
+    freeswitch.consoleLog("INFO",
+    "[BLAST] Retrying "..#retry_list.." users\n")
+
+    -------------------------------------------------------
+    -- UPDATE attempt_number FOR ALL USERS BEING RETRIED
+    -------------------------------------------------------
+    for _, retry_num in ipairs(retry_list) do
+        local update_attempt_sql = string.format([[
+            UPDATE blast_logs
+            SET attempt_number = %d
+            WHERE module = 'ens'
+              AND callid = '%s'
+              AND blasted_to = '%s'
+        ]], current_attempt, callid, retry_num)
+        
+        db:execute(update_attempt_sql)
+    end
+    
+    freeswitch.consoleLog("INFO",
+        "[BLAST] Updated attempt_number to "..current_attempt.." for "..#retry_list.." users\n")
+
+    -------------------------------------------------------
+    -- DRAIN RETRY LIST THROUGH THE SAME QUEUE
+    -- NOTE: We do NOT reset to PENDING here anymore.
+    -- The eventlistener.js will update regardless of current status.
+    -------------------------------------------------------
+
+    local retry_result = blast_queue(retry_list, "RETRY-" .. attempt)
+    
+    -- Combine all failures for recovery
+    local all_retry_failures = {}
+    for _, num in ipairs(retry_result.originate_failed) do
+        table.insert(all_retry_failures, num)
+    end
+    for _, num in ipairs(retry_result.call_failed) do
+        table.insert(all_retry_failures, num)
+    end
+    
+    -- If any numbers failed during retry, try them once more
+    if #all_retry_failures > 0 then
+        freeswitch.consoleLog("INFO",
+            string.format("[BLAST] RETRY-%d-RECOVERY: Retrying %d failed numbers (originate=%d, call=%d)\n",
+                attempt,
+                #all_retry_failures,
+                #retry_result.originate_failed,
+                #retry_result.call_failed))
+        freeswitch.msleep(3000)  -- Pause for system to recover
+        blast_queue(all_retry_failures, "RETRY-" .. attempt .. "-RECOVERY")
+    end
+
+end
+
+freeswitch.consoleLog("INFO", "[BLAST] Retry process finished\n")
+
+-----------------------------------------------------------
+-- MARK BLAST AS COMPLETED
+-- This allows queued blasts to proceed
+-----------------------------------------------------------
+local complete_sql = string.format([[
+    UPDATE blast_logs 
+    SET blast_status = 'COMPLETED'
+    WHERE module = 'ens' AND callid = '%s'
+]], callid)
+
+local ok_complete, err_complete = db:execute(complete_sql)
+if ok_complete then
+    freeswitch.consoleLog("INFO", "[BLAST] Marked blast " .. callid .. " as COMPLETED\n")
+else
+    freeswitch.consoleLog("ERR", "[BLAST] Failed to mark blast COMPLETED: " .. tostring(err_complete) .. "\n")
+end
+
+db:close()
+env:close()

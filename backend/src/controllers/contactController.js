@@ -7,7 +7,13 @@ import { effectiveTenantId } from '../middleware/tenantScope.js';
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 const emptyToNullEmail = z.preprocess(v => (v === '' ? null : v), z.string().email().nullable().optional());
 
-const ContactSchema = z.object({
+// ContactBaseSchema is a plain ZodObject — no .refine() attached.
+// This is intentional: ZodObject.refine() returns ZodEffects, which does NOT have
+// a .partial() method. Calling .partial() on ZodEffects throws "X.partial is not a
+// function" at runtime. The cross-field check (mobile OR extension required) is
+// added only on ContactSchema (create path) where .partial() is never called.
+// See ivrValidator.js for the same pattern with a more detailed comment.
+const ContactBaseSchema = z.object({
   organization_id:  z.number().int().positive(),
   location_id:      z.number().int().positive().optional().nullable(),
   department_id:    z.number().int().positive().optional().nullable(),
@@ -18,10 +24,19 @@ const ContactSchema = z.object({
   extension_number: emptyToNull,
   email:            emptyToNullEmail,
   is_active:        z.boolean().default(true),
-}).refine(
+});
+
+// ContactSchema (create / bulk-upload): full validation including cross-field refine.
+const ContactSchema = ContactBaseSchema.refine(
   d => d.mobile_number || d.extension_number,
   { message: 'At least one of mobile_number or extension_number is required' }
 );
+
+// ContactUpdateSchema (PATCH/PUT update): partial — only sent fields are validated.
+// The cross-field refine is intentionally omitted here: the update query uses COALESCE,
+// so fields not present in the request body keep their existing database values.
+// The mobile-or-extension invariant is preserved by the CREATE-time check above.
+const ContactUpdateSchema = ContactBaseSchema.partial();
 
 // Verify that an organization belongs to the caller's effective tenant.
 async function verifyOrgTenant(orgId, tenantId) {
@@ -111,7 +126,7 @@ export const createContact = asyncHandler(async (req, res) => {
 });
 
 export const updateContact = asyncHandler(async (req, res) => {
-  const d = ContactSchema.partial().parse(req.body);
+  const d = ContactUpdateSchema.parse(req.body);
   const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `UPDATE emergency_contacts c SET

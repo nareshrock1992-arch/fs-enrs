@@ -6,6 +6,7 @@ import { emitInternal } from '../../services/socketService.js';
 import { getConferenceMemberCount } from '../../services/eslService.js';
 import { startRingAll, lookupCallerIdentity } from '../../services/ersRingService.js';
 import { resolveConferenceRoom, getConferenceProfile } from '../../services/conferenceManager.js';
+import { config } from '../../config/index.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -190,7 +191,8 @@ export const ersLookup = asyncHandler(async (req, res) => {
        en.service_name,
        en.organization_id,
        ec.gateway_override,
-       sg.name AS gateway_name
+       sg.name AS gateway_name,
+       sg.sip_domain AS gateway_sip_domain
      FROM emergency_numbers en
      JOIN ers_configurations ec
        ON ec.id = en.ers_configuration_id
@@ -287,6 +289,10 @@ export const ersLookup = asyncHandler(async (req, res) => {
       recording_format:            cfg.recording_format ?? 'wav',
       // Gateway — gateway_override wins over sip_gateway_id-resolved name
       gateway_name:                cfg.gateway_override?.trim() || cfg.gateway_name || null,
+      // SIP domain for P-Asserted-Identity in ers_conference_bridge.lua.
+      // Priority: gateway sip_domain > FS_SIP_DOMAIN env var > null (bridge suppresses PAI).
+      // Fallback is resolved here so Lua gets a single usable value without needing env access.
+      gateway_sip_domain:          cfg.gateway_sip_domain || config.freeswitch.sipDomain || null,
       // Auth
       pin_required:                Boolean(cfg.pin),
       allow_rejoin:                cfg.allow_rejoin ?? true,

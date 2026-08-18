@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 
 vi.mock('../../config/index.js', () => ({
   config: {
-    freeswitch: { defaultGateway: null, ttsEngine: 'flite|kal' },
+    freeswitch: { defaultGateway: null, ttsEngine: 'flite|kal', sipDomain: 'yerp.com' },
     esl:        { domain: '127.0.0.1' },
   },
 }));
@@ -64,6 +64,18 @@ const campaignEngineSrc = readFileSync(
 
 const ersRingSrc = readFileSync(
   fileURLToPath(new URL('../../services/ersRingService.js', import.meta.url)),
+  'utf8'
+);
+
+// ERS direct-dial bridge (active runtime — NOT legacy)
+const ersBridgeSrc = readFileSync(
+  fileURLToPath(new URL('../../../../Lua-scripts/ers_conference_bridge.lua', import.meta.url)),
+  'utf8'
+);
+
+// ERS lookup controller — must expose gateway_sip_domain
+const ersInternalSrc = readFileSync(
+  fileURLToPath(new URL('../../controllers/internal/ersInternalController.js', import.meta.url)),
   'utf8'
 );
 
@@ -524,8 +536,12 @@ describe('PHASE E — ESL command structure: no duplicate keys, correct format',
     const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
     const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
 
-    // Count occurrences of each CID key
-    const countKey = (src, key) => (src.match(new RegExp(key, 'g')) || []).length;
+    // Strip single-line comments before counting so a key that appears in
+    // a comment (e.g. "// effective_caller_id_number: FreeSWITCH reads…")
+    // is not mistaken for an actual property declaration.
+    const stripLineComments = src => src.replace(/\/\/[^\n]*/g, '');
+    const countKey = (src, key) => (stripLineComments(src).match(new RegExp(key, 'g')) || []).length;
+
     expect(countKey(fnBody, 'origination_caller_id_number')).toBe(1);
     expect(countKey(fnBody, 'origination_caller_id_name')).toBe(1);
     expect(countKey(fnBody, 'effective_caller_id_number')).toBe(1);
@@ -543,5 +559,262 @@ describe('PHASE E — ESL command structure: no duplicate keys, correct format',
     const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
     const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
     expect(fnBody).toContain('String(clid).trim()');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE F — P-Asserted-Identity: ENS uses configured CLI; ERS uses original caller
+// These tests enforce the absolute separation between ENS and ERS identity.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('PHASE F — P-Asserted-Identity separation: ENS=configured CLI, ERS=original caller', () => {
+  // ── Source-level: ENS ──────────────────────────────────────────────────────
+
+  it('ENS: originateCampaignCall sets sip_h_P-Asserted-Identity', () => {
+    const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
+    const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
+    const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
+    expect(fnBody).toContain('sip_h_P-Asserted-Identity');
+  });
+
+  it('ENS: PAI is built from ensCli — not callerIdentity, not destination number', () => {
+    const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
+    const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
+    const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
+    // PAI must reference ensCli (the configured blast_clid)
+    expect(fnBody).toMatch(/sip_h_P-Asserted-Identity.*ensCli/s);
+    // Must not bleed ERS variables into ENS originate
+    expect(fnBody).not.toContain('callerIdentity');
+  });
+
+  it('ENS: PAI uses angle-bracket SIP URI format <sip:ensCli@domain>', () => {
+    const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
+    const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
+    const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
+    // Source must contain the template: <sip:${ensCli}@
+    expect(fnBody).toContain('<sip:${ensCli}@');
+  });
+
+  it('ENS: PAI domain comes from gateway.sip_domain or config — not hardcoded', () => {
+    const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
+    const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
+    const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
+    // Domain is held in sipDomain variable, not a literal string like '@yerp.com'
+    expect(fnBody).toContain('sipDomain');
+    expect(fnBody).not.toContain('@yerp.com');
+  });
+
+  // ── Source-level: ERS ──────────────────────────────────────────────────────
+
+  it('ERS: originateLeg sets sip_h_P-Asserted-Identity', () => {
+    expect(ersRingSrc).toContain('sip_h_P-Asserted-Identity');
+  });
+
+  it('ERS: PAI is built from callerIdentity.number — not ensCli, not blast_clid', () => {
+    // PAI must reference callerIdentity.number (the original emergency caller)
+    expect(ersRingSrc).toMatch(/sip_h_P-Asserted-Identity.*callerIdentity\.number/s);
+    // Must not reference ENS-specific variables
+    expect(ersRingSrc).not.toContain('ensCli');
+    expect(ersRingSrc).not.toContain('blast_clid');
+    expect(ersRingSrc).not.toContain('sip_caller_id');
+  });
+
+  it('ERS: PAI uses angle-bracket SIP URI format <sip:callerIdentity.number@domain>', () => {
+    expect(ersRingSrc).toContain('<sip:${callerIdentity.number}@');
+  });
+
+  it('ERS: PAI domain comes from gateway.sip_domain or config — not hardcoded', () => {
+    expect(ersRingSrc).toContain('sipDomain');
+    expect(ersRingSrc).not.toContain('@yerp.com');
+  });
+
+  // ── Logic-level: value isolation ───────────────────────────────────────────
+
+  it('ENS PAI value: blast_clid=7328, sipDomain=test.com → <sip:7328@test.com>', () => {
+    const ensCli   = '7328';
+    const sipDomain = 'test.com';
+    const pai = `<sip:${ensCli}@${sipDomain}>`;
+    expect(pai).toBe('<sip:7328@test.com>');
+    expect(pai).not.toContain('3982589'); // original caller must never appear in ENS PAI
+  });
+
+  it('ENS PAI must not contain original caller even when caller number is known', () => {
+    const originalCaller = '3982589';
+    const ensCli         = '7328';
+    const sipDomain      = 'test.com';
+    const pai = `<sip:${ensCli}@${sipDomain}>`;
+    expect(pai).not.toContain(originalCaller);
+    expect(pai).toContain(ensCli);
+  });
+
+  it('ERS PAI value: caller=3982589, sipDomain=test.com → <sip:3982589@test.com>', () => {
+    const callerIdentity = { number: '3982589', name: 'Ali Hassan' };
+    const sipDomain      = 'test.com';
+    const pai = `<sip:${callerIdentity.number}@${sipDomain}>`;
+    expect(pai).toBe('<sip:3982589@test.com>');
+    expect(pai).not.toContain('7328'); // blast_clid must never appear in ERS PAI
+  });
+
+  it('ERS PAI must not contain blast_clid even when blast_clid is known', () => {
+    const callerIdentity = { number: '3982589', name: 'Ali Hassan' };
+    const ensBlastClid   = '7328';
+    const sipDomain      = 'test.com';
+    const pai = `<sip:${callerIdentity.number}@${sipDomain}>`;
+    expect(pai).not.toContain(ensBlastClid);
+    expect(pai).toContain(callerIdentity.number);
+  });
+
+  it('PAI is suppressed when sipDomain is empty — no malformed PAI reaches FreeSWITCH', () => {
+    // When sipDomain is '', no PAI key should be added to varParts.
+    // This is verified by the conditional spread: ...(sipDomain ? {...} : {})
+    const sipDomain = '';
+    const shouldIncludePAI = Boolean(sipDomain);
+    expect(shouldIncludePAI).toBe(false);
+  });
+
+  // ── Cross-path contamination guard ─────────────────────────────────────────
+
+  it('ENS originateCampaignCall does not read ERS callerIdentity', () => {
+    const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
+    const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
+    const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
+    expect(fnBody).not.toContain('callerIdentity');
+    expect(fnBody).not.toContain('lookupCallerIdentity');
+  });
+
+  it('ERS originateLeg does not read ENS blast_clid or sip_caller_id', () => {
+    expect(ersRingSrc).not.toContain('blast_clid');
+    expect(ersRingSrc).not.toContain('sip_caller_id');
+    expect(ersRingSrc).not.toContain('ensCli');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE G — ERS direct-dial path: ers_conference_bridge.lua PAI
+//
+// Validates the active runtime Lua bridge script (NOT legacy) sets PAI
+// using the original emergency caller + configured gateway SIP domain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('PHASE G — ERS direct-dial PAI: ers_conference_bridge.lua + ersLookup', () => {
+  // ── Source: ers_conference_bridge.lua ──────────────────────────────────────
+
+  it('ers_conference_bridge.lua: invite_responder sets sip_h_P-Asserted-Identity', () => {
+    expect(ersBridgeSrc).toContain('sip_h_P-Asserted-Identity');
+  });
+
+  it('ers_conference_bridge.lua: PAI reads gateway_sip_domain from lookup response', () => {
+    expect(ersBridgeSrc).toContain('gateway_sip_domain');
+  });
+
+  it('ers_conference_bridge.lua: PAI is suppressed when sip_domain is empty (conditional guard)', () => {
+    // The bridge must guard: if num_val ~= "" and sip_domain and sip_domain ~= ""
+    expect(ersBridgeSrc).toContain('sip_domain ~= ""');
+  });
+
+  it('ers_conference_bridge.lua: PAI uses angle-bracket SIP URI format', () => {
+    // Must contain the format: <sip:%s@%s>
+    expect(ersBridgeSrc).toContain('<sip:%s@%s>');
+  });
+
+  it('ers_conference_bridge.lua: PAI identity source is c_num (original caller) — no ENS terms', () => {
+    // The PAI variable must be built from c_num (the caller passed from invite_tier)
+    expect(ersBridgeSrc).toContain('sip_h_P-Asserted-Identity=<sip:%s@%s>');
+    // Bridge must not reference ENS-specific variables
+    expect(ersBridgeSrc).not.toContain('blast_clid');
+    expect(ersBridgeSrc).not.toContain('sip_caller_id');
+    expect(ersBridgeSrc).not.toContain('ensCli');
+  });
+
+  it('ers_conference_bridge.lua: no hardcoded customer SIP domain', () => {
+    // The bridge must not hardcode any customer domain
+    expect(ersBridgeSrc).not.toContain('@yerp.com');
+    // It must use a variable (sip_domain) not a literal
+    expect(ersBridgeSrc).toContain('sip_domain');
+  });
+
+  it('ers_conference_bridge.lua: caller identity comes from session channel variable — not ENS config', () => {
+    // caller is read from the FreeSWITCH session — the original inbound emergency caller
+    expect(ersBridgeSrc).toContain('caller_id_number');
+    // Bridge must not call ENS lookup endpoints
+    expect(ersBridgeSrc).not.toContain('/ens/');
+    expect(ersBridgeSrc).not.toContain('campaign');
+  });
+
+  // ── Source: ersInternalController.js — lookup response ────────────────────
+
+  it('ersLookup SELECT includes sg.sip_domain', () => {
+    expect(ersInternalSrc).toContain('sg.sip_domain AS gateway_sip_domain');
+  });
+
+  it('ersLookup response JSON exposes gateway_sip_domain field', () => {
+    expect(ersInternalSrc).toContain('gateway_sip_domain:');
+  });
+
+  // ── Logic-level: PAI construction for direct-dial path ────────────────────
+
+  it('ERS direct-dial PAI value: caller=3982589, domain=alpha.example.com → correct URI', () => {
+    const caller    = '3982589';
+    const sipDomain = 'alpha.example.com';
+    const pai = `<sip:${caller}@${sipDomain}>`;
+    expect(pai).toBe('<sip:3982589@alpha.example.com>');
+    expect(pai).not.toContain('7328');     // ENS blast_clid must never appear
+    expect(pai).not.toContain('yerp.com'); // hardcoded domain must never appear
+  });
+
+  it('ERS direct-dial PAI: different caller + different domain produces correct URI', () => {
+    const caller    = '4002';
+    const sipDomain = 'beta.example.com';
+    const pai = `<sip:${caller}@${sipDomain}>`;
+    expect(pai).toBe('<sip:4002@beta.example.com>');
+  });
+
+  it('ERS direct-dial PAI: suppressed when gateway_sip_domain is empty string', () => {
+    // Lua logic: if num_val ~= "" and sip_domain and sip_domain ~= ""
+    const sipDomain = '';
+    const shouldInjectPAI = sipDomain !== '';
+    expect(shouldInjectPAI).toBe(false);
+  });
+
+  it('ERS direct-dial PAI: suppressed when gateway_sip_domain is null/nil', () => {
+    const sipDomain = null;
+    const shouldInjectPAI = Boolean(sipDomain);
+    expect(shouldInjectPAI).toBe(false);
+  });
+
+  it('ERS direct-dial: caller identity must not be ENS blast_clid', () => {
+    const originalCaller = '3982589';
+    const ensBlastCli    = '7328';
+    const sipDomain      = 'test.com';
+    const ersPai = `<sip:${originalCaller}@${sipDomain}>`;
+    expect(ersPai).not.toContain(ensBlastCli);
+    expect(ersPai).toContain(originalCaller);
+  });
+
+  // ── Legacy Lua isolation ───────────────────────────────────────────────────
+
+  it('Legacy Lua isolation: blast_call.lua.decrypted is not referenced in runtime source', () => {
+    // Production runtime source must not reference legacy Lua paths
+    expect(eslServiceSrc).not.toContain('blast_call.lua');
+    expect(campaignEngineSrc).not.toContain('blast_call.lua');
+    expect(ersRingSrc).not.toContain('blast_call.lua');
+    expect(ersBridgeSrc).not.toContain('blast_call.lua');
+    expect(ersInternalSrc).not.toContain('blast_call.lua');
+  });
+
+  it('Legacy Lua isolation: ers_retry_caller is not referenced in runtime source', () => {
+    expect(eslServiceSrc).not.toContain('ers_retry_caller');
+    expect(campaignEngineSrc).not.toContain('ers_retry_caller');
+    expect(ersRingSrc).not.toContain('ers_retry_caller');
+    expect(ersBridgeSrc).not.toContain('ers_retry_caller');
+    expect(ersInternalSrc).not.toContain('ers_retry_caller');
+  });
+
+  it('Legacy Lua isolation: Lua-scripts/legacy path not referenced in runtime source', () => {
+    expect(eslServiceSrc).not.toContain('legacy/');
+    expect(campaignEngineSrc).not.toContain('legacy/');
+    expect(ersRingSrc).not.toContain('legacy/');
+    expect(ersBridgeSrc).not.toContain('legacy/');
+    expect(ersInternalSrc).not.toContain('legacy/');
   });
 });

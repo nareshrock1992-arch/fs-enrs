@@ -17,6 +17,7 @@ const GatewaySchema = z.object({
   caller_id_in_from:   z.boolean().default(false),
   is_default_outbound: z.boolean().default(false),
   is_active:           z.boolean().default(true),
+  sip_domain:          emptyToNull,
 });
 
 // GET /api/v1/gateways
@@ -24,7 +25,7 @@ export const listGateways = asyncHandler(async (req, res) => {
   const tenantId = effectiveTenantId(req);
   const { rows } = await query(
     `SELECT id, tenant_id, name, type, host, port, username, register,
-            caller_id_in_from, is_default_outbound, is_active,
+            caller_id_in_from, sip_domain, is_default_outbound, is_active,
             last_deployed_at, last_deployment_status, created_at, updated_at
      FROM sip_gateways
      WHERE ($1::int IS NULL OR tenant_id = $1) AND deleted_at IS NULL
@@ -46,11 +47,12 @@ export const createGateway = asyncHandler(async (req, res) => {
     const { rows: [row] } = await tq(
       `INSERT INTO sip_gateways
          (tenant_id, name, type, host, port, username, password, register,
-          caller_id_in_from, is_default_outbound, is_active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          caller_id_in_from, sip_domain, is_default_outbound, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [tenantId, d.name, d.type, d.host, d.port, d.username, d.password,
-       d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active]
+       d.register, d.caller_id_in_from, d.sip_domain ?? null,
+       d.is_default_outbound, d.is_active]
     );
     return row;
   });
@@ -81,13 +83,15 @@ export const updateGateway = asyncHandler(async (req, res) => {
          password            = COALESCE($8,  password),
          register            = COALESCE($9,  register),
          caller_id_in_from   = COALESCE($10, caller_id_in_from),
-         is_default_outbound = COALESCE($11, is_default_outbound),
-         is_active           = COALESCE($12, is_active),
+         sip_domain          = COALESCE($11, sip_domain),
+         is_default_outbound = COALESCE($12, is_default_outbound),
+         is_active           = COALESCE($13, is_active),
          updated_at          = now()
        WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL
        RETURNING *`,
       [req.params.id, tenantId, d.name, d.type, d.host, d.port, d.username,
-       d.password, d.register, d.caller_id_in_from, d.is_default_outbound, d.is_active]
+       d.password, d.register, d.caller_id_in_from, d.sip_domain,
+       d.is_default_outbound, d.is_active]
     );
     return row;
   });

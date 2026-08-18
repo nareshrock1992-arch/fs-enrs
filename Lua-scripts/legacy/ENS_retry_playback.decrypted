@@ -1,0 +1,238 @@
+-- =========================================================
+-- RETRY PLAYBACK SCRIPT
+-- Plays the current ENS blast recording when retry is dialed.
+-- Only participants of the *latest* blast for that ENS may hear
+-- it; older blasts are ignored (removed users cannot hear prior
+-- emergencies via retry).
+-- =========================================================
+
+local http = require("socket.http")
+local ltn12 = require("ltn12")
+local cjson = require("cjson")
+
+-- DB CONFIG
+local luasql = require "luasql.postgres"
+local env = luasql.postgres()
+
+local db_name = "omni"
+local db_user = "postgres"
+local db_pass = "root"
+local db_host = "127.0.0.1"
+local db_port = 5433
+
+local sounds = "/usr/share/freeswitch/sounds/en/us/callie/blast_call"
+
+-----------------------------------------------------------
+-- GET CALL INFO
+-----------------------------------------------------------
+
+local retry_number = session:getVariable("destination_number")
+
+local caller = session:getVariable("caller_id_number")
+if not caller or caller == "" then
+    caller = session:getVariable("effective_caller_id_number") or "unknown"
+end
+
+freeswitch.consoleLog("INFO", "[RETRY] Retry number dialed: "..retry_number.."\n")
+freeswitch.consoleLog("INFO", "[RETRY] Caller: "..caller.."\n")
+
+-----------------------------------------------------------
+-- FIND ENS NUMBER USING API
+-----------------------------------------------------------
+
+-- List of ENS numbers in system (7321-7325)
+local ens_numbers = {"7321","7322","7323","7324","7325"}
+
+local ens_number = nil
+
+for _, num in ipairs(ens_numbers) do
+
+    local api_url = "http://10.128.14.91:8080/api/responder_contacts?type=ens&number="..num
+
+    local response_body = {}
+
+    local res, code = http.request{
+        url = api_url,
+        method = "GET",
+        sink = ltn12.sink.table(response_body)
+    }
+
+    if res and code == 200 then
+
+        local json_string = table.concat(response_body)
+        local decoded = cjson.decode(json_string)
+
+        if decoded and decoded.success and decoded.data and decoded.data[1] then
+
+            local data = decoded.data[1]
+
+            if tostring(data.retry_number) == retry_number then
+                ens_number = data.number
+                break
+            end
+
+        end
+    end
+end
+
+-----------------------------------------------------------
+-- IF NO ENS FOUND
+-----------------------------------------------------------
+
+if not ens_number then
+    freeswitch.consoleLog("INFO","[RETRY] No ENS mapping for retry "..retry_number.."\n")
+    session:hangup()
+    return
+end
+
+freeswitch.consoleLog("INFO","[RETRY] Retry "..retry_number.." mapped to ENS "..ens_number.."\n")
+
+-----------------------------------------------------------
+-- CONNECT DATABASE
+-----------------------------------------------------------
+
+local db = env:connect(db_name, db_user, db_pass, db_host, db_port)
+
+if not db then
+    freeswitch.consoleLog("ERR","[RETRY] DB connection failed\n")
+    session:hangup()
+    return
+end
+
+-----------------------------------------------------------
+-- FIND RECORDING FOR THIS USER ON THE CURRENT ENS BLAST ONLY
+-- Latest blast for this ENS = newest callid (by MAX(created_at)).
+-- If the caller was removed before a newer emergency, they have no
+-- row for that callid — they must not hear the previous recording.
+-- For mobile numbers (>9 digits): match on last 9 digits
+-- For extensions (<=9 digits like 1004): exact match
+-----------------------------------------------------------
+
+local sql
+
+if #caller > 9 then
+    local caller_suffix = string.sub(caller, -9)
+    freeswitch.consoleLog("INFO","[RETRY] Mobile number - matching on last 9 digits: "..caller_suffix.."\n")
+    
+    sql = string.format([[
+    SELECT bl.recording_file, bl.callid
+    FROM blast_logs bl
+    INNER JOIN (
+        SELECT callid
+        FROM blast_logs
+        WHERE module = 'ens'
+          AND ens_number = '%s'
+          AND created_at >= NOW() - INTERVAL '24 HOURS'
+        GROUP BY callid
+        ORDER BY MAX(created_at) DESC
+        LIMIT 1
+    ) latest ON bl.callid = latest.callid
+    WHERE bl.module = 'ens'
+      AND bl.ens_number = '%s'
+      AND RIGHT(bl.blasted_to, 9) = '%s'
+    LIMIT 1
+    ]], ens_number, ens_number, caller_suffix)
+else
+    freeswitch.consoleLog("INFO","[RETRY] Extension - exact match: "..caller.."\n")
+    
+    sql = string.format([[
+    SELECT bl.recording_file, bl.callid
+    FROM blast_logs bl
+    INNER JOIN (
+        SELECT callid
+        FROM blast_logs
+        WHERE module = 'ens'
+          AND ens_number = '%s'
+          AND created_at >= NOW() - INTERVAL '24 HOURS'
+        GROUP BY callid
+        ORDER BY MAX(created_at) DESC
+        LIMIT 1
+    ) latest ON bl.callid = latest.callid
+    WHERE bl.module = 'ens'
+      AND bl.ens_number = '%s'
+      AND bl.blasted_to = '%s'
+    LIMIT 1
+    ]], ens_number, ens_number, caller)
+end
+
+local cur = db:execute(sql)
+local row = cur and cur:fetch({})
+
+if cur then cur:close() end
+
+-----------------------------------------------------------
+-- IF USER WAS NOT PART OF BLAST
+-----------------------------------------------------------
+
+if not row then
+
+    freeswitch.consoleLog("INFO","[RETRY] Caller not part of blast — no authorization\n")
+
+    session:answer()
+    session:streamFile(sounds .. "/Noauthorization.wav")
+    -- Brief pause so last syllable is not clipped before hangup
+    session:sleep(1000)
+
+    session:hangup()
+
+    db:close()
+    env:close()
+
+    return
+end
+
+-----------------------------------------------------------
+-- PLAY RECORDING
+-----------------------------------------------------------
+
+local recording_file = row[1]
+local latest_callid = row[2]
+
+freeswitch.consoleLog("INFO","[RETRY] Playing recording "..tostring(recording_file).." (callid "..tostring(latest_callid)..")\n")
+
+-- Mark this caller REPLAYED only for this blast (same callid as SELECT).
+-- Use same matching logic as SELECT (last 9 digits for mobile, exact for extensions)
+local update_sql
+local answered_time = os.date("%Y-%m-%d %H:%M:%S")
+
+if #caller > 9 then
+    local caller_suffix = string.sub(caller, -9)
+    update_sql = string.format([[
+    UPDATE blast_logs
+    SET attendance_status = 'REPLAYED',
+        answered_at = COALESCE(answered_at, '%s')
+    WHERE module = 'ens'
+      AND RIGHT(blasted_to, 9) = '%s'
+      AND ens_number = '%s'
+      AND callid = '%s'
+      AND attendance_status != 'ATTENDED'
+    ]], answered_time, caller_suffix, ens_number, latest_callid)
+else
+    update_sql = string.format([[
+    UPDATE blast_logs
+    SET attendance_status = 'REPLAYED',
+        answered_at = COALESCE(answered_at, '%s')
+    WHERE module = 'ens'
+      AND blasted_to = '%s'
+      AND ens_number = '%s'
+      AND callid = '%s'
+      AND attendance_status != 'ATTENDED'
+    ]], answered_time, caller, ens_number, latest_callid)
+end
+
+local ok_upd, err_upd = db:execute(update_sql)
+if ok_upd then
+    freeswitch.consoleLog("INFO",
+        "[RETRY] Marked " .. caller .. " as REPLAYED for ENS " .. ens_number .. " (callid " .. tostring(latest_callid) .. ") via retry playback\n")
+else
+    freeswitch.consoleLog("ERR",
+        "[RETRY] Failed to update attendance for " .. caller .. " ENS " .. ens_number ..
+        ": " .. tostring(err_upd) .. "\n")
+end
+
+session:answer()
+session:streamFile(recording_file)
+session:hangup()
+
+db:close()
+env:close()

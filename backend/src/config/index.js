@@ -58,5 +58,9 @@ export const config = {
     ttsEngine:      process.env.FS_TTS_ENGINE       || 'flite|kal',
     // SIP gateway name in FreeSWITCH for outbound ENS campaign calls
     defaultGateway: process.env.FS_DEFAULT_GATEWAY  || 'default',
+    // SIP domain for P-Asserted-Identity headers (e.g. "yerp.com").
+    // Per-gateway sip_domain takes priority; this is the global fallback.
+    // Leave empty ('') to suppress PAI when no gateway sip_domain is set.
+    sipDomain:      process.env.FS_SIP_DOMAIN        || '',
   },
 };

@@ -22,6 +22,7 @@ import { eslCommand, getConferenceMemberCount, seedConferenceRegistry } from './
 import { resolveDialString } from './dialResolver.js';
 import { emitInternal } from './socketService.js';
 import { fsPathService } from './freeSwitchPathService.js';
+import { config } from '../config/index.js';
 
 // Safety cap when ring_timeout_seconds is NULL (= "indefinite" per spec).
 // This is a runaway-loop guard, not a user-facing limit: 2h of continuous
@@ -98,11 +99,15 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
     ? { gatewayName: configGatewayName }
     : { fallbackGatewayId: configGatewayId };
 
-  const { dialString } = await resolveDialString({
+  const { dialString, gateway } = await resolveDialString({
     tenantId,
     contactId: contact.id,
     ...gatewayParams,
   });
+
+  // SIP domain for P-Asserted-Identity: per-gateway sip_domain takes priority,
+  // then the global FS_SIP_DOMAIN env var. PAI is omitted when neither is set.
+  const sipDomain = gateway?.sip_domain || config.freeswitch.sipDomain || '';
 
   const vars = [
     // Caller identity passthrough — the INITIATOR's real name/number on
@@ -111,9 +116,12 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
     `origination_caller_id_number=${callerIdentity.number}`,
     `effective_caller_id_name='${callerIdentity.name.replace(/'/g, '')}'`,
     `effective_caller_id_number=${callerIdentity.number}`,
+    // Explicit PAI: overrides gateway-level sip_cid_type auto-generation.
+    // Delivers the original emergency caller's extension to Avaya SM directly.
+    sipDomain ? `sip_h_P-Asserted-Identity=<sip:${callerIdentity.number}@${sipDomain}>` : null,
     'ignore_early_media=true',
     `originate_timeout=${LEG_TIMEOUT_S}`,
-  ].join(',');
+  ].filter(Boolean).join(',');
 
   const cmd = `bgapi originate {${vars}}${dialString} &conference(${room}@${conferenceProfile})`;
   console.log(

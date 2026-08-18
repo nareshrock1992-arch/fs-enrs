@@ -1,0 +1,381 @@
+-- =========================================================
+-- ERS EMERGENCY CONFERENCE SYSTEM
+-- Handles: 7334-7338 (5 emergency groups)
+-- Callback: 7339-7343 (maps to 7334-7338 respectively)
+-- Logic:   1st caller → primary conf, 2nd caller → secondary conf
+--          3rd+ caller → wait/hold until a group frees up
+--          Background script retries calling group members
+--          Records conference + logs to blast_logs (module='ers')
+-- =========================================================
+
+local http    = require("socket.http")
+local ltn12   = require("ltn12")
+local cjson   = require("cjson")
+local luasql  = require("luasql.postgres")
+
+-------------------------------
+-- CONFIG
+-------------------------------
+
+local db_name     = "omni"
+local db_user     = "postgres"
+local db_pass     = "root"
+local db_host     = "127.0.0.1"
+local db_port     = 5433
+local gateway     = "avaya"
+local api_base    = "http://10.128.14.91:8080/api"      
+-- When both primary and secondary are busy, play this IVR prompt
+-- in short loops so we can periodically re-check for a free slot.
+local hold_prompt = "/usr/share/freeswitch/sounds/en/us/callie/blast_call/EmergencyLineBusy.wav"
+
+local recording_path     = "/var/lib/freeswitch/recordings/blast/"
+local recording_base_url = "http://10.128.14.91/recordings/blast/"
+
+-------------------------------
+-- INIT
+-------------------------------
+
+if not session or not session:ready() then return end
+
+local fapi = freeswitch.API()
+
+-------------------------------
+-- HELPERS
+-------------------------------
+
+local function conf_member_count(room_name)
+    local result = fapi:executeString("conference " .. room_name .. " list count")
+    return tonumber(result) or 0
+end
+
+local function fetch_json(url)
+    local body = {}
+    local _, code = http.request{
+        url    = url,
+        method = "GET",
+        sink   = ltn12.sink.table(body)
+    }
+    if code ~= 200 then return nil end
+    local ok, decoded = pcall(cjson.decode, table.concat(body))
+    if not ok then return nil end
+    return decoded
+end
+
+-------------------------------
+-- GET DESTINATION NUMBER
+-------------------------------
+
+local dest = session:getVariable("destination_number")
+if not dest then
+    freeswitch.consoleLog("ERR", "[ERS] No destination_number on session\n")
+    return
+end
+
+freeswitch.consoleLog("INFO", "[ERS] Incoming call to group " .. dest .. "\n")
+
+-------------------------------
+-- FETCH GROUP CONFIG FROM API
+-------------------------------
+
+local data = fetch_json(api_base .. "/responder_contacts?type=ers&number=" .. dest)
+
+if not data or not data.success or not data.data or #data.data == 0 then
+    freeswitch.consoleLog("ERR", "[ERS] API fetch failed or empty response for group " .. dest .. "\n")
+    session:answer()
+    session:execute("speak", "flite|slt|System error. Cannot load group configuration.")
+    session:sleep(2000)
+    session:hangup()
+    return
+end
+
+local cfg              = data.data[1]
+local primary_numbers  = cfg.primary  or {}
+local secondary_numbers = cfg.secondary or {}
+local retry_count      = tonumber(cfg.retry) or 2
+
+if #primary_numbers == 0 then
+    freeswitch.consoleLog("ERR", "[ERS] No primary numbers for group " .. dest .. "\n")
+    session:answer()
+    session:execute("speak", "flite|slt|No responders configured for this group.")
+    session:sleep(2000)
+    session:hangup()
+    return
+end
+
+freeswitch.consoleLog("INFO",
+    "[ERS] Group=" .. dest ..
+    " Primary=" .. #primary_numbers ..
+    " Secondary=" .. #secondary_numbers ..
+    " Retry=" .. retry_count .. "\n")
+
+-------------------------------
+-- DB CONNECT
+-------------------------------
+
+local env = luasql.postgres()
+local db  = env:connect(db_name, db_user, db_pass, db_host, db_port)
+
+if not db then
+    freeswitch.consoleLog("ERR", "[ERS] DB connection failed\n")
+    session:answer()
+    session:execute("speak", "flite|slt|Database error. Please try again.")
+    session:sleep(2000)
+    session:hangup()
+    env:close()
+    return
+end
+
+-------------------------------
+-- GET CALLER ID
+-------------------------------
+
+local caller = session:getVariable("effective_caller_id_number")
+if not caller or caller == "" then
+    caller = session:getVariable("caller_id_number") or "unknown"
+end
+
+freeswitch.consoleLog("INFO", "[ERS] Caller: " .. caller .. "\n")
+
+-------------------------------
+-- CONFERENCE ROOM NAMES
+-------------------------------
+
+local primary_room   = "ers_" .. dest .. "_primary"
+local secondary_room = "ers_" .. dest .. "_secondary"
+
+-------------------------------
+-- ANSWER CALLER
+-------------------------------
+
+session:answer()
+session:sleep(500)
+
+-------------------------------
+-- DETERMINE WHICH ROOM TO JOIN
+-------------------------------
+
+local target_room    = nil
+local target_numbers = nil
+local group_type     = nil
+
+local function check_and_route()
+    local pc = conf_member_count(primary_room)
+    local sc = conf_member_count(secondary_room)
+
+    freeswitch.consoleLog("INFO",
+        "[ERS] primary_members=" .. pc .. " secondary_members=" .. sc .. "\n")
+
+    if pc == 0 then
+        target_room    = primary_room
+        target_numbers = primary_numbers
+        group_type     = "primary"
+        return true
+    elseif sc == 0 then
+        target_room    = secondary_room
+        target_numbers = secondary_numbers
+        group_type     = "secondary"
+        return true
+    end
+    return false
+end
+
+if not check_and_route() then
+    freeswitch.consoleLog("INFO", "[ERS] Both groups active. Holding caller " .. caller .. "\n")
+
+    while session:ready() do
+        -- Play a finite prompt/clip so control returns here and
+        -- we can periodically re-check conference availability.
+        session:streamFile(hold_prompt)
+        session:sleep(2000)
+
+        if not session:ready() then break end
+
+        if check_and_route() then
+            freeswitch.consoleLog("INFO", "[ERS] Slot freed. Routing " .. caller .. " to " .. target_room .. "\n")
+            break
+        end
+    end
+
+    if not session:ready() then
+        freeswitch.consoleLog("INFO", "[ERS] Waiting caller " .. caller .. " hung up\n")
+        db:close()
+        env:close()
+        return
+    end
+end
+
+freeswitch.consoleLog("INFO",
+    "[ERS] " .. caller .. " → " .. target_room .. " (" .. group_type .. ")\n")
+
+-------------------------------
+-- GENERATE SESSION ID (CALLID)
+-------------------------------
+
+local session_id = fapi:executeString("create_uuid")
+
+-------------------------------
+-- LOG SESSION TO ers_sessions
+-------------------------------
+
+local ses_sql = string.format([[
+    INSERT INTO ers_sessions (id, caller_id, group_number, conf_room, group_type, created_at)
+    VALUES ('%s', '%s', '%s', '%s', '%s', NOW())
+]], session_id, caller, dest, target_room, group_type)
+
+local ok_ses, err_ses = db:execute(ses_sql)
+if not ok_ses then
+    freeswitch.consoleLog("ERR", "[ERS] ers_sessions insert failed: " .. tostring(err_ses) .. "\n")
+end
+
+-------------------------------
+-- RECORDING SETUP
+-------------------------------
+
+local record_start = os.date("%Y-%m-%d %H:%M:%S")
+local recording_file = recording_path ..
+    "ers_" .. dest .. "_" .. os.date("%Y%m%d%H%M%S") .. ".wav"
+local recording_name   = recording_file:match("([^/]+)$")
+local recording_format = recording_name:match("%.([^%.]+)$") or "wav"
+local recording_url    = recording_base_url .. recording_name
+
+-------------------------------
+-- PRE-INSERT blast_logs ROWS (attendance_status=NOT_ATTENDED)
+-- Must happen BEFORE retry script launches so UPDATE can find them
+-------------------------------
+
+db:execute("BEGIN")
+
+for _, number in ipairs(target_numbers) do
+    local ins_sql = string.format([[
+        INSERT INTO blast_logs (
+            callid, caller_id, record_start,
+            recording_file, blasted_to, attendance_status,
+            recording_name, recording_format, recording_url,
+            module, group_type, created_at
+        ) VALUES (
+            '%s','%s','%s',
+            '%s','%s','NOT_ATTENDED',
+            '%s','%s','%s',
+            'ers','%s', NOW()
+        )
+    ]],
+        session_id, caller, record_start,
+        recording_file, number,
+        recording_name, recording_format, recording_url,
+        group_type
+    )
+    local ok_ins, err_ins = db:execute(ins_sql)
+    if not ok_ins then
+        freeswitch.consoleLog("ERR",
+            "[ERS] blast_logs pre-insert failed for " .. number ..
+            ": " .. tostring(err_ins) .. "\n")
+    end
+end
+
+db:execute("COMMIT")
+
+freeswitch.consoleLog("INFO",
+    "[ERS] blast_logs pre-inserted for " .. #target_numbers ..
+    " responders as NOT_ATTENDED (callid=" .. session_id .. ")\n")
+
+-------------------------------
+-- LAUNCH BACKGROUND RETRY SCRIPT
+-- Rows are already in blast_logs so UPDATE inside retry script will work
+-------------------------------
+
+local numbers_csv = table.concat(target_numbers, ",")
+
+local bgcmd = string.format(
+    "bgapi luarun ers_retry_caller.lua %s %s %d %s %s %s %s",
+    target_room,
+    numbers_csv,
+    retry_count,
+    gateway,
+    dest,
+    session_id,
+    caller   -- pass initiator's number so responders see it as CLI
+)
+
+fapi:executeString(bgcmd)
+
+freeswitch.consoleLog("INFO",
+    "[ERS] Retry script launched: room=" .. target_room ..
+    " numbers=" .. numbers_csv ..
+    " retries=" .. retry_count .. "\n")
+
+-------------------------------
+-- START RECORDING
+-------------------------------
+
+session:execute("record_session", recording_file)
+freeswitch.consoleLog("INFO", "[ERS] Recording started: " .. recording_file .. "\n")
+
+-------------------------------
+-- JOIN CALLER TO CONFERENCE
+-- Script blocks here until this caller leaves.
+-- The conference alone-sound (Wait tone.wav) and enter-sound (beep)
+-- are configured in conference.conf.xml on the server.
+-------------------------------
+
+session:execute("conference", target_room .. "@default")
+
+-------------------------------
+-- POST-CONFERENCE: caller has left
+-- Update blast_logs rows with final recording metadata
+-------------------------------
+
+local record_end = os.date("%Y-%m-%d %H:%M:%S")
+session:execute("stop_record_session", recording_file)
+
+freeswitch.consoleLog("INFO", "[ERS] " .. caller .. " left " .. target_room .. "\n")
+freeswitch.consoleLog("INFO",
+    "[ERS] " .. target_room .. " remaining members: " ..
+    conf_member_count(target_room) .. "\n")
+freeswitch.consoleLog("INFO", "[ERS] Recording stopped: " .. recording_file .. "\n")
+
+-------------------------------
+-- COMPUTE RECORDING METADATA
+-------------------------------
+
+local duration_sql = string.format(
+    "SELECT EXTRACT(EPOCH FROM (TIMESTAMP '%s' - TIMESTAMP '%s'))::INT",
+    record_end, record_start
+)
+local cur2 = db:execute(duration_sql)
+local row2 = cur2 and cur2:fetch({})
+local record_duration = row2 and row2[1] or 0
+if cur2 then cur2:close() end
+
+local recording_size = 0
+local fh = io.open(recording_file, "rb")
+if fh then
+    recording_size = fh:seek("end") or 0
+    fh:close()
+end
+
+-------------------------------
+-- UPDATE blast_logs WITH RECORDING METADATA
+-- attendance_status already set correctly by retry script (ATTENDED/NOT_ATTENDED)
+-------------------------------
+
+local update_meta_sql = string.format([[
+    UPDATE blast_logs
+    SET
+        record_end           = '%s',
+        record_duration      = '%s',
+        recording_size       = '%s',
+        recording_duration_sec = '%s'
+    WHERE callid = '%s' AND module = 'ers'
+]], record_end, record_duration, recording_size, record_duration, session_id)
+
+local ok_upd, err_upd = db:execute(update_meta_sql)
+if not ok_upd then
+    freeswitch.consoleLog("ERR",
+        "[ERS] blast_logs metadata update failed: " .. tostring(err_upd) .. "\n")
+else
+    freeswitch.consoleLog("INFO",
+        "[ERS] blast_logs metadata updated for callid=" .. session_id .. "\n")
+end
+
+db:close()
+env:close()

@@ -108,16 +108,23 @@ end
 
 -- Originate outbound call to a responder and bridge them into the conference.
 -- Uses freeswitch.bgapi() for true non-blocking origination (not session-tied).
-local function invite_responder(number, conf_room, conf_profile, incident_uuid, gateway, c_num, c_name)
+local function invite_responder(number, conf_room, conf_profile, incident_uuid, gateway, c_num, c_name, sip_domain)
   local gw      = gateway or "user"
   local profile = conf_profile or "default"
   local num_val  = (c_num  or ""):gsub("['}]", "")
   local name_val = (c_name or ""):gsub("['}]", "")
+  -- P-Asserted-Identity: inject only when both caller and configured SIP domain are present.
+  -- Identity source: original inbound emergency caller (c_num) — never ENS blast_clid.
+  -- SIP domain source: gateway_sip_domain from /ers/lookup API response — never hardcoded.
+  local pai_vars = ""
+  if num_val ~= "" and sip_domain and sip_domain ~= "" then
+    pai_vars = string.format(",sip_h_P-Asserted-Identity=<sip:%s@%s>", num_val, sip_domain)
+  end
   local cmd     = string.format(
     "originate {ignore_early_media=true,call_timeout=30,"
     .. "origination_caller_id_number=%s,origination_caller_id_name='%s',"
-    .. "effective_caller_id_number=%s,effective_caller_id_name='%s'}%s/%s &conference(%s@%s)",
-    num_val, name_val, num_val, name_val, gw, number, conf_room, profile
+    .. "effective_caller_id_number=%s,effective_caller_id_name='%s'%s}%s/%s &conference(%s@%s)",
+    num_val, name_val, num_val, name_val, pai_vars, gw, number, conf_room, profile
   )
   log("INFO", "Inviting " .. number .. " → " .. conf_room)
   freeswitch.bgapi(cmd)
@@ -136,9 +143,12 @@ local function invite_tier(responders, conf_room, conf_profile, incident_uuid, c
     log("WARN", "No responders configured for " .. conf_room)
     return
   end
-  local gw = cfg and cfg.gateway_name and ("sofia/gateway/" .. cfg.gateway_name) or nil
+  local gw         = cfg and cfg.gateway_name and ("sofia/gateway/" .. cfg.gateway_name) or nil
+  -- gateway_sip_domain is returned by /ers/lookup from sip_gateways.sip_domain.
+  -- Empty string when no gateway is configured — invite_responder suppresses PAI in that case.
+  local sip_domain = (cfg and cfg.gateway_sip_domain) or ""
   for _, number in ipairs(responders) do
-    invite_responder(number, conf_room, conf_profile, incident_uuid, gw, c_num, c_name)
+    invite_responder(number, conf_room, conf_profile, incident_uuid, gw, c_num, c_name, sip_domain)
   end
   log("INFO", "Invited " .. #responders .. " responders to " .. conf_room)
 end
