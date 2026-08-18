@@ -83,7 +83,7 @@ export const updateGateway = asyncHandler(async (req, res) => {
          password            = COALESCE($8,  password),
          register            = COALESCE($9,  register),
          caller_id_in_from   = COALESCE($10, caller_id_in_from),
-         sip_domain          = COALESCE($11, sip_domain),
+         sip_domain          = $11,
          is_default_outbound = COALESCE($12, is_default_outbound),
          is_active           = COALESCE($13, is_active),
          updated_at          = now()

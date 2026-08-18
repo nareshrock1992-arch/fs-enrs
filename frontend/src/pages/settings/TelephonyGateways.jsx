@@ -8,6 +8,7 @@ import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
 const EMPTY = {
   name: '', type: 'generic_sip', host: '', port: 5060,
+  sip_domain: '',
   username: '', password: '', register: true, caller_id_in_from: false,
   is_default_outbound: false, is_active: true,
 };
@@ -36,7 +37,13 @@ export default function TelephonyGateways() {
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      const payload = { ...form, port: Number(form.port) || 5060 };
+      const payload = {
+        ...form,
+        port: Number(form.port) || 5060,
+        // Trim whitespace; send null (not '') so the backend stores NULL for
+        // gateways that rely on the FS_SIP_DOMAIN global fallback instead.
+        sip_domain: form.sip_domain.trim() || null,
+      };
       if (!modal.id) await api.gateways.create(payload);
       else           await api.gateways.update(modal.id, payload);
       setModal(null); load();
@@ -47,6 +54,7 @@ export default function TelephonyGateways() {
   function openEdit(r) {
     setForm({
       name: r.name, type: r.type, host: r.host, port: r.port,
+      sip_domain: r.sip_domain || '',
       username: r.username || '', password: '',
       register: r.register, caller_id_in_from: r.caller_id_in_from,
       is_default_outbound: r.is_default_outbound, is_active: r.is_active,
@@ -130,6 +138,15 @@ export default function TelephonyGateways() {
                 <input className="input" value={form.host} onChange={e => f('host', e.target.value)} placeholder="10.0.0.5" /></div>
               <div><label className="label">Port</label>
                 <input className="input" type="number" value={form.port} onChange={e => f('port', e.target.value)} /></div>
+            </div>
+            <div>
+              <label className="label">SIP Domain</label>
+              <input className="input" value={form.sip_domain}
+                     onChange={e => f('sip_domain', e.target.value)}
+                     placeholder="e.g. avaya.example.com" />
+              <p className="text-[10px] text-text-muted mt-1">
+                Optional — used in the P-Asserted-Identity header for outbound calls. Leave blank to use the global <code className="bg-surface-hover px-0.5 rounded">FS_SIP_DOMAIN</code> fallback.
+              </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div><label className="label">Username</label>
