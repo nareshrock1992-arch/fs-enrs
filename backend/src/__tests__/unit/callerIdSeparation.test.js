@@ -396,21 +396,24 @@ describe('TEST 8 — ERS: directory lookup fails → safe fallback, never blast_
     ({ lookupCallerIdentity } = await import('../../services/ersRingService.js'));
   });
 
-  it('returns raw caller number as fallback when not in directory', async () => {
+  it('returns name: null (not number-as-name) when caller is not in directory', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] }); // no directory match
 
     const result = await lookupCallerIdentity('966500000000');
 
-    expect(result.number).toBe('966500000000'); // raw caller number
-    expect(result.name).toBe('966500000000');   // raw number as display name
+    expect(result.number).toBe('966500000000'); // raw caller number preserved
+    // name is null — caller name is presentation metadata; absence must never
+    // fabricate a display name (the number is NOT a valid display name).
+    expect(result.name).toBeNull();
     expect(result.number).not.toBe('7328');     // never blast_clid
     expect(result.number).not.toBe('999');
   });
 
-  it('returns "Emergency Caller"/"unknown" for empty caller number', async () => {
+  it('returns name: null and number: "unknown" for empty caller number', async () => {
     const result = await lookupCallerIdentity('');
     expect(result.number).toBe('unknown');
-    expect(result.name).toBe('Emergency Caller');
+    // No fabricated label — null is the correct sentinel for "no name available"
+    expect(result.name).toBeNull();
     expect(result.number).not.toBe('7328'); // never blast_clid
     expect(mockQuery).not.toHaveBeenCalled();
   });

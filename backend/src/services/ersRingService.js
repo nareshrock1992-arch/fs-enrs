@@ -42,9 +42,12 @@ const activeRings = new Map();
  * high priority — security personnel must be able to call the person back).
  * Falls back to the raw number when no directory match.
  */
-export async function lookupCallerIdentity(callerNumber) {
+export async function lookupCallerIdentity(callerNumber, sipName = null) {
   const raw = String(callerNumber || '').trim();
-  if (!raw) return { name: 'Emergency Caller', number: 'unknown' };
+  // Normalise sipName: whitespace-only or empty → null (no fabricated display names).
+  const cleanSipName = (sipName && String(sipName).trim()) || null;
+
+  if (!raw) return { name: cleanSipName, number: 'unknown' };
 
   const last9 = raw.replace(/\D/g, '').slice(-9);
   const { rows: [contact] } = await query(
@@ -63,7 +66,12 @@ export async function lookupCallerIdentity(callerNumber) {
       number: contact.extension_number || contact.mobile_number || raw,
     };
   }
-  return { name: raw, number: raw };
+
+  // No directory match.
+  // Use the SIP-provided display name if present, otherwise null.
+  // Null name → originateLeg omits the name vars entirely so FreeSWITCH
+  // presents the number alone — no fabricated "1821" string as a name.
+  return { name: cleanSipName, number: raw };
 }
 
 /** Resolve a tier's responders with contact ids (for per-contact gateway overrides + participant rows). */
@@ -109,12 +117,20 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
   // then the global FS_SIP_DOMAIN env var. PAI is omitted when neither is set.
   const sipDomain = gateway?.sip_domain || config.freeswitch.sipDomain || '';
 
+  // Caller display name: null means no name was available (no directory match
+  // and no SIP display name). In that case the name vars are omitted entirely
+  // so FreeSWITCH presents the number alone — injecting an empty string or
+  // the number-as-name would produce garbled or rejected SIP From headers.
+  const safeName = callerIdentity.name ? callerIdentity.name.replace(/'/g, '') : null;
+
   const vars = [
     // Caller identity passthrough — the INITIATOR's real name/number on
-    // every responder's phone, not the system's.
-    `origination_caller_id_name='${callerIdentity.name.replace(/'/g, '')}'`,
+    // every responder's phone, not the system's. Name vars are conditional:
+    // omitted when no caller name is available (mobile/PSTN callers without
+    // a SIP display name). Number vars are always present.
+    safeName !== null ? `origination_caller_id_name='${safeName}'` : null,
     `origination_caller_id_number=${callerIdentity.number}`,
-    `effective_caller_id_name='${callerIdentity.name.replace(/'/g, '')}'`,
+    safeName !== null ? `effective_caller_id_name='${safeName}'` : null,
     `effective_caller_id_number=${callerIdentity.number}`,
     // Explicit PAI: overrides gateway-level sip_cid_type auto-generation.
     // Delivers the original emergency caller's extension to Avaya SM directly.
@@ -143,7 +159,7 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
  * Returns immediately — the loop runs in the background until a responder
  * answers, the timeout hits, or the caller abandons (room empties).
  */
-export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, ringTimeoutSeconds, configGatewayId = null, configGatewayName = null }) {
+export function startRingAll({ incidentId, incidentUuid, configId, tier, room, conferenceProfile = 'default', tenantId, callerNumber, callerName = null, ringTimeoutSeconds, configGatewayId = null, configGatewayName = null }) {
   if (activeRings.has(room)) return { started: false, reason: 'ring loop already active for this room' };
 
   const controller = { stopped: false };
@@ -151,7 +167,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
 
   (async () => {
     try {
-      const callerIdentity = await lookupCallerIdentity(callerNumber);
+      const callerIdentity = await lookupCallerIdentity(callerNumber, callerName);
       const responders = await resolveTierResponders(configId, tier);
 
       if (responders.length === 0) {

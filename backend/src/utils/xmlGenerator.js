@@ -84,6 +84,7 @@ export function generateDialplanXml(bindings = [], { nested, testMode } = {}) {
       );
     }
     lines.push(
+      `        <action application="set" data="effective_caller_id_name=\${caller_id_name}"/>`,
       `        <action application="set" data="effective_caller_id_number=\${caller_id_number}"/>`,
       `        <action application="lua"  data="ivr_executor.lua"/>`,
       `      </condition>`,
