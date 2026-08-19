@@ -15,13 +15,17 @@ const varName = z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'va
 // ── Per-type node schemas ─────────────────────────────────────────────────────
 
 // Plain ZodObject — no .refine() here.
-// Cross-field check (audio_file_id OR audio_url required) is enforced
-// by the .superRefine() on AnyNodeSchema below.
+// Cross-field check (audio_file_id OR audio_url required when source_type='url')
+// is enforced by the .superRefine() on AnyNodeSchema below.
 const PlayNodeSchema = z.object({
-  type:          z.literal('play'),
-  next:          nodeId,
-  audio_file_id: z.number().int().positive().optional(),
-  audio_url:     localAudioUrl.optional(),
+  type:              z.literal('play'),
+  next:              nodeId,
+  audio_file_id:     z.number().int().positive().optional(),
+  audio_url:         localAudioUrl.optional(),
+  // Dynamic audio source support — when audio_source_type = 'variable', the play
+  // node reads the file path from a session variable (e.g. set by record_message).
+  audio_source_type: z.enum(['url', 'variable']).optional().default('url'),
+  audio_variable:    varName.optional(),
 });
 
 const SayNodeSchema = z.object({
@@ -40,9 +44,14 @@ const GatherNodeSchema = z.object({
     b => Object.keys(b).length >= 1,
     'gather node requires at least one branch'
   ),
+  min_digits:            z.number().int().min(1).max(11).optional().default(1),
   max_digits:            z.number().int().min(1).max(11).optional().default(1),
   timeout_seconds:       z.number().int().min(1).max(60).optional().default(5),
-  terminators:           z.string().max(4).optional().default('#'),
+  // inter_digit_timeout: seconds allowed between consecutive digits; 0=FS default.
+  inter_digit_timeout:   z.number().int().min(0).max(30).optional().default(2),
+  // Empty string means "no terminator — stop at max_digits or timeout".
+  // Kept as string (not null) so the Lua handler's nil check works correctly.
+  terminators:           z.string().max(4).optional().default(''),
   variable_name:         varName.optional().default('gather_result'),
   prompt_audio_file_id:  z.number().int().positive().optional(),
   prompt_text:           z.string().max(1000).optional(),
@@ -86,7 +95,18 @@ const HangupNodeSchema = z.object({
 const ConditionNodeSchema = z.object({
   type:           z.literal('condition'),
   variable:       varName,                // session variable to read
-  operator:       z.enum(['==', '!=', 'contains', 'starts_with', 'ens_pin_valid', 'ens_callback_valid', 'time_of_day', 'day_of_week']),
+  operator:       z.enum([
+    // String comparisons
+    '==', '!=', 'contains', 'starts_with', 'ends_with',
+    // Existence checks (expected_value ignored)
+    'exists', 'not_exists',
+    // Numeric comparisons
+    'gt', 'gte', 'lt', 'lte',
+    // ENS-specific
+    'ens_pin_valid', 'ens_callback_valid',
+    // Temporal
+    'time_of_day', 'day_of_week',
+  ]),
   expected_value: z.string().max(256),    // static value or ${var_name} interpolation
   true_node:      nodeId,
   false_node:     nodeId,
@@ -104,6 +124,9 @@ const RecordMessageNodeSchema = z.object({
   variable_name:      varName,
   record_dir:         z.string().max(512).optional(),  // ignored — path resolved from FS global var
   max_seconds:        z.number().int().min(1).max(300).optional().default(60),
+  // dtmf_stop_key: '#' (default), '*', or '' (none — duration/silence only).
+  // Stored as a string to match FreeSWITCH's record application argument.
+  dtmf_stop_key:      z.string().max(1).optional().default('#'),
   silence_threshold:  z.number().int().min(10).max(2000).optional().default(500),
   silence_hits:       z.number().int().min(1).max(10).optional().default(3),
   prompt_text:        z.string().max(1000).optional(),
@@ -191,6 +214,8 @@ const EnsBlastRecordNodeSchema = z.object({
   pin_prompt_text:      z.string().max(1000).optional(),
   record_prompt_text:   z.string().max(1000).optional(),
   max_record_seconds:   z.number().int().min(5).max(300).optional().default(120),
+  silence_threshold:    z.number().int().min(10).max(2000).optional().default(500),
+  silence_hits:         z.number().int().min(1).max(10).optional().default(3),
   next:                 nodeId,
 });
 
@@ -231,11 +256,30 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   EnsBlastRecordNodeSchema,   // ZodObject ✓
   EnsPlaybackGateNodeSchema,  // ZodObject ✓
 ]).superRefine((node, ctx) => {
-  if (node.type === 'play' && node.audio_file_id === undefined && node.audio_url === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'play node requires audio_file_id or audio_url',
-    });
+  if (node.type === 'gather') {
+    const minD = node.min_digits ?? 1;
+    const maxD = node.max_digits ?? 1;
+    if (minD > maxD) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `gather: min_digits (${minD}) must not exceed max_digits (${maxD})`,
+      });
+    }
+  }
+  if (node.type === 'play') {
+    const srcType = node.audio_source_type ?? 'url';
+    if (srcType === 'url' && node.audio_file_id === undefined && node.audio_url === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'play node with static source requires audio_file_id or audio_url',
+      });
+    }
+    if (srcType === 'variable' && !node.audio_variable) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'play node with dynamic source requires audio_variable (session variable name)',
+      });
+    }
   }
   if (
     node.type === 'ens' &&

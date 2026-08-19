@@ -1,6 +1,8 @@
-import { Trash2, Star } from 'lucide-react';
+import { Trash2, Star, Search, X, Play, Check } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
+import { api } from '../../../api/client.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -134,6 +136,170 @@ function ConfigPicker({ kind, value, onChange, required }) {
   );
 }
 
+// MediaPickerField — search and select from the Media Library.
+// The selected file's /media/<filename> path is stored in the node's audio_url field.
+// This replaces the manual-path text-input for audio_url fields.
+function MediaPickerField({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [previewId, setPreviewId] = useState(null);
+  const audioRef = useRef(null);
+  const timerRef = useRef(null);
+
+  // Derive the display name from the stored /media/... path
+  const displayName = value ? value.replace(/^\/media\//, '') : '';
+
+  const search = useCallback(async (q) => {
+    setLoading(true);
+    try {
+      const r = await api.mediaLibrary.list({ search: q || undefined, limit: 30, deployed: 'true' });
+      setResults(r.files || []);
+    } catch {
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Debounced search on query change
+  useEffect(() => {
+    if (!open) return;
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => search(query), 250);
+    return () => clearTimeout(timerRef.current);
+  }, [query, open, search]);
+
+  // Load initial results when picker opens
+  useEffect(() => {
+    if (open) search(query);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function selectFile(file) {
+    // Construct /media/<filename> path expected by validate and Lua resolve_audio().
+    // resolve_audio() maps /media/<x> → SOUNDS_DIR/enrs/<x>, so the leaf of the
+    // deployed FS path is the canonical identifier. Fall back to display name.
+    const leaf = file.fs_path
+      ? file.fs_path.split('/').pop()
+      : file.path_or_uri
+        ? file.path_or_uri.split('/').pop()
+        : file.name || String(file.id);
+    onChange('/media/' + leaf);
+    setOpen(false);
+    setPreviewId(null);
+  }
+
+  function togglePreview(fileId, e) {
+    e.stopPropagation();
+    if (previewId === fileId) {
+      audioRef.current?.pause();
+      setPreviewId(null);
+    } else {
+      setPreviewId(fileId);
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      {/* Current value display + Browse button */}
+      <div className="flex gap-1.5 items-center">
+        <div className="flex-1 bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                        text-xs font-mono text-text-primary truncate min-w-0">
+          {displayName || <span className="text-text-muted">No file selected</span>}
+        </div>
+        {value && (
+          <button
+            onClick={() => onChange('')}
+            title="Clear"
+            className="text-text-muted hover:text-red-400 p-1 shrink-0"
+          >
+            <X size={12} />
+          </button>
+        )}
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs
+                     bg-brand/10 text-brand border border-brand/20 hover:bg-brand/20 transition-colors"
+        >
+          <Search size={11} /> Browse
+        </button>
+      </div>
+
+      {/* Dropdown picker */}
+      {open && (
+        <div className="border border-surface-border rounded-lg bg-surface shadow-lg overflow-hidden">
+          {/* Search bar */}
+          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-surface-border">
+            <Search size={12} className="text-text-muted shrink-0" />
+            <input
+              autoFocus
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search media…"
+              className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none"
+            />
+            {loading && <span className="text-[9px] text-text-muted">Loading…</span>}
+          </div>
+
+          {/* Results */}
+          <div className="max-h-48 overflow-y-auto">
+            {results.length === 0 && !loading && (
+              <div className="px-3 py-4 text-center text-[10px] text-text-muted">
+                {query ? 'No files match your search' : 'No deployed media files found'}
+              </div>
+            )}
+            {results.map(file => {
+              const leaf     = file.fs_path ? file.fs_path.split('/').pop() : file.name;
+              const mediaUrl = '/media/' + leaf;
+              const selected = value === mediaUrl;
+              const dur      = file.duration_sec != null
+                ? (file.duration_sec < 60
+                    ? `${file.duration_sec.toFixed(0)}s`
+                    : `${(file.duration_sec / 60).toFixed(1)}m`)
+                : null;
+              return (
+                <div
+                  key={file.id}
+                  onClick={() => selectFile(file)}
+                  className={`flex items-center gap-2 px-2.5 py-2 cursor-pointer hover:bg-surface-hover border-b border-surface-border/50 last:border-0 ${selected ? 'bg-brand/5' : ''}`}
+                >
+                  {/* Preview button */}
+                  <button
+                    onClick={e => togglePreview(file.id, e)}
+                    className="shrink-0 text-text-muted hover:text-brand p-0.5"
+                    title="Preview"
+                  >
+                    <Play size={10} className={previewId === file.id ? 'text-brand' : ''} />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-text-primary truncate">{file.name}</p>
+                    <p className="text-[9px] text-text-muted truncate">
+                      {[file.category, dur].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+                  {selected && <Check size={11} className="text-brand shrink-0" />}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Hidden audio element for preview */}
+          {previewId && (
+            <audio
+              ref={audioRef}
+              autoPlay
+              src={api.mediaLibrary.streamUrl(previewId)}
+              onEnded={() => setPreviewId(null)}
+              className="hidden"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Gather's branch key→target editor — the one genuinely bespoke widget
 // (dynamic add/remove keys, not a fixed field), driven by fieldType
 // 'branches_map' rather than a per-type component.
@@ -226,7 +392,15 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
       control = <ConfigPicker kind="ens" value={value} onChange={set} required={fieldDef.required} />;
       break;
     case 'audio_url':
+      // For play node: hide the audio_url field when source type is 'variable'.
+      // Other nodes that use audio_url (say, hangup, gather prompt) always show it.
+      if (node.audio_source_type === 'variable') return null;
+      // MediaPickerField: search + select from Media Library instead of manual path entry.
+      control = <MediaPickerField value={value} onChange={set} />;
+      break;
     case 'mono_text':
+      // For play node: hide audio_variable when source type is 'url' (not dynamic).
+      if (fieldDef.key === 'audio_variable' && node.audio_source_type !== 'variable') return null;
       control = <TextInput value={value} onChange={set} placeholder={placeholder} mono />;
       break;
     case 'branches_map':

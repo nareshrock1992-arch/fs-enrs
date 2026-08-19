@@ -52,17 +52,47 @@ export const NODE_TYPE_REGISTRY = [
     icon: '▶',
     bg: '#1e3a5f', border: '#3b6ca8', color: '#93c5fd',
     category: 'Audio',
-    description: 'Play an audio file',
+    description: 'Play an audio file or a dynamically generated recording from a session variable.',
     ports: 'next',
-    summaryTemplate: '${audio_url}',
+    summaryTemplate: '${audio_source_type === "variable" ? "${" + audio_variable + "}" : audio_url}',
     configSchema: [
-      { key: 'audio_url', label: 'Audio URL (local /media/ path)', fieldType: 'audio_url', placeholder: '/media/welcome.wav' },
-      { key: 'audio_file_id', label: 'Audio File ID (alternative)', fieldType: 'number', min: 1 },
-      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to go to after playing audio' },
+      {
+        key: 'audio_source_type', label: 'Audio Source', fieldType: 'select',
+        options: [
+          { value: 'url',      label: 'Static — Media Library / URL' },
+          { value: 'variable', label: 'Dynamic — Session Variable' },
+        ],
+        hint: 'Static: pick a file from the Media Library. Dynamic: use a file path stored in a session variable (e.g. from a Record node).',
+      },
+      {
+        key: 'audio_url', label: 'Audio File URL', fieldType: 'audio_url',
+        placeholder: '/media/welcome.wav',
+        hint: 'Local media path starting with /media/. Used when Audio Source is Static.',
+      },
+      {
+        key: 'audio_variable', label: 'Variable Name', fieldType: 'mono_text',
+        placeholder: 'recorded_file_path',
+        hint: 'Session variable that holds the audio file path at call time. Example: recorded_file_path (produced by a Record node). Used when Audio Source is Dynamic.',
+      },
+      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after the audio finishes playing.' },
     ],
     luaHandler: `
 local function exec_play(s, node)
-  local f = resolve_audio(node.audio_url)
+  local f
+  if node.audio_source_type == "variable" then
+    -- Dynamic source: resolve the file path from a session variable.
+    -- The variable is written by a Record node or set_variable node
+    -- earlier in the flow (e.g. recorded_file_path).
+    local var_name = node.audio_variable or "recorded_file_path"
+    local var_val  = s:getVariable(var_name) or ""
+    f = var_val ~= "" and var_val or nil
+    if not f then
+      freeswitch.consoleLog("WARN", "[ivr_executor] play: variable '" .. var_name .. "' is empty — skipping audio\\n")
+    end
+  else
+    -- Static source: path from the Media Library, resolved via resolve_audio().
+    f = resolve_audio(node.audio_url)
+  end
   if f then s:streamFile(f) end
   return node.next
 end`,
@@ -102,32 +132,93 @@ end`,
     ports: 'branches',
     summaryTemplate: 'max ${max_digits} digit · ${timeout_seconds}s',
     configSchema: [
-      { key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text', placeholder: 'gather_result', hint: 'Session variable that stores collected digits' },
-      { key: 'max_digits', label: 'Max Digits', fieldType: 'number', min: 1, max: 11 },
-      { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 60 },
-      { key: 'terminators', label: 'Terminators', fieldType: 'mono_text', placeholder: '#', hint: 'Keys that end collection (default #)' },
-      { key: 'prompt_audio_url', label: 'Prompt Audio URL', fieldType: 'audio_url', placeholder: '/media/menu.wav' },
-      { key: 'prompt_text', label: 'Prompt Text (TTS fallback)', fieldType: 'text', placeholder: 'Please enter your PIN' },
-      { key: 'branches', label: 'Branches (key → target node)', fieldType: 'branches_map', hint: 'Use _default to catch any input not matched above', required: true },
+      {
+        key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text',
+        placeholder: 'gather_result',
+        hint: 'Session variable that stores the collected digits. Access it later with ${gather_result}. Example: caller_pin, menu_choice, incident_number.',
+      },
+      {
+        key: 'min_digits', label: 'Minimum Digits', fieldType: 'number', min: 1, max: 11,
+        hint: 'Fewest digits accepted before the input is considered complete. FreeSWITCH re-prompts (up to 3 tries) until this minimum is met. Example: 4 for a 4-digit PIN.',
+      },
+      {
+        key: 'max_digits', label: 'Maximum Digits', fieldType: 'number', min: 1, max: 11,
+        hint: 'Collection stops automatically when this many digits are entered. For a single-key menu set both min and max to 1.',
+      },
+      {
+        key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 60,
+        hint: 'Seconds to wait for the first digit. If no digit is received within this time, the timeout branch is followed.',
+      },
+      {
+        key: 'terminators', label: 'DTMF Terminator', fieldType: 'select',
+        options: [
+          { value: '',  label: 'None — stop at max digits or timeout' },
+          { value: '#', label: '# (pound) — caller presses # to confirm' },
+          { value: '*', label: '* (star)' },
+        ],
+        hint: 'Key the caller presses to finish early. "None" is best for fixed-length inputs (menus, PINs) — collection ends as soon as max digits are reached. "#" lets callers confirm a variable-length entry.',
+      },
+      {
+        key: 'inter_digit_timeout', label: 'Inter-digit timeout (seconds)', fieldType: 'number', min: 0, max: 30,
+        hint: 'Maximum seconds allowed between consecutive digits. Defaults to 2s. Set to 0 to use FreeSWITCH\'s built-in default. Applies to playAndGetDigits path (Prompt Audio File configured).',
+      },
+      {
+        key: 'prompt_audio_url', label: 'Prompt Audio File', fieldType: 'audio_url',
+        placeholder: '/media/menu.wav',
+        hint: 'Played before digit collection starts. Takes priority over Prompt Text when both are set.',
+      },
+      {
+        key: 'prompt_text', label: 'Prompt Text (TTS fallback)', fieldType: 'text',
+        placeholder: 'Please enter your PIN followed by pound.',
+        hint: 'Spoken when no Prompt Audio File is configured.',
+      },
+      {
+        key: 'branches', label: 'Branches (digit / key → target node)', fieldType: 'branches_map',
+        hint: 'Map digit sequences to target nodes. Use _default to catch any input not listed. Use timeout for no-input timeout. Use invalid for inputs that fall through all branches.',
+        required: true,
+      },
     ],
     luaHandler: `
 local function exec_gather(s, node)
   local br      = node.branches or {}
-  local max_d   = node.max_digits      or 1
-  local timeout = (node.timeout_seconds or 10) * 1000
-  local terms   = node.terminators     or "#"
-  local digits
+  local min_d   = node.min_digits          or 1
+  local max_d   = node.max_digits          or 1
+  local timeout = (node.timeout_seconds    or 10) * 1000
+  -- inter_digit_timeout: seconds between digits (0 = FreeSWITCH built-in default).
+  -- Converted to ms for playAndGetDigits's 10th argument.
+  local idt     = (node.inter_digit_timeout or 2) * 1000
+  -- Empty string means "no terminator" — collection ends at max_digits or timeout.
+  local terms   = node.terminators or ""
+  local digits  = ""
 
   local pf = resolve_audio(node.prompt_audio_url)
   if pf then
-    digits = s:playAndGetDigits(1, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", 0)
+    -- playAndGetDigits(min, max, tries, timeout, terminators, file, invalid_file, regexp, var, inter_digit_timeout)
+    -- FreeSWITCH re-prompts up to 3 times until min_digits are collected.
+    digits = s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt) or ""
   else
-    local pt = interp(s, node.prompt_text)
-    if pt ~= "" then speak(s, pt) end
-    digits = s:getDigits(max_d, terms, timeout)
+    -- TTS path: manual retry loop enforces min_d (getDigits has no min parameter).
+    -- Up to 3 attempts; breaks immediately on timeout (empty string from getDigits).
+    local tries = 3
+    while tries > 0 and s:ready() do
+      local pt = interp(s, node.prompt_text)
+      if pt ~= "" then speak(s, pt) end
+      local d = s:getDigits(max_d, terms, timeout) or ""
+      if d == "" then break end   -- timeout → no point re-prompting
+      if #d >= min_d then digits = d; break end
+      tries = tries - 1
+      if tries > 0 then speak(s, "Please enter at least " .. tostring(min_d) .. " digit" .. (min_d > 1 and "s" or "") .. ".") end
+    end
   end
 
-  s:setVariable(node.variable_name or "gather_result", digits or "")
+  s:setVariable(node.variable_name or "gather_result", digits)
+
+  -- Explicit timeout route: empty string means no input was received.
+  -- Falls through to _default when no timeout branch is wired.
+  if digits == "" then
+    return br["timeout"] or br["_default"]
+  end
+  -- Input received: match exact branch, then _default (catch-all), then invalid.
   return br[digits] or br["_default"] or br["invalid"]
 end`,
     apiEndpoint: null,
@@ -147,20 +238,28 @@ end`,
       {
         key: 'operator', label: 'Operator', fieldType: 'select', required: true,
         options: [
-          { value: '==',                 label: '== equals' },
-          { value: '!=',                 label: '!= not equals' },
-          { value: 'contains',           label: 'contains' },
-          { value: 'starts_with',        label: 'starts_with' },
+          { value: '==',          label: '== equals (string)' },
+          { value: '!=',          label: '!= not equals (string)' },
+          { value: 'contains',    label: 'contains (substring)' },
+          { value: 'starts_with', label: 'starts with' },
+          { value: 'ends_with',   label: 'ends with' },
+          { value: 'exists',      label: 'exists (variable is set and non-empty)' },
+          { value: 'not_exists',  label: 'does not exist (variable is empty or unset)' },
+          { value: 'gt',          label: '> greater than (numeric)' },
+          { value: 'gte',         label: '>= greater than or equal (numeric)' },
+          { value: 'lt',          label: '< less than (numeric)' },
+          { value: 'lte',         label: '<= less than or equal (numeric)' },
           { value: 'ens_pin_valid',      label: 'ENS PIN valid (lookup + validate)' },
           { value: 'ens_callback_valid', label: 'ENS callback valid (recording replay)' },
-          { value: 'time_of_day',       label: 'Time of day (HHMM range)' },
-          { value: 'day_of_week',       label: 'Day of week (0=Sun…6=Sat)' },
+          { value: 'time_of_day',        label: 'Time of day (HHMM range)' },
+          { value: 'day_of_week',        label: 'Day of week (0=Sun…6=Sat)' },
         ],
+        hint: 'String operators compare as text. Numeric operators (gt/gte/lt/lte) parse both sides as numbers. "exists" and "not_exists" ignore the Expected Value field.',
       },
       {
         key: 'expected_value', label: 'Expected value', fieldType: 'mono_text', required: true,
         placeholder: 'expected value',
-        hint: 'Static value or ${var_name} to compare against. For time_of_day: "HHMM-HHMM" (e.g. 0900-1700). For day_of_week: comma-separated day numbers (e.g. 1,2,3,4,5 for Mon–Fri).',
+        hint: 'Static value or ${var_name} interpolation. Not used by exists/not_exists. For time_of_day: "HHMM-HHMM" (e.g. 0900-1700). For day_of_week: comma-separated numbers (e.g. 1,2,3,4,5 for Mon–Fri).',
         conditionalOn: {
           field: 'operator', value: 'ens_pin_valid',
           label: 'ENS access number',
@@ -187,6 +286,25 @@ local function exec_condition(s, node)
     ok = (val:find(exp, 1, true) ~= nil)
   elseif op == "starts_with" then
     ok = (val:sub(1, #exp) == exp)
+  elseif op == "ends_with" then
+    ok = #val >= #exp and val:sub(-#exp) == exp
+  elseif op == "exists" then
+    -- true when the variable is set to a non-empty string
+    ok = (val ~= "")
+  elseif op == "not_exists" then
+    ok = (val == "")
+  elseif op == "gt" then
+    local n, e = tonumber(val), tonumber(exp)
+    ok = (n ~= nil and e ~= nil and n > e)
+  elseif op == "gte" then
+    local n, e = tonumber(val), tonumber(exp)
+    ok = (n ~= nil and e ~= nil and n >= e)
+  elseif op == "lt" then
+    local n, e = tonumber(val), tonumber(exp)
+    ok = (n ~= nil and e ~= nil and n < e)
+  elseif op == "lte" then
+    local n, e = tonumber(val), tonumber(exp)
+    ok = (n ~= nil and e ~= nil and n <= e)
   elseif op == "ens_pin_valid" then
     -- PIN check goes through /ens/verify-pin ONLY — it is the single
     -- source of truth for pin_required + correctness (handles "no PIN
@@ -410,10 +528,28 @@ end`,
       { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session variable that stores the recorded file path — read by downstream ENS node' },
       { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Played before recording starts. Takes priority over prompt text.' },
       { key: 'prompt_text', label: 'Prompt text (TTS fallback)', fieldType: 'textarea', placeholder: 'Please record your message after the tone. Press pound when done.', hint: 'Spoken when no prompt audio file is configured' },
-      { key: 'max_seconds', label: 'Max seconds', fieldType: 'number', min: 1, max: 300 },
-      { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Audio energy level below which is considered silence' },
-      { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'Consecutive silence chunks required before auto-stopping' },
-      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after a successful recording (e.g. ENS trigger)' },
+      {
+        key: 'max_seconds', label: 'Maximum Duration (seconds)', fieldType: 'number', min: 1, max: 300,
+        hint: 'Recording stops automatically after this many seconds even if the caller has not pressed the stop key.',
+      },
+      {
+        key: 'dtmf_stop_key', label: 'DTMF Stop Key', fieldType: 'select',
+        options: [
+          { value: '#', label: '# (pound) — recommended' },
+          { value: '*', label: '* (star)' },
+          { value: '',  label: 'None — duration / silence only' },
+        ],
+        hint: 'Key the caller presses to immediately stop the recording. Recommended: # (pound). The maximum duration is always enforced regardless of this setting.',
+      },
+      {
+        key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000,
+        hint: 'Energy level below which audio is considered silence. Default 500 works for most telephony. Raise for noisy environments.',
+      },
+      {
+        key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10,
+        hint: 'Consecutive silence chunks required before the recording auto-stops. Default 3 ≈ 1.5 seconds of silence.',
+      },
+      { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after a successful recording. Variable Output below is available to this node and all downstream nodes.' },
     ],
     luaHandler: `
 local function exec_record_message(s, node)
@@ -457,14 +593,19 @@ local function exec_record_message(s, node)
   s:execute("playback", "tone_stream://%(500,0,640)")
   s:sleep(100)
 
-  -- Record audio — stops when caller presses # OR silence is detected
+  -- Record audio — stops when caller presses the stop key OR silence is detected.
+  -- dtmf_stop_key defaults to "#"; empty string means no DTMF termination (duration/silence only).
+  -- Empty string is valid in Lua (truthy), so we must check nil separately.
   local max_sec  = node.max_seconds       or 60
   local sil_thr  = node.silence_threshold or 500
   local sil_hits = node.silence_hits      or 3
+  local stop_key = (node.dtmf_stop_key ~= nil) and node.dtmf_stop_key or "#"
   freeswitch.consoleLog("INFO",
     "[ivr_executor] record_message: recording max_sec=" .. max_sec ..
-    " silence_threshold=" .. sil_thr .. " silence_hits=" .. sil_hits .. "\\n")
-  s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits .. " #")
+    " silence_threshold=" .. sil_thr .. " silence_hits=" .. sil_hits ..
+    " stop_key='" .. stop_key .. "'\\n")
+  s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits ..
+    (stop_key ~= "" and (" " .. stop_key) or ""))
   s:sleep(200)
 
   -- Handle caller hangup during recording
@@ -768,7 +909,9 @@ end`,
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank to resolve from the dialed number' },
       { key: 'pin_prompt_text', label: 'PIN prompt (TTS)', fieldType: 'textarea', placeholder: 'Please enter your authorization PIN followed by pound.' },
       { key: 'record_prompt_text', label: 'Record prompt (TTS)', fieldType: 'textarea', placeholder: 'Record your emergency message after the tone. Press pound when finished.' },
-      { key: 'max_record_seconds', label: 'Max recording (seconds)', fieldType: 'number', min: 5, max: 300 },
+      { key: 'max_record_seconds', label: 'Max recording (seconds)', fieldType: 'number', min: 5, max: 300, hint: 'Recording also stops immediately when the caller presses # or silence is detected.' },
+      { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Energy below which audio is considered silence. Default 500.' },
+      { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'Consecutive silence chunks required to auto-stop. Default 3.' },
       { key: 'next', label: 'Next Node (after blast starts)', fieldType: 'node_ref', required: true },
     ],
     luaHandler: `
@@ -810,14 +953,21 @@ local function exec_ens_blast_record(s, node)
     return nil
   end
 
-  -- Record the initiator's message
+  -- Record the initiator's message.
+  -- Use s:execute("record", ...) NOT s:recordFile() — only execute("record") supports
+  -- the DTMF stop key (#). s:recordFile() always runs until duration/silence regardless
+  -- of any key the caller presses.
   local rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
   local fpath = rec_dir .. "/ens/ens_" .. tostring(cfg_id) .. "_" .. os.time() .. ".wav"
+  os.execute("mkdir -p '" .. rec_dir .. "/ens'")
   local rprompt = interp(s, node.record_prompt_text)
   if rprompt == "" then rprompt = "Record your emergency message after the tone. Press pound when finished." end
   speak(s, rprompt)
   s:execute("playback", "tone_stream://%(500,0,640)")
-  s:recordFile(fpath, node.max_record_seconds or 120, 500, 3)
+  local max_rec  = node.max_record_seconds or 120
+  local sil_thr  = node.silence_threshold  or 500
+  local sil_hits = node.silence_hits        or 3
+  s:execute("record", fpath .. " " .. max_rec .. " " .. sil_thr .. " " .. sil_hits .. " #")
 
   -- Broadcast — reaches every contact's extension AND mobile (see
   -- resolveEnsContacts in ensInternalController.js).
@@ -849,7 +999,7 @@ end`,
     category: 'Emergency',
     description: 'Authorized-caller check, then play the latest message',
     ports: 'true_false',
-    footnote: 'The UUUU line: callers on the authorized list hear the latest recorded message if it is within its 24-hour window (or "no active message" after expiry) and route to the True node; unauthorized callers are logged and route to the False node.',
+    footnote: 'Callers on the authorized list hear the latest recorded message if it is within the configured retention window (or "no active message" after expiry) and route to the True node; unauthorized callers are logged and route to the False node. Retention period is set in the ENS Configuration.',
     summaryTemplate: 'Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
