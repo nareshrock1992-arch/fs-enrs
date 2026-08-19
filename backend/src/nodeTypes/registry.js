@@ -546,8 +546,8 @@ end`,
         hint: 'Energy level below which audio is considered silence. Default 500 works for most telephony. Raise for noisy environments.',
       },
       {
-        key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10,
-        hint: 'Consecutive silence chunks required before the recording auto-stops. Default 3 ≈ 1.5 seconds of silence.',
+        key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 500,
+        hint: 'Consecutive silent frames (20 ms each) required before auto-stop. Default 20 ≈ 400 ms of silence after speech ends. Raise for callers with slow delivery; lower for quick turnaround.',
       },
       { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to proceed to after a successful recording. Variable Output below is available to this node and all downstream nodes.' },
     ],
@@ -593,19 +593,56 @@ local function exec_record_message(s, node)
   s:execute("playback", "tone_stream://%(500,0,640)")
   s:sleep(100)
 
-  -- Record audio — stops when caller presses the stop key OR silence is detected.
-  -- dtmf_stop_key defaults to "#"; empty string means no DTMF termination (duration/silence only).
-  -- Empty string is valid in Lua (truthy), so we must check nil separately.
+  -- Record audio — stops when caller presses the stop key, silence is detected,
+  -- or max_sec is reached. dtmf_stop_key defaults to "#"; empty string = no DTMF stop.
+  -- Empty string is truthy in Lua, so we must compare to nil to detect "not set".
   local max_sec  = node.max_seconds       or 60
   local sil_thr  = node.silence_threshold or 500
-  local sil_hits = node.silence_hits      or 3
+  -- silence_hits: consecutive 20 ms frames that must be silent before auto-stop.
+  -- Default 20 ≈ 400 ms of silence after speech ends (old default of 3 = 60 ms was too short).
+  local sil_hits = node.silence_hits      or 20
   local stop_key = (node.dtmf_stop_key ~= nil) and node.dtmf_stop_key or "#"
+
+  -- Belt-and-suspenders DTMF detection: register a session-level input callback
+  -- BEFORE execute("record") so that DTMF delivered as SIP INFO — which the record
+  -- app's internal terminator handler may not intercept on all FreeSWITCH builds —
+  -- still breaks the recording via the Lua callback returning "break".
+  -- The record app's own terminator arg (5th positional) is kept as an additional layer.
+  local dtmf_stopped = false
+  if stop_key ~= "" then
+    s:setInputCallback(function(_sess, itype, obj, _arg)
+      if itype == "dtmf" then
+        local d = obj and obj["digit"] or ""
+        if d == stop_key then
+          dtmf_stopped = true
+          return "break"
+        end
+      end
+      return ""
+    end, "")
+  end
+
   freeswitch.consoleLog("INFO",
     "[ivr_executor] record_message: recording max_sec=" .. max_sec ..
-    " silence_threshold=" .. sil_thr .. " silence_hits=" .. sil_hits ..
+    " sil_thr=" .. sil_thr .. " sil_hits=" .. sil_hits ..
     " stop_key='" .. stop_key .. "'\\n")
+
+  -- Both the record app terminator (5th arg) AND the session callback above are active.
   s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits ..
     (stop_key ~= "" and (" " .. stop_key) or ""))
+
+  -- Clear session callback immediately so downstream nodes are not affected.
+  if stop_key ~= "" then
+    s:setInputCallback("none")
+  end
+
+  if dtmf_stopped then
+    freeswitch.consoleLog("INFO",
+      "[ivr_executor] record_message: stopped by DTMF '" .. stop_key .. "' (session callback)\\n")
+  else
+    freeswitch.consoleLog("INFO",
+      "[ivr_executor] record_message: stopped by silence or max duration\\n")
+  end
   s:sleep(200)
 
   -- Handle caller hangup during recording

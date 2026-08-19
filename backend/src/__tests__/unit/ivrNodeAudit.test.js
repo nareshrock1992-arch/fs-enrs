@@ -348,6 +348,26 @@ describe('E — record_message: configurable dtmf_stop_key', () => {
     expect(h).not.toContain('s:recordFile(');
   });
 
+  it('registers setInputCallback as belt-and-suspenders DTMF detection before execute(record)', () => {
+    const h = lua('record_message');
+    expect(h).toContain('setInputCallback');
+    expect(h).toContain('"break"');
+    // Callback must be cleared after recording so downstream nodes are not affected
+    expect(h).toContain('setInputCallback("none")');
+  });
+
+  it('logs whether recording stopped via DTMF or silence/duration', () => {
+    const h = lua('record_message');
+    expect(h).toContain('stopped by DTMF');
+    expect(h).toContain('stopped by silence or max duration');
+  });
+
+  it('silence_hits default is 20 (400 ms), not the former 3 (60 ms)', () => {
+    const h = lua('record_message');
+    expect(h).toContain('or 20');
+    expect(h).not.toContain('or 3');
+  });
+
   it('ivrValidator accepts dtmf_stop_key = "#"', () => {
     const r = AnyNodeSchema.safeParse({
       type: 'record_message', variable_name: 'rec', max_seconds: 60,

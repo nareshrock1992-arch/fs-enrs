@@ -128,7 +128,7 @@ const RecordMessageNodeSchema = z.object({
   // Stored as a string to match FreeSWITCH's record application argument.
   dtmf_stop_key:      z.string().max(1).optional().default('#'),
   silence_threshold:  z.number().int().min(10).max(2000).optional().default(500),
-  silence_hits:       z.number().int().min(1).max(10).optional().default(3),
+  silence_hits:       z.number().int().min(1).max(500).optional().default(20),
   prompt_text:        z.string().max(1000).optional(),
   prompt_audio_url:   localAudioUrl.optional(),
   next:               nodeId,

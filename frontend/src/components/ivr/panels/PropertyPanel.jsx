@@ -253,10 +253,15 @@ function MediaPickerField({ value, onChange }) {
               const leaf     = file.fs_path ? file.fs_path.split('/').pop() : file.name;
               const mediaUrl = '/media/' + leaf;
               const selected = value === mediaUrl;
-              const dur      = file.duration_sec != null
-                ? (file.duration_sec < 60
-                    ? `${file.duration_sec.toFixed(0)}s`
-                    : `${(file.duration_sec / 60).toFixed(1)}m`)
+              // duration_sec comes from a PostgreSQL NUMERIC column — node-postgres
+              // returns NUMERIC as a string ("18.234"), not a JS Number. Normalize
+              // to Number first; guard NaN so we never call .toFixed() on a non-number.
+              const durRaw   = file.duration_sec;
+              const durNum   = durRaw == null ? null : Number(durRaw);
+              const dur      = (durNum != null && !isNaN(durNum) && durNum > 0)
+                ? (durNum < 60
+                    ? `${durNum.toFixed(0)}s`
+                    : `${(durNum / 60).toFixed(1)}m`)
                 : null;
               return (
                 <div

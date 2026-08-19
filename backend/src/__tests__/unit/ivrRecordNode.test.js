@@ -112,7 +112,7 @@ describe('record_message Lua handler', () => {
     // Verify defaults are safe fallbacks, not the only values
     expect(lua).toContain('or 60');
     expect(lua).toContain('or 500');
-    expect(lua).toContain('or 3');
+    expect(lua).toContain('or 20');
   });
 
   it('T9: stores recorded file path in session variable after recording', () => {
