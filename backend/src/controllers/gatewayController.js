@@ -104,7 +104,7 @@ export const updateGateway = asyncHandler(async (req, res) => {
 export const deleteGateway = asyncHandler(async (req, res) => {
   const tenantId = effectiveTenantId(req);
   const { rowCount } = await query(
-    `UPDATE sip_gateways SET deleted_at = now()
+    `UPDATE sip_gateways SET deleted_at = now(), is_active = false
      WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
     [req.params.id, tenantId]
   );
