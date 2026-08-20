@@ -54,7 +54,7 @@ export const NODE_TYPE_REGISTRY = [
     category: 'Audio',
     description: 'Play an audio file or a dynamically generated recording from a session variable.',
     ports: 'next',
-    summaryTemplate: '${audio_url}${audio_variable}',
+    summaryTemplate: '${audio_url}',
     configSchema: [
       {
         key: 'audio_source_type', label: 'Audio Source', fieldType: 'select',
