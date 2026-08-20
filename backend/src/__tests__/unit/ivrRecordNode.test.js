@@ -70,7 +70,7 @@ describe('record_message Lua handler', () => {
     expect(lua).toContain('getVariable("uuid")');
     expect(lua).toContain('os.time()');
     expect(lua).toContain('.wav"');
-    expect(lua).toContain('"ivr_"');
+    expect(lua).toContain('"/ivr_"');
   });
 
   it('T4: plays prompt audio file when prompt_audio_url is configured', () => {

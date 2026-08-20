@@ -54,7 +54,7 @@ export const NODE_TYPE_REGISTRY = [
     category: 'Audio',
     description: 'Play an audio file or a dynamically generated recording from a session variable.',
     ports: 'next',
-    summaryTemplate: '${audio_source_type === "variable" ? "${" + audio_variable + "}" : audio_url}',
+    summaryTemplate: '${audio_url}${audio_variable}',
     configSchema: [
       {
         key: 'audio_source_type', label: 'Audio Source', fieldType: 'select',
@@ -991,9 +991,9 @@ local function exec_ens_blast_record(s, node)
   end
 
   -- Record the initiator's message.
-  -- Use s:execute("record", ...) NOT s:recordFile() — only execute("record") supports
-  -- the DTMF stop key (#). s:recordFile() always runs until duration/silence regardless
-  -- of any key the caller presses.
+  -- execute("record") is used, not the Lua session recording API, because only the
+  -- application variant supports a DTMF stop key (5th positional argument).
+  -- The session API always runs until duration/silence regardless of keys pressed.
   local rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
   local fpath = rec_dir .. "/ens/ens_" .. tostring(cfg_id) .. "_" .. os.time() .. ".wav"
   os.execute("mkdir -p '" .. rec_dir .. "/ens'")
