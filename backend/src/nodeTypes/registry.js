@@ -603,19 +603,16 @@ local function exec_record_message(s, node)
   local sil_hits = node.silence_hits      or 20
   local stop_key = (node.dtmf_stop_key ~= nil) and node.dtmf_stop_key or "#"
 
-  -- Belt-and-suspenders DTMF detection: register a session-level input callback
-  -- BEFORE execute("record") so that DTMF delivered as SIP INFO — which the record
-  -- app's internal terminator handler may not intercept on all FreeSWITCH builds —
-  -- still breaks the recording via the Lua callback returning "break".
-  -- The record app's own terminator arg (5th positional) is kept as an additional layer.
-  -- setInputCallback requires a named global function — anonymous closures are rejected by
-  -- this FreeSWITCH Lua binding ("Wrong arguments for overloaded function").
-  -- UUID-keyed globals track per-session state so concurrent calls don't interfere.
+  -- The record app's input callback (on_dtmf in mod_dptools.c) reads the channel
+  -- variable "playback_terminators" to decide which DTMF digits stop recording.
+  -- The record function only parses 4 args (path, max_sec, sil_thr, sil_hits) —
+  -- a 5th positional terminator arg is silently ignored on this FreeSWITCH build.
+  -- After recording, "playback_terminator_used" is set to the digit that stopped it.
   local dtmf_stopped = false
   if stop_key ~= "" then
-    _G["_ivr_rec_key_"     .. call_uuid] = stop_key
-    _G["_ivr_rec_stopped_" .. call_uuid] = false
-    s:setInputCallback("ivr_record_dtmf_cb", call_uuid)
+    s:execute("set", "playback_terminators=" .. stop_key)
+  else
+    s:execute("set", "playback_terminators=none")
   end
 
   freeswitch.consoleLog("INFO",
@@ -623,21 +620,19 @@ local function exec_record_message(s, node)
     " sil_thr=" .. sil_thr .. " sil_hits=" .. sil_hits ..
     " stop_key='" .. stop_key .. "'\\n")
 
-  -- Both the record app terminator (5th arg) AND the session callback above are active.
-  s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits ..
-    (stop_key ~= "" and (" " .. stop_key) or ""))
+  s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits)
 
-  -- Read flag and clean up global state for this session.
-  if stop_key ~= "" then
-    dtmf_stopped = (_G["_ivr_rec_stopped_" .. call_uuid] == true)
-    _G["_ivr_rec_key_"     .. call_uuid] = nil
-    _G["_ivr_rec_stopped_" .. call_uuid] = nil
-    s:setInputCallback("none")
+  -- Check which digit stopped the recording (empty if silence/max_sec).
+  local term_used = s:getVariable("playback_terminator_used") or ""
+  if stop_key ~= "" and term_used ~= "" then
+    dtmf_stopped = true
   end
+  -- Restore to safe default so subsequent playback is not accidentally terminated.
+  s:execute("set", "playback_terminators=none")
 
   if dtmf_stopped then
     freeswitch.consoleLog("INFO",
-      "[ivr_executor] record_message: stopped by DTMF '" .. stop_key .. "' (session callback)\\n")
+      "[ivr_executor] record_message: stopped by DTMF '" .. term_used .. "' (playback_terminators)\\n")
   else
     freeswitch.consoleLog("INFO",
       "[ivr_executor] record_message: stopped by silence or max duration\\n")

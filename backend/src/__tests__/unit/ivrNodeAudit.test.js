@@ -348,12 +348,14 @@ describe('E — record_message: configurable dtmf_stop_key', () => {
     expect(h).not.toContain('s:recordFile(');
   });
 
-  it('registers setInputCallback as belt-and-suspenders DTMF detection before execute(record)', () => {
+  it('uses playback_terminators channel var to stop recording on DTMF', () => {
     const h = lua('record_message');
-    expect(h).toContain('setInputCallback');
-    expect(h).toContain('"break"');
-    // Callback must be cleared after recording so downstream nodes are not affected
-    expect(h).toContain('setInputCallback("none")');
+    // The record app (mod_dptools.c record_function) reads playback_terminators, not a 5th arg.
+    expect(h).toContain('playback_terminators');
+    // After recording, check playback_terminator_used to detect DTMF stop.
+    expect(h).toContain('playback_terminator_used');
+    // Restore safe default after recording so downstream playback is unaffected.
+    expect(h).toContain('playback_terminators=none');
   });
 
   it('logs whether recording stopped via DTMF or silence/duration', () => {
