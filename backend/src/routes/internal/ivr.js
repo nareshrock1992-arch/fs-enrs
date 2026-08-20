@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { ivrLookup } from '../../controllers/internal/ivrInternalController.js';
+import { ivrLookup, registerIvrRecording } from '../../controllers/internal/ivrInternalController.js';
 
 const router = Router();
 
@@ -7,5 +7,10 @@ const router = Router();
 // Called by FreeSWITCH Lua on every inbound call.
 // Auth is handled by internalAuth middleware on the parent router.
 router.get('/lookup', ivrLookup);
+
+// POST /api/v1/internal/ivr/recording/register
+// Called by Lua executor after record_message node completes.
+// Assigns the correct tenant_id via emergency_numbers lookup.
+router.post('/recording/register', registerIvrRecording);
 
 export default router;

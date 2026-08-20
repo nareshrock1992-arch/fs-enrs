@@ -7,7 +7,7 @@ import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
 import { config } from '../../config/index.js';
-import { requireTenantForWrite } from '../../middleware/tenantScope.js';
+import { effectiveTenantId, requireTenantForWrite } from '../../middleware/tenantScope.js';
 
 // Ensure upload directory exists
 mkdirSync(config.uploads.dir, { recursive: true });
@@ -34,15 +34,16 @@ const router = Router();
 router.use(requireAuth);
 
 router.get('/', adminOrOp, asyncHandler(async (req, res) => {
+  const tenantFilter = effectiveTenantId(req);
   const { rows } = await query(
     `SELECT m.*, o.name AS organization_name, u.full_name AS uploaded_by_name
      FROM media_files m
      LEFT JOIN organizations o ON o.id = m.organization_id
      LEFT JOIN users u ON u.id = m.uploaded_by_user_id
      WHERE m.deleted_at IS NULL
-       AND ($1::int IS NULL OR m.organization_id = $1)
+       AND ($1::int IS NULL OR m.tenant_id = $1)
      ORDER BY m.created_at DESC`,
-    [req.query.organization_id || null]
+    [tenantFilter]
   );
   res.json(rows);
 }));
@@ -77,7 +78,15 @@ router.post('/upload', adminOnly, upload.single('file'), asyncHandler(async (req
 }));
 
 router.delete('/:id', adminOnly, asyncHandler(async (req, res) => {
-  await query(`UPDATE media_files SET deleted_at = now() WHERE id = $1`, [req.params.id]);
+  const tenantFilter = effectiveTenantId(req);
+  const { rowCount } = await query(
+    `UPDATE media_files SET deleted_at = now()
+     WHERE id = $1
+       AND deleted_at IS NULL
+       AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantFilter]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'Media not found or access denied' });
   res.status(204).end();
 }));
 

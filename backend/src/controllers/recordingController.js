@@ -349,6 +349,7 @@ export async function upsertRecordingStart({
   campaignId,
   tenantId,
   createdBy = 'system',
+  allowFallback = true,
 }) {
   if (!recPath) return null;
 
@@ -372,7 +373,7 @@ export async function upsertRecordingStart({
     }
   }
 
-  if (!resolvedTenantId) {
+  if (!resolvedTenantId && allowFallback) {
     const { rows: [firstTenant] } = await query(
       `SELECT id FROM tenants WHERE deleted_at IS NULL ORDER BY id LIMIT 1`
     ).catch(() => ({ rows: [] }));
@@ -566,6 +567,7 @@ export async function scanRecordingDirectory() {
         if (m) room = m[1];
       }
 
+      let incidentTenantId = null;
       if (room) {
         const { rows: [incident] } = await query(
           `SELECT incident_uuid, ers_configuration_id, tenant_id
@@ -575,12 +577,21 @@ export async function scanRecordingDirectory() {
           [room]
         ).catch(() => ({ rows: [] }));
         if (incident) {
-          incidentUuid = incident.incident_uuid;
-          configId     = incident.ers_configuration_id;
+          incidentUuid    = incident.incident_uuid;
+          configId        = incident.ers_configuration_id;
+          incidentTenantId = incident.tenant_id ?? null;
         }
       }
 
-      const tenantId = fallbackTenantId;
+      // IVR recordings are registered at runtime via POST /internal/ivr/recording/register
+      // with the correct tenant derived from emergency_numbers. Boot-scan should not
+      // override an already-registered row (ON CONFLICT DO NOTHING handles that), and
+      // for any truly orphaned IVR file the canonical owner cannot be inferred from
+      // the filename alone — assign NULL so they are visibly unresolved, not silently
+      // claimed by the first tenant in the database.
+      const tenantId = type === 'IVR'
+        ? null
+        : (incidentTenantId ?? fallbackTenantId);
 
       await query(
         `INSERT INTO recordings

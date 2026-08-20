@@ -669,6 +669,19 @@ local function exec_record_message(s, node)
   freeswitch.consoleLog("INFO",
     "[ivr_executor] record_message: stored " .. var_name .. "=" .. fpath .. "\\n")
 
+  -- Register the recording with the backend immediately so tenant_id is
+  -- derived from emergency_numbers (not inferred later at boot-scan time
+  -- where the only fallback is the first tenant in the DB).
+  local reg_number = s:getVariable("destination_number") or ""
+  if reg_number ~= "" then
+    post("/ivr/recording/register", { recording_path = fpath, number = reg_number })
+    freeswitch.consoleLog("INFO",
+      "[ivr_executor] record_message: registration sent for number=" .. reg_number .. "\\n")
+  else
+    freeswitch.consoleLog("WARN",
+      "[ivr_executor] record_message: destination_number not set — skipping registration\\n")
+  end
+
   freeswitch.consoleLog("INFO", "[ivr_executor] record_message: completed, proceeding to next node\\n")
   return node.next
 end`,

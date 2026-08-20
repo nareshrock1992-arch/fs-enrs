@@ -1,5 +1,6 @@
 import { query } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
+import { upsertRecordingStart, closeRecording } from '../recordingController.js';
 
 /**
  * GET /api/v1/internal/ivr/lookup?number=<e164_number>
@@ -61,7 +62,9 @@ export const ivrLookup = asyncHandler(async (req, res) => {
   // Expose the frozen graph with routing metadata — Lua uses this directly
   const graph = typeof row.graph === 'string' ? JSON.parse(row.graph) : row.graph;
 
+  // Include tenant_id so Lua can pass it back on recording registration
   res.json({
+    tenant_id:      row.tenant_id,
     flow_uuid:      row.flow_uuid,
     flow_name:      row.flow_name,
     number:         row.number,
@@ -72,4 +75,46 @@ export const ivrLookup = asyncHandler(async (req, res) => {
     entry_node_id:  graph.entry_node_id,
     nodes:          graph.nodes,
   });
+});
+
+/**
+ * POST /api/v1/internal/ivr/recording/register
+ *
+ * Called by the Lua executor after a record_message node completes.
+ * Resolves tenant_id from the dialed number → emergency_numbers → tenant,
+ * then creates (or no-ops on duplicate) a recording row with the correct
+ * tenant. Without this call the row would only appear at boot-scan time
+ * with tenant_id = NULL (no reliable owner inference from filename alone).
+ */
+export const registerIvrRecording = asyncHandler(async (req, res) => {
+  const { recording_path, number } = req.body ?? {};
+  if (!recording_path || typeof recording_path !== 'string') {
+    return res.status(400).json({ error: 'recording_path is required' });
+  }
+  if (!number || typeof number !== 'string') {
+    return res.status(400).json({ error: 'number is required' });
+  }
+
+  const { rows: [en] } = await query(
+    `SELECT tenant_id FROM emergency_numbers
+     WHERE number = $1 AND deleted_at IS NULL AND is_active = true
+     LIMIT 1`,
+    [number.trim()]
+  );
+
+  const tenantId = en?.tenant_id ?? null;
+
+  const record = await upsertRecordingStart({
+    type:          'IVR',
+    recPath:       recording_path,
+    tenantId,
+    allowFallback: false,
+  });
+
+  // Fire-and-forget — extract metadata and close the row; don't block the Lua call
+  if (record) {
+    closeRecording({ recPath: recording_path }).catch(() => {});
+  }
+
+  res.json({ ok: true, tenant_id: tenantId, recording_id: record?.id ?? null });
 });
