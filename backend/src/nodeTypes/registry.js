@@ -608,18 +608,14 @@ local function exec_record_message(s, node)
   -- app's internal terminator handler may not intercept on all FreeSWITCH builds —
   -- still breaks the recording via the Lua callback returning "break".
   -- The record app's own terminator arg (5th positional) is kept as an additional layer.
+  -- setInputCallback requires a named global function — anonymous closures are rejected by
+  -- this FreeSWITCH Lua binding ("Wrong arguments for overloaded function").
+  -- UUID-keyed globals track per-session state so concurrent calls don't interfere.
   local dtmf_stopped = false
   if stop_key ~= "" then
-    s:setInputCallback(function(_sess, itype, obj, _arg)
-      if itype == "dtmf" then
-        local d = obj and obj["digit"] or ""
-        if d == stop_key then
-          dtmf_stopped = true
-          return "break"
-        end
-      end
-      return ""
-    end, "")
+    _G["_ivr_rec_key_"     .. call_uuid] = stop_key
+    _G["_ivr_rec_stopped_" .. call_uuid] = false
+    s:setInputCallback("ivr_record_dtmf_cb", call_uuid)
   end
 
   freeswitch.consoleLog("INFO",
@@ -631,8 +627,11 @@ local function exec_record_message(s, node)
   s:execute("record", fpath .. " " .. max_sec .. " " .. sil_thr .. " " .. sil_hits ..
     (stop_key ~= "" and (" " .. stop_key) or ""))
 
-  -- Clear session callback immediately so downstream nodes are not affected.
+  -- Read flag and clean up global state for this session.
   if stop_key ~= "" then
+    dtmf_stopped = (_G["_ivr_rec_stopped_" .. call_uuid] == true)
+    _G["_ivr_rec_key_"     .. call_uuid] = nil
+    _G["_ivr_rec_stopped_" .. call_uuid] = nil
     s:setInputCallback("none")
   end
 
