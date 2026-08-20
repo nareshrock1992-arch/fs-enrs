@@ -55,8 +55,11 @@ describe('NODE_TYPE_REGISTRY summaryTemplate', () => {
   it('every node type with a summaryTemplate uses valid ${field} syntax only', () => {
     for (const entry of NODE_TYPE_REGISTRY) {
       if (!entry.summaryTemplate) continue;
-      // Should match ${identifier} placeholders only
-      const invalid = entry.summaryTemplate.match(/\$\{[^}]*[^a-z0-9_][^}]*\}/i);
+      // Each ${field} placeholder must contain only [a-z0-9_] characters.
+      // The regex excludes } from the "invalid char" class so it cannot bridge
+      // across adjacent ${...}${...} blocks (the old regex matched } as invalid,
+      // which let it span from the closing } of one block to the end of the next).
+      const invalid = entry.summaryTemplate.match(/\$\{[^}]*[^a-z0-9_}][^}]*\}/i);
       expect(invalid, `${entry.type}.summaryTemplate has invalid placeholder`).toBeNull();
     }
   });
