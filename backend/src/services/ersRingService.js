@@ -121,7 +121,13 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
   // and no SIP display name). In that case the name vars are omitted entirely
   // so FreeSWITCH presents the number alone — injecting an empty string or
   // the number-as-name would produce garbled or rejected SIP From headers.
-  const safeName = callerIdentity.name ? callerIdentity.name.replace(/'/g, '') : null;
+  const safeName = callerIdentity.name ? callerIdentity.name.replace(/['\\\}]/g, '') : null;
+
+  // Keep only characters legal in an unquoted FreeSWITCH channel variable and a
+  // SIP URI user part: digits, +, -, .  Numbers may arrive as 05XXXXXXXX,
+  // +91XXXXXXXXXX, +9665XXXXXXXX, or a bare extension — formatting chars
+  // (spaces, parentheses) are stripped so no format breaks the originate string.
+  const safeNumber = callerIdentity.number.replace(/[^\d+\-.]/g, '') || callerIdentity.number;
 
   const vars = [
     // Caller identity passthrough — the INITIATOR's real name/number on
@@ -129,12 +135,15 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
     // omitted when no caller name is available (mobile/PSTN callers without
     // a SIP display name). Number vars are always present.
     safeName !== null ? `origination_caller_id_name='${safeName}'` : null,
-    `origination_caller_id_number=${callerIdentity.number}`,
+    `origination_caller_id_number=${safeNumber}`,
     safeName !== null ? `effective_caller_id_name='${safeName}'` : null,
-    `effective_caller_id_number=${callerIdentity.number}`,
-    // Explicit PAI: overrides gateway-level sip_cid_type auto-generation.
-    // Delivers the original emergency caller's extension to Avaya SM directly.
-    sipDomain ? `sip_h_P-Asserted-Identity=<sip:${callerIdentity.number}@${sipDomain}>` : null,
+    `effective_caller_id_number=${safeNumber}`,
+    // sip_cid_type=pid (FS-CC pattern): instructs Sofia to auto-generate a named
+    // P-Asserted-Identity header — "Name" <sip:number@domain> — from
+    // effective_caller_id_name/number already set above. A bare-URI PAI
+    // (<sip:number@domain>, no display name) causes Avaya SM to show only the
+    // extension; Avaya prioritises PAI over Remote-Party-ID for caller presentation.
+    sipDomain ? 'sip_cid_type=pid' : null,
     'ignore_early_media=true',
     `originate_timeout=${LEG_TIMEOUT_S}`,
   ].filter(Boolean).join(',');

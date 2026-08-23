@@ -371,8 +371,11 @@ describe('TEST 7 — ERS: caller with directory entry → effective_caller_id us
   });
 
   it('effective_caller_id_number would be set to caller number (source verification)', () => {
-    // Verify originateLeg builds vars including effective_caller_id_number from callerIdentity
-    expect(ersRingSrc).toContain('effective_caller_id_number=${callerIdentity.number}');
+    // Verify originateLeg builds vars including effective_caller_id_number.
+    // safeNumber is derived from callerIdentity.number with formatting chars stripped so
+    // numbers in any format (05XXXXXXXX, +91XXXXXXXXXX, etc.) work safely in the originate string.
+    expect(ersRingSrc).toContain('effective_caller_id_number=${safeNumber}');
+    expect(ersRingSrc).toContain('callerIdentity.number');
   });
 
   it('effective_caller_id_name would be set to directory name (source verification)', () => {
@@ -572,6 +575,10 @@ describe('PHASE E — ESL command structure: no duplicate keys, correct format',
 
 describe('PHASE F — P-Asserted-Identity separation: ENS=configured CLI, ERS=original caller', () => {
   // ── Source-level: ENS ──────────────────────────────────────────────────────
+  // ENS uses an intentional explicit PAI with the configured CLI (blast_clid).
+  // This is SEPARATE from the ERS sip_cid_type=pid mechanism — ENS must NOT be
+  // changed to auto-generate PAI from effective_caller_id_name/number, because
+  // ENS caller identity is the configured CLI, not the inbound emergency caller.
 
   it('ENS: originateCampaignCall sets sip_h_P-Asserted-Identity', () => {
     const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
@@ -594,7 +601,6 @@ describe('PHASE F — P-Asserted-Identity separation: ENS=configured CLI, ERS=or
     const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
     const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
     const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
-    // Source must contain the template: <sip:${ensCli}@
     expect(fnBody).toContain('<sip:${ensCli}@');
   });
 
@@ -602,31 +608,33 @@ describe('PHASE F — P-Asserted-Identity separation: ENS=configured CLI, ERS=or
     const fnStart = eslServiceSrc.indexOf('export async function originateCampaignCall(');
     const fnEnd   = eslServiceSrc.indexOf('\nexport async function confPlay', fnStart);
     const fnBody  = eslServiceSrc.slice(fnStart, fnEnd);
-    // Domain is held in sipDomain variable, not a literal string like '@yerp.com'
     expect(fnBody).toContain('sipDomain');
     expect(fnBody).not.toContain('@yerp.com');
   });
 
   // ── Source-level: ERS ──────────────────────────────────────────────────────
 
-  it('ERS: originateLeg sets sip_h_P-Asserted-Identity', () => {
-    expect(ersRingSrc).toContain('sip_h_P-Asserted-Identity');
+  it('ERS: originateLeg sets sip_cid_type=pid for named PAI auto-generation', () => {
+    expect(ersRingSrc).toContain('sip_cid_type=pid');
   });
 
-  it('ERS: PAI is built from callerIdentity.number — not ensCli, not blast_clid', () => {
-    // PAI must reference callerIdentity.number (the original emergency caller)
-    expect(ersRingSrc).toMatch(/sip_h_P-Asserted-Identity.*callerIdentity\.number/s);
+  it('ERS: PAI is driven by callerIdentity.number via effective_caller_id vars', () => {
+    // sip_cid_type=pid reads from effective_caller_id_number/name.
+    // safeNumber is derived from callerIdentity.number — formatting chars stripped
+    // so any number format (05XXXXXXXX, +91XXXXXXXXXX, extension) is safe in the originate string.
+    expect(ersRingSrc).toContain('effective_caller_id_number=${safeNumber}');
+    expect(ersRingSrc).toContain('callerIdentity.number');
     // Must not reference ENS-specific variables
     expect(ersRingSrc).not.toContain('ensCli');
     expect(ersRingSrc).not.toContain('blast_clid');
     expect(ersRingSrc).not.toContain('sip_caller_id');
   });
 
-  it('ERS: PAI uses angle-bracket SIP URI format <sip:callerIdentity.number@domain>', () => {
-    expect(ersRingSrc).toContain('<sip:${callerIdentity.number}@');
+  it('ERS: does not set a bare-URI sip_h_P-Asserted-Identity (would lose display name on Avaya)', () => {
+    expect(ersRingSrc).not.toContain('sip_h_P-Asserted-Identity');
   });
 
-  it('ERS: PAI domain comes from gateway.sip_domain or config — not hardcoded', () => {
+  it('ERS: PAI gating uses sipDomain guard — not hardcoded domain', () => {
     expect(ersRingSrc).toContain('sipDomain');
     expect(ersRingSrc).not.toContain('@yerp.com');
   });
@@ -702,27 +710,30 @@ describe('PHASE F — P-Asserted-Identity separation: ENS=configured CLI, ERS=or
 describe('PHASE G — ERS direct-dial PAI: ers_conference_bridge.lua + ersLookup', () => {
   // ── Source: ers_conference_bridge.lua ──────────────────────────────────────
 
-  it('ers_conference_bridge.lua: invite_responder sets sip_h_P-Asserted-Identity', () => {
-    expect(ersBridgeSrc).toContain('sip_h_P-Asserted-Identity');
+  it('ers_conference_bridge.lua: invite_responder sets sip_cid_type=pid for named PAI', () => {
+    // sip_cid_type=pid instructs FreeSWITCH Sofia to auto-generate "Name" <sip:num@domain>
+    // PAI from effective_caller_id_name/number. The old sip_h_P-Asserted-Identity approach
+    // produced a bare URI with no display name, causing Avaya SM to show only the extension.
+    expect(ersBridgeSrc).toContain('sip_cid_type=pid');
   });
 
   it('ers_conference_bridge.lua: PAI reads gateway_sip_domain from lookup response', () => {
     expect(ersBridgeSrc).toContain('gateway_sip_domain');
   });
 
-  it('ers_conference_bridge.lua: PAI is suppressed when sip_domain is empty (conditional guard)', () => {
-    // The bridge must guard: if num_val ~= "" and sip_domain and sip_domain ~= ""
+  it('ers_conference_bridge.lua: sip_cid_type is suppressed when sip_domain is empty (conditional guard)', () => {
+    // The bridge guards: if num_val ~= "" and sip_domain and sip_domain ~= ""
     expect(ersBridgeSrc).toContain('sip_domain ~= ""');
   });
 
-  it('ers_conference_bridge.lua: PAI uses angle-bracket SIP URI format', () => {
-    // Must contain the format: <sip:%s@%s>
-    expect(ersBridgeSrc).toContain('<sip:%s@%s>');
+  it('ers_conference_bridge.lua: does not set bare-URI sip_h_P-Asserted-Identity (would lose display name)', () => {
+    expect(ersBridgeSrc).not.toContain('sip_h_P-Asserted-Identity');
   });
 
-  it('ers_conference_bridge.lua: PAI identity source is c_num (original caller) — no ENS terms', () => {
-    // The PAI variable must be built from c_num (the caller passed from invite_tier)
-    expect(ersBridgeSrc).toContain('sip_h_P-Asserted-Identity=<sip:%s@%s>');
+  it('ers_conference_bridge.lua: PAI identity source is caller (c_num/name vars) — no ENS terms', () => {
+    // effective_caller_id_name/number are set from c_name/c_num (the original caller)
+    // sip_cid_type=pid reads these to generate the named PAI
+    expect(ersBridgeSrc).toContain('effective_caller_id_name');
     // Bridge must not reference ENS-specific variables
     expect(ersBridgeSrc).not.toContain('blast_clid');
     expect(ersBridgeSrc).not.toContain('sip_caller_id');

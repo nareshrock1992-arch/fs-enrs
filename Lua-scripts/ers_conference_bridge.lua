@@ -111,20 +111,40 @@ end
 local function invite_responder(number, conf_room, conf_profile, incident_uuid, gateway, c_num, c_name, sip_domain)
   local gw      = gateway or "user"
   local profile = conf_profile or "default"
-  local num_val  = (c_num  or ""):gsub("['}]", "")
-  local name_val = (c_name or ""):gsub("['}]", "")
-  -- P-Asserted-Identity: inject only when both caller and configured SIP domain are present.
-  -- Identity source: original inbound emergency caller (c_num) — never ENS blast_clid.
-  -- SIP domain source: gateway_sip_domain from /ers/lookup API response — never hardcoded.
-  local pai_vars = ""
-  if num_val ~= "" and sip_domain and sip_domain ~= "" then
-    pai_vars = string.format(",sip_h_P-Asserted-Identity=<sip:%s@%s>", num_val, sip_domain)
+  -- Keep only characters legal in an unquoted FreeSWITCH channel variable value and
+  -- a SIP URI user part: digits, +, -, .  Strips spaces, parentheses, and any
+  -- other formatting so 05XXXXXXXX, +91XXXXXXXXXX, and +9665XXXXXXXX all work
+  -- identically regardless of how the originating SIP UA presented the number.
+  local num_val  = (c_num  or ""):gsub("[^%d%+%-%.]", "")
+  -- Strip SIP-unsafe chars then trim whitespace.  An empty or blank name is treated
+  -- as absent — injecting effective_caller_id_name='' with sip_cid_type=pid would
+  -- produce an invalid PAI header with an empty display-name field.
+  local name_val = ((c_name or ""):gsub("['}\\]", "")):match("^%s*(.-)%s*$")
+
+  -- Number vars are unconditional — responders must always see who called.
+  -- Name vars are conditional — omitted when no caller name is available.
+  -- sip_cid_type=pid instructs Sofia to auto-generate PAI from effective_* vars:
+  --   Name present:  "Name" <sip:number@domain>   → Avaya shows display name
+  --   Name absent:   <sip:number@domain>           → Avaya shows number only
+  -- Suppressed entirely when no SIP domain is configured on the gateway.
+  local id_vars
+  if name_val ~= "" then
+    id_vars = string.format(
+      "origination_caller_id_number=%s,origination_caller_id_name='%s',"
+      .. "effective_caller_id_number=%s,effective_caller_id_name='%s'",
+      num_val, name_val, num_val, name_val)
+  else
+    id_vars = string.format(
+      "origination_caller_id_number=%s,effective_caller_id_number=%s",
+      num_val, num_val)
   end
-  local cmd     = string.format(
-    "originate {ignore_early_media=true,call_timeout=30,"
-    .. "origination_caller_id_number=%s,origination_caller_id_name='%s',"
-    .. "effective_caller_id_number=%s,effective_caller_id_name='%s'%s}%s/%s &conference(%s@%s)",
-    num_val, name_val, num_val, name_val, pai_vars, gw, number, conf_room, profile
+  local pai_opt = ""
+  if num_val ~= "" and sip_domain and sip_domain ~= "" then
+    pai_opt = ",sip_cid_type=pid"
+  end
+  local cmd = string.format(
+    "originate {ignore_early_media=true,call_timeout=30,%s%s}%s/%s &conference(%s@%s)",
+    id_vars, pai_opt, gw, number, conf_room, profile
   )
   log("INFO", "Inviting " .. number .. " → " .. conf_room)
   freeswitch.bgapi(cmd)
