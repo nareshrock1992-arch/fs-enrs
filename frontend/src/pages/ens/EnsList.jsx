@@ -93,6 +93,7 @@ const EMPTY = {
   // Announcements
   expiry_announcement:       '',
   no_pending_msg:            '',
+  unauthorized_msg:          '',
   // Recipients
   group_ids:                 [],
   contact_ids:               [],
@@ -185,6 +186,7 @@ export default function EnsList() {
         gateway_override:          form.gateway_override        || null,
         expiry_announcement:       form.expiry_announcement     || null,
         no_pending_msg:            form.no_pending_msg          || null,
+        unauthorized_msg:          form.unauthorized_msg        || null,
         mobile_prefix:             form.mobile_prefix           || null,
         mobile_suffix:             form.mobile_suffix           || null,
         ext_prefix:                form.ext_prefix              || null,
@@ -251,6 +253,7 @@ export default function EnsList() {
         ext_suffix:                full.ext_suffix                ?? '',
         expiry_announcement:       full.expiry_announcement      ?? '',
         no_pending_msg:            full.no_pending_msg           ?? '',
+        unauthorized_msg:          full.unauthorized_msg         ?? '',
         group_ids:                 (full.groups   || []).map(g => g.responder_group_id ?? g.id),
         contact_ids:               (full.contacts || []).map(c => c.emergency_contact_id ?? c.id),
       });
@@ -303,9 +306,14 @@ export default function EnsList() {
               <Td className="text-text-muted">{orgName(r.organization_id)}</Td>
               <Td>
                 <div className="text-xs font-mono space-y-0.5">
-                  {r.destination_number && <div className="text-text-primary">T: {r.destination_number}</div>}
-                  {r.playback_number    && <div className="text-text-muted">P: {r.playback_number}</div>}
-                  {!r.destination_number && !r.playback_number && <span className="text-text-muted">—</span>}
+                  {(r.bound_numbers || []).length === 0
+                    ? <span className="text-text-muted">—</span>
+                    : (r.bound_numbers || []).map(n => (
+                        <div key={n.number} className="text-text-primary" title={n.service_name || ''}>
+                          {n.number}
+                        </div>
+                      ))
+                  }
                 </div>
               </Td>
               <Td>
@@ -673,6 +681,12 @@ export default function EnsList() {
                 <input className="input" value={form.expiry_announcement}
                        onChange={e => f('expiry_announcement', e.target.value)}
                        placeholder="Spoken when the recording has expired" />
+              </div>
+              <div>
+                <label className="label">Unauthorized Message</label>
+                <input className="input" value={form.unauthorized_msg}
+                       onChange={e => f('unauthorized_msg', e.target.value)}
+                       placeholder="Spoken when the caller is not in any blast list" />
               </div>
             </Section>
 

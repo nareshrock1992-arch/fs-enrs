@@ -68,6 +68,7 @@ const EnsConfigSchema = z.object({
   // Messages
   no_pending_msg:            emptyToNull,
   expiry_announcement:       emptyToNull,
+  unauthorized_msg:          emptyToNull,
 
   // Destinations (junction references)
   group_ids:                 z.array(z.number().int().positive()).default([]),
@@ -138,7 +139,17 @@ export const listConfigurations = asyncHandler(async (req, res) => {
        (SELECT COUNT(*) FROM ens_configuration_groups   WHERE ens_configuration_id = e.id)::INT AS group_count,
        (SELECT COUNT(*) FROM ens_configuration_contacts WHERE ens_configuration_id = e.id)::INT AS contact_count,
        (SELECT COUNT(*) FROM ens_campaigns c
-        WHERE c.ens_configuration_id = e.id AND c.status IN ('queued','running'))::INT AS active_campaigns
+        WHERE c.ens_configuration_id = e.id AND c.status IN ('queued','running'))::INT AS active_campaigns,
+       COALESCE(
+         (SELECT json_agg(json_build_object('number', en.number, 'service_name', en.service_name)
+                          ORDER BY en.sort_order, en.number)
+          FROM emergency_numbers en
+          WHERE en.ens_configuration_id = e.id
+            AND en.deleted_at IS NULL
+            AND en.is_active = true
+            AND en.type = 'ENS'),
+         '[]'::json
+       ) AS bound_numbers
      FROM ens_configurations e
      LEFT JOIN organizations o ON o.id = e.organization_id
      WHERE e.deleted_at IS NULL
@@ -190,11 +201,11 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        routing_mode, dial_preference, fallback_mode, skip_behavior,
        allow_mobile, mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
        allow_extension, ext_normalize_enabled, ext_prefix, ext_suffix,
-       no_pending_msg, expiry_announcement,
+       no_pending_msg, expiry_announcement, unauthorized_msg,
        is_active
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
+       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
      ) RETURNING *`,
     [
       d.organization_id, tenantId, d.name, d.description,
@@ -208,7 +219,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
       d.mobile_prefix, d.mobile_suffix,
       d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
-      d.no_pending_msg, d.expiry_announcement,
+      d.no_pending_msg, d.expiry_announcement, d.unauthorized_msg,
       d.is_active,
     ]
   );
@@ -266,11 +277,12 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        ext_suffix                = COALESCE($31, ext_suffix),
        no_pending_msg            = COALESCE($32, no_pending_msg),
        expiry_announcement       = COALESCE($33, expiry_announcement),
-       is_active                 = COALESCE($34, is_active),
-       gateway_override          = CASE WHEN $35::boolean THEN $36 ELSE gateway_override END,
-       tenant_id                 = COALESCE(tenant_id, $37),
+       unauthorized_msg          = COALESCE($34, unauthorized_msg),
+       is_active                 = COALESCE($35, is_active),
+       gateway_override          = CASE WHEN $36::boolean THEN $37 ELSE gateway_override END,
+       tenant_id                 = COALESCE(tenant_id, $38),
        updated_at                = now()
-     WHERE id = $1 AND deleted_at IS NULL AND ($37::int IS NULL OR tenant_id = $37) RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND ($38::int IS NULL OR tenant_id = $38) RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -284,11 +296,11 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
       d.mobile_prefix, d.mobile_suffix,
       d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
-      d.no_pending_msg, d.expiry_announcement,
+      d.no_pending_msg, d.expiry_announcement, d.unauthorized_msg,
       d.is_active,
-      gatewayOverrideInBody,   // $35 — boolean: was the key present in req.body?
-      d.gateway_override,      // $36 — the validated value (null when cleared)
-      effectiveTenantId(req),  // $37
+      gatewayOverrideInBody,   // $36 — boolean: was the key present in req.body?
+      d.gateway_override,      // $37 — the validated value (null when cleared)
+      effectiveTenantId(req),  // $38
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });

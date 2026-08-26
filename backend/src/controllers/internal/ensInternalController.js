@@ -282,7 +282,7 @@ export const ensLookup = asyncHandler(async (req, res) => {
             COALESCE(ec.campaign_priority, 5)         AS campaign_priority,
             COALESCE(ec.adaptive_throttling, false)   AS adaptive_throttling,
             COALESCE(ec.retry_failed_only, false)     AS retry_failed_only,
-            ec.no_pending_msg, ec.expiry_announcement
+            ec.no_pending_msg, ec.expiry_announcement, ec.unauthorized_msg
      FROM emergency_numbers en
      JOIN ens_configurations ec
        ON ec.id = en.ens_configuration_id
@@ -326,6 +326,7 @@ export const ensLookup = asyncHandler(async (req, res) => {
       retry_failed_only:         cfg.retry_failed_only,
       no_pending_msg:            cfg.no_pending_msg,
       expiry_announcement:       cfg.expiry_announcement,
+      unauthorized_msg:          cfg.unauthorized_msg,
       contacts,
     },
   });
@@ -554,40 +555,38 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
 
   if (!cfg) return res.json({ authorized: false, reason: 'no_active_notification' });
 
-  // Find the latest campaign with a recording within the retention window.
-  // Uses ens_campaigns (modern path). 'queued' is excluded — a recipient cannot
-  // have received a call from a campaign that has not started dialing. Callback
-  // authorization for a queued campaign is therefore always invalid.
-  const { rows: [campaign] } = await query(
-    `SELECT id AS campaign_id, recording_file
-     FROM ens_campaigns
-     WHERE ens_configuration_id = $1
-       AND status IN ('running', 'completed')
-       AND recording_file IS NOT NULL
-       AND created_at >= now() - ($2 || ' hours')::interval
-     ORDER BY created_at DESC LIMIT 1`,
-    [cfg.id, cfg.recording_retention_hours]
-  );
-
-  if (!campaign) return res.json({ authorized: false, reason: 'no_active_notification' });
-
-  if (!campaign.recording_file) {
-    return res.json({ authorized: false, reason: 'recording_expired' });
-  }
-
-  // Verify caller was in the blast list via last-9-digit match on phone_number.
-  // ens_campaign_destinations.phone_number holds the dialed number (mobile or extension).
+  // Normalize caller to last-9 digits — same convention as ensLatestCampaign.
   const callerLast9 = caller.replace(/\D/g, '').slice(-9);
 
+  // Stage 1: verify caller is a destination in ANY campaign for this configuration.
+  // Expiry window uses COALESCE(completed_at, started_at, created_at) so campaigns
+  // that started/completed late are not prematurely denied.
   const { rows: [dest] } = await query(
-    `SELECT id FROM ens_campaign_destinations
-     WHERE campaign_id = $1
-       AND RIGHT(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g'), 9) = $2
+    `SELECT d.id, d.campaign_id
+     FROM ens_campaign_destinations d
+     JOIN ens_campaigns c ON c.id = d.campaign_id
+     WHERE c.ens_configuration_id = $1
+       AND c.status IN ('running', 'completed')
+       AND c.recording_file IS NOT NULL
+       AND COALESCE(c.completed_at, c.started_at, c.created_at)
+             >= now() - ($2 || ' hours')::interval
+       AND RIGHT(REGEXP_REPLACE(d.phone_number, '[^0-9]', '', 'g'), 9) = $3
+     ORDER BY c.created_at DESC
      LIMIT 1`,
-    [campaign.campaign_id, callerLast9]
+    [cfg.id, cfg.recording_retention_hours, callerLast9]
   );
 
-  if (!dest) return res.json({ authorized: false, reason: 'not_in_blast_list' });
+  if (!dest) return res.json({ authorized: false, reason: 'no_active_notification' });
+
+  // Fetch the recording file for the authorized campaign.
+  const { rows: [campaign] } = await query(
+    `SELECT id AS campaign_id, recording_file FROM ens_campaigns WHERE id = $1`,
+    [dest.campaign_id]
+  );
+
+  if (!campaign?.recording_file) {
+    return res.json({ authorized: false, reason: 'recording_expired' });
+  }
 
   res.json({
     authorized:        true,
@@ -599,65 +598,134 @@ export const ensAuthorizeCallback = asyncHandler(async (req, res) => {
 
 // ── Latest Campaign (for playback number) ────────────────────────────────────
 
-// GET /api/v1/internal/ens/campaigns/latest?configuration_id=<id>
-// Called by ens_playback_handler.lua to get the most recent recording to play back.
-// Returns: { status: "ACTIVE"|"EXPIRED"|"NO_CAMPAIGN", recording_file, campaign_id }
+// GET /api/v1/internal/ens/campaigns/latest?configuration_id=<id>&caller=<number>
+// Called by ens_playback_handler.lua to authorize and select the most recent
+// playable recording for a specific caller within a specific ENS configuration.
 //
-// Previous behaviour: queried ens_notifications (legacy table never written by
-//   the modern blast path) — always returned NO_CAMPAIGN for modern campaigns.
-//   Also included 'queued' status, exposing a campaign before dialing had started.
+// Security model (three stages):
 //
-// New behaviour (Wave 1): queries ens_campaigns with status IN ('running','completed').
-//   'queued' is excluded — a campaign that has not yet started dialing is not
-//   considered active for playback purposes. ens_campaigns has no deleted_at column.
+//   Stage 1 — Configuration
+//     configuration_id is resolved server-side by ens_playback_handler.lua from the
+//     dialled number via /ens/lookup. The caller cannot supply it directly.
+//
+//   Stage 2 — Authorization
+//     Checks whether the normalized caller number exists in ens_campaign_destinations
+//     for ANY running/completed campaign in this configuration (regardless of expiry).
+//     This separates "not in the blast list" (UNAUTHORIZED) from "authorized but no
+//     current message" (NO_CAMPAIGN) and "authorized but message expired" (EXPIRED).
+//
+//   Stage 3 — Latest playable campaign
+//     Among campaigns where the caller IS a destination, finds the most recently
+//     created campaign that (a) has playable audio and (b) is within the retention
+//     window. Expiry clock uses COALESCE(completed_at, started_at, created_at) so
+//     campaigns triggered late do not lose retention time to their queuing delay.
+//
+//     "Latest" means latest FOR THIS CALLER, not latest for the configuration.
+//     A newer campaign that does not include the caller cannot hide an older valid one.
+//
+//   Responses:
+//     { authorized: false, status: 'UNAUTHORIZED' }
+//       — caller not in any campaign destination for this configuration
+//       — no campaign details exposed
+//     { authorized: true, status: 'NO_CAMPAIGN' }
+//       — caller is authorized but has no campaigns, or all campaigns lack audio
+//     { authorized: true, status: 'EXPIRED' }
+//       — caller is authorized but their latest available campaign has expired
+//     { authorized: true, status: 'ACTIVE', source_type, recording_file|message_audio_url, … }
+//       — caller is authorized and a playable recording exists
+//
+// 'queued' campaigns are excluded throughout: a recipient cannot have received a call
+// from a campaign that has not started dialing.
 export const ensLatestCampaign = asyncHandler(async (req, res) => {
   const configId = parseInt(req.query.configuration_id, 10);
-  if (!configId) return res.status(400).json({ success: false, error: 'configuration_id required' });
+  const callerRaw = String(req.query.caller || '').trim();
 
-  // Get retention hours from config
+  if (!configId) return res.status(400).json({ success: false, error: 'configuration_id required' });
+  if (!callerRaw) return res.status(400).json({ success: false, error: 'caller required' });
+
+  // Normalize to last 9 digits — same convention as ensAuthorizeCallback.
+  const callerLast9 = callerRaw.replace(/\D/g, '').slice(-9);
+  if (!callerLast9) return res.status(400).json({ success: false, error: 'caller must contain digits' });
+
+  // Fetch retention hours. Config must be active.
   const { rows: [cfg] } = await query(
     `SELECT COALESCE(recording_retention_hours, 24) AS retention_hours
-     FROM ens_configurations WHERE id = $1 AND deleted_at IS NULL`,
+     FROM ens_configurations WHERE id = $1 AND deleted_at IS NULL AND is_active = true`,
     [configId]
   );
   if (!cfg) return res.status(404).json({ success: false, error: 'ENS configuration not found' });
 
-  // 'queued' excluded: notification process has not started for a queued campaign.
-  // 'completed' included: covers both normal completion and timeout (expireCampaign
-  //   sets status='completed', not 'expired' — the 'expired' value only applies to
-  //   individual ens_campaign_destinations rows).
+  // ── Stage 2: Authorization ──────────────────────────────────────────────────
+  // Check whether the caller exists in ANY campaign destination for this
+  // configuration, considering only campaigns that could have reached the caller
+  // (running or completed). Expiry is NOT applied here — we want to distinguish
+  // "never authorized" (UNAUTHORIZED) from "authorized but all messages expired".
+  const { rows: [authRow] } = await query(
+    `SELECT 1
+     FROM ens_campaign_destinations d
+     JOIN ens_campaigns c ON c.id = d.campaign_id
+     WHERE c.ens_configuration_id = $1
+       AND c.status IN ('running', 'completed')
+       AND RIGHT(REGEXP_REPLACE(d.phone_number, '[^0-9]', '', 'g'), 9) = $2
+     LIMIT 1`,
+    [configId, callerLast9]
+  );
+
+  if (!authRow) {
+    // No campaign in this configuration has ever targeted this caller.
+    // Return an opaque unauthorized response — do not expose campaign existence.
+    return res.json({ authorized: false, status: 'UNAUTHORIZED' });
+  }
+
+  // ── Stage 3: Latest playable campaign for this caller ──────────────────────
+  // Among campaigns that DO include this caller, find the most recently created
+  // one that has playable audio and is within the retention window.
+  // recording_file takes priority; message_audio_url is the fallback.
+  // Expiry uses COALESCE(completed_at, started_at, created_at) so late-starting
+  // campaigns do not lose retention time to their queuing delay.
   const { rows: [latest] } = await query(
-    `SELECT id AS campaign_id, recording_file,
-            status, created_at,
-            created_at + ($2 || ' hours')::interval AS expires_at
-     FROM ens_campaigns
-     WHERE ens_configuration_id = $1
-       AND status IN ('running', 'completed')
-       AND recording_file IS NOT NULL
-     ORDER BY created_at DESC LIMIT 1`,
-    [configId, cfg.retention_hours]
+    `SELECT c.id AS campaign_id,
+            c.recording_file,
+            c.message_audio_url,
+            c.created_at,
+            COALESCE(c.completed_at, c.started_at, c.created_at)
+              + ($3 || ' hours')::interval AS expires_at
+     FROM ens_campaigns c
+     JOIN ens_campaign_destinations d ON d.campaign_id = c.id
+       AND RIGHT(REGEXP_REPLACE(d.phone_number, '[^0-9]', '', 'g'), 9) = $2
+     WHERE c.ens_configuration_id = $1
+       AND c.status IN ('running', 'completed')
+       AND (c.recording_file IS NOT NULL OR c.message_audio_url IS NOT NULL)
+     ORDER BY c.created_at DESC
+     LIMIT 1`,
+    [configId, callerLast9, cfg.retention_hours]
   );
 
   if (!latest) {
-    return res.json({ success: true, status: 'NO_CAMPAIGN', recording_file: null, campaign_id: null });
-  }
-
-  if (!latest.recording_file) {
-    return res.json({ success: true, status: 'NO_CAMPAIGN', recording_file: null, campaign_id: latest.campaign_id });
+    // Caller is authorized (found in Stage 2) but has no campaigns with audio.
+    return res.json({ authorized: true, status: 'NO_CAMPAIGN' });
   }
 
   const expired = new Date() > new Date(latest.expires_at);
   if (expired) {
-    return res.json({ success: true, status: 'EXPIRED', recording_file: null, campaign_id: latest.campaign_id });
+    // Latest available campaign for this caller has expired.
+    return res.json({ authorized: true, status: 'EXPIRED' });
   }
 
+  // Determine source type — recording_file takes precedence over message_audio_url.
+  const sourceType = latest.recording_file ? 'recording' : 'url';
+  const audioField = latest.recording_file
+    ? { recording_file: latest.recording_file }
+    : { message_audio_url: latest.message_audio_url };
+
   res.json({
-    success:        true,
-    status:         'ACTIVE',
-    campaign_id:    latest.campaign_id,
-    recording_file: latest.recording_file,
-    created_at:     latest.created_at,
-    expires_at:     latest.expires_at,
+    authorized:  true,
+    status:      'ACTIVE',
+    campaign_id: latest.campaign_id,
+    source_type: sourceType,
+    ...audioField,
+    created_at:  latest.created_at,
+    expires_at:  latest.expires_at,
   });
 });
 
