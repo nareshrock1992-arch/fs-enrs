@@ -297,7 +297,10 @@ export function useIvrGraph(flowUuid) {
       dispatch({ type: 'MARK_SAVED' });
     } catch (e) {
       console.error('[ivr] save failed', e);
-      dispatch({ type: 'MARK_SAVE_ERROR', message: e.message || 'Save failed' });
+      // Prefer the first structural error (e.g. "node X: references non-existent node Y")
+      // over the generic HTTP error text so the tooltip is actionable.
+      const firstError = e.data?.errors?.[0];
+      dispatch({ type: 'MARK_SAVE_ERROR', message: firstError || e.message || 'Save failed' });
       throw e;
     }
   }
@@ -391,7 +394,11 @@ export function useIvrGraph(flowUuid) {
     const s = stateRef.current;
     if (!s.flowMeta?.flow_uuid) return;
     try {
-      const result = await api.ivr.validate(s.flowMeta.flow_uuid);
+      // Pass the current in-memory graph so the backend validates what the
+      // designer is actually showing — not the last saved DB copy. This ensures
+      // unsaved edits (including intermediate invalid states) are validated.
+      const currentGraph = serialiseGraph(s.nodes, s.entryNodeId);
+      const result = await api.ivr.validate(s.flowMeta.flow_uuid, currentGraph);
       const errorMap = {};
       for (const err of result.errors || []) {
         const match = err.match(/^node ([^.\s:]+)/);

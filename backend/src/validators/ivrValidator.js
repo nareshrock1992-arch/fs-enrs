@@ -240,10 +240,14 @@ const EnsPlaybackNodeSchema = z.object({
 // discriminatedUnion construction in Zod 3.x:
 //   "Cannot read properties of undefined (reading 'type')"
 //
-// Cross-field rules that required .refine() on individual schemas are moved
-// here into a single .superRefine() so the union still enforces them.
+// Two exports:
+//   AnyNodeSchemaDraft — shape + field validation only; no cross-field rules.
+//                        Used by DraftGraphSchema (autosave) so the designer
+//                        can persist intermediate edit states.
+//   AnyNodeSchema      — adds cross-field semantic validation via superRefine.
+//                        Used by validateGraph and publishFlow.
 
-export const AnyNodeSchema = z.discriminatedUnion('type', [
+export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   PlayNodeSchema,         // ZodObject ✓
   SayNodeSchema,          // ZodObject ✓
   GatherNodeSchema,       // ZodObject ✓  (refine is on the branches field, not the outer object)
@@ -261,14 +265,16 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   ErsOverflowWaitNodeSchema,  // ZodObject ✓
   EnsBlastRecordNodeSchema,   // ZodObject ✓
   EnsPlaybackNodeSchema,      // ZodObject ✓
-]).superRefine((node, ctx) => {
+]);
+
+export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
   if (node.type === 'gather') {
     const minD = node.min_digits ?? 1;
     const maxD = node.max_digits ?? 1;
     if (minD > maxD) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `gather: min_digits (${minD}) must not exceed max_digits (${maxD})`,
+        message: `min_digits (${minD}) must not exceed max_digits (${maxD})`,
       });
     }
   }
@@ -277,13 +283,13 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
     if (srcType === 'url' && node.audio_file_id === undefined && node.audio_url === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'play node with static source requires audio_file_id or audio_url',
+        message: 'requires audio_file_id or audio_url when source type is static',
       });
     }
     if (srcType === 'variable' && !node.audio_variable) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'play node with dynamic source requires audio_variable (session variable name)',
+        message: 'requires audio_variable (session variable name) when source type is dynamic',
       });
     }
   }
@@ -294,7 +300,7 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'ens node requires ens_configuration_id or ens_config_var',
+      message: 'requires ens_configuration_id or ens_config_var',
     });
   }
 
@@ -303,32 +309,32 @@ export const AnyNodeSchema = z.discriminatedUnion('type', [
   if (node.type === 'gather' || node.type === 'record_message') {
     const st = node.prompt_source_type ?? 'tts';
     if (st === 'audio' && !node.prompt_audio_url) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${node.type}: prompt_source_type=audio requires prompt_audio_url` });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'prompt_source_type=audio requires prompt_audio_url' });
     }
   }
   if (node.type === 'ers_overflow_wait') {
     const st = node.hold_source_type ?? 'tts';
     if (st === 'audio' && !node.hold_audio_url) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ers_overflow_wait: hold_source_type=audio requires hold_audio_url' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hold_source_type=audio requires hold_audio_url' });
     }
   }
   if (node.type === 'hangup') {
     const st = node.goodbye_source_type ?? 'none';
     if (st === 'audio' && !node.play_audio_url) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hangup: goodbye_source_type=audio requires play_audio_url' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'goodbye_source_type=audio requires play_audio_url or play_audio_file_id' });
     }
     if (st === 'tts' && !node.goodbye_text) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hangup: goodbye_source_type=tts requires goodbye_text' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'goodbye_source_type=tts requires goodbye_text' });
     }
   }
   if (node.type === 'ens_blast_record') {
     const pinSt  = node.pin_prompt_source_type  ?? 'tts';
     const recSt  = node.record_prompt_source_type ?? 'tts';
     if (pinSt === 'audio' && !node.pin_prompt_audio_url) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ens_blast_record: pin_prompt_source_type=audio requires pin_prompt_audio_url' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pin_prompt_source_type=audio requires pin_prompt_audio_url' });
     }
     if (recSt === 'audio' && !node.record_prompt_audio_url) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ens_blast_record: record_prompt_source_type=audio requires record_prompt_audio_url' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'record_prompt_source_type=audio requires record_prompt_audio_url' });
     }
   }
 });
@@ -352,7 +358,7 @@ export const GraphSchema = z.object({
 
 export const DraftGraphSchema = z.object({
   entry_node_id: z.string().max(64),
-  nodes:         z.record(z.string().max(64), AnyNodeSchema),
+  nodes:         z.record(z.string().max(64), AnyNodeSchemaDraft),
   _layout:   z.record(z.any()).optional(),  // per-node {x,y} — stored, restores canvas positions
   _viewport: z.object({ x: z.number(), y: z.number(), scale: z.number() }).optional(), // pan+zoom
 }).passthrough();  // ignore any extra top-level keys the frontend might add

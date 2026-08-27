@@ -44,6 +44,24 @@ export async function validateGraph(graph, tenantId) {
   if (errors.length > 0) return { valid: false, errors, warnings };
 
   // ── Pass 1: Zod schema ────────────────────────────────────────────────────
+  //
+  // Per-node validation runs FIRST so each error is scoped to its node ID in
+  // the format "node <nid>.<field>: message". If we let GraphSchema run first
+  // it would also fail for the same per-node errors but report them as
+  // "nodes.<nid>: message" (the Zod record path), which the frontend regex
+  // cannot parse into a node ID. Full GraphSchema then handles structural
+  // checks (entry_node_id existence) that per-node scans cannot detect.
+
+  for (const [nid, node] of Object.entries(g.nodes || {})) {
+    if (!node || typeof node !== 'object') continue; // already caught in pre-flight
+    const r = AnyNodeSchema.safeParse(node);
+    if (!r.success) {
+      for (const issue of r.error.issues) {
+        errors.push(`node ${nid}.${issue.path.join('.') || 'type'}: ${issue.message}`);
+      }
+    }
+  }
+  if (errors.length > 0) return { valid: false, errors, warnings };
 
   const parsed = GraphSchema.safeParse(g);
   if (!parsed.success) {
@@ -55,18 +73,6 @@ export async function validateGraph(graph, tenantId) {
   }
 
   const { entry_node_id, nodes } = parsed.data;
-
-  // Per-node Zod validation — re-run individually for clearer error paths
-  for (const [nid, node] of Object.entries(nodes)) {
-    if (!node || typeof node !== 'object') continue; // already caught above
-    const r = AnyNodeSchema.safeParse(node);
-    if (!r.success) {
-      for (const issue of r.error.issues) {
-        errors.push(`node ${nid}.${issue.path.join('.') || 'type'}: ${issue.message}`);
-      }
-    }
-  }
-  if (errors.length > 0) return { valid: false, errors, warnings };
 
   // ── Pass 2: Graph integrity ───────────────────────────────────────────────
 

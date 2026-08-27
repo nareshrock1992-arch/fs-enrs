@@ -168,8 +168,15 @@ export const updateFlow = asyncHandler(async (req, res) => {
         return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
       }
     } else {
+      // GraphSchema failed. Filter to only truly structural problems (entry_node_id
+      // invalid, etc.). Per-node semantic errors ("nodes.<id>: message") are not
+      // blocked here — they are surfaced by the Validate endpoint, not autosave.
       const structural = fullCheck.error.issues.map(i => `${i.path.join('.') || 'graph'}: ${i.message}`)
-        .filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
+        .filter(e =>
+          !e.includes('not found') &&
+          !e.includes('wrong tenant') &&
+          !e.startsWith('nodes.')  // per-node semantic issues — shown by Validate, not save
+        );
       if (structural.length > 0) {
         return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
       }

@@ -3,6 +3,10 @@ import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, Fla
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
 
+function humaniseError(err) {
+  return err.replace(/^node [^\s:]+[.:]?\s*/, '').trim() || err;
+}
+
 export default function BuilderToolbar({
   flow,
   dirty,
@@ -96,30 +100,32 @@ export default function BuilderToolbar({
     }
   }
 
-  // Open publish modal — save any pending edits first, then validate.
-  // This is the fix for "edit → publish immediately → reload → changes gone":
-  // we flush the debounced autosave before publishing so the server always
-  // has the latest graph before we snapshot it as a published version.
+  // Open publish modal — validate the CURRENT in-memory graph first, then save.
+  // Validate-first means the user sees detailed per-node errors before we attempt
+  // any save, even if autosave has been failing for unrelated reasons.
   async function openPublish() {
     setLastValidation(null);
     setPubError('');
+    setShowPublish(true);   // open immediately so user sees "Validating…" state
 
-    // Flush pending autosave if the graph is dirty.
+    // Validate current in-memory graph (backend receives graph in request body).
+    setValidating(true);
+    const result = await onValidate();
+    setLastValidation(result);
+    setValidating(false);
+
+    // Block: do not save or publish if the current graph has errors.
+    if (!result || !result.valid) return;
+
+    // Graph is valid — flush pending autosave so the DB has the latest graph
+    // before we snapshot it as a published version.
     if ((dirty || saving) && onSaveNow) {
       try {
         await onSaveNow();
       } catch (e) {
         setPubError('Could not save before publishing: ' + (e.message || 'Save failed'));
-        setShowPublish(true);
-        return;
       }
     }
-
-    setShowPublish(true);
-    setValidating(true);
-    const result = await onValidate();
-    setLastValidation(result);
-    setValidating(false);
   }
 
   return (
@@ -294,11 +300,21 @@ export default function BuilderToolbar({
 
             {/* Validation summary */}
             <div className={`rounded-lg px-3 py-2.5 text-xs border
-              ${validating ? 'bg-surface border-surface-border text-text-muted'
-                : lastValidation?.valid
+              ${validating || !lastValidation
+                ? 'bg-surface border-surface-border text-text-muted'
+                : lastValidation.valid
                 ? 'bg-green-500/10 border-green-500/20 text-green-500'
                 : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
-              {validating && <span className="flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> Validating graph…</span>}
+              {validating && (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 size={11} className="animate-spin" /> Validating graph…
+                </span>
+              )}
+              {!validating && !lastValidation && (
+                <span className="flex items-center gap-1.5">
+                  <ListChecks size={11} /> Ready to validate — click Validate to check before publishing
+                </span>
+              )}
               {!validating && lastValidation?.valid && (
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 size={11} />
@@ -309,11 +325,11 @@ export default function BuilderToolbar({
               {!validating && lastValidation && !lastValidation.valid && (
                 <div>
                   <p className="font-medium mb-1.5">
-                    Graph has {lastValidation.errors?.length} error{lastValidation.errors?.length !== 1 ? 's' : ''} — fix before publishing:
+                    {lastValidation.errors?.length} error{lastValidation.errors?.length !== 1 ? 's' : ''} — fix before publishing:
                   </p>
                   <div className="max-h-32 overflow-y-auto space-y-0.5">
                     {lastValidation.errors?.map((e, i) => (
-                      <p key={i} className="text-[10px]">• {e}</p>
+                      <p key={i} className="text-[10px]">• {humaniseError(e)}</p>
                     ))}
                   </div>
                 </div>

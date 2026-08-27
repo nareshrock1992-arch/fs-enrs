@@ -1,4 +1,4 @@
-import { X, AlertTriangle, Info } from 'lucide-react';
+import { X, AlertTriangle } from 'lucide-react';
 
 /**
  * Extract nodeId from a backend error string.
