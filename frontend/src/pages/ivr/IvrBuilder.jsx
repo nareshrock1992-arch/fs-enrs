@@ -5,12 +5,13 @@ import { ArrowLeft, AlertTriangle, Star, X } from 'lucide-react';
 import { useIvrGraph } from '../../hooks/useIvrGraph.js';
 import { api } from '../../api/client.js';
 
-import FlowCanvas     from '../../components/ivr/canvas/FlowCanvas.jsx';
-import NodePalette    from '../../components/ivr/panels/NodePalette.jsx';
-import PropertyPanel  from '../../components/ivr/panels/PropertyPanel.jsx';
-import BuilderToolbar from '../../components/ivr/toolbar/BuilderToolbar.jsx';
-import VersionDrawer  from '../../components/ivr/panels/VersionDrawer.jsx';
-import BindNumbersModal from '../../components/ivr/panels/BindNumbersModal.jsx';
+import FlowCanvas        from '../../components/ivr/canvas/FlowCanvas.jsx';
+import NodePalette       from '../../components/ivr/panels/NodePalette.jsx';
+import PropertyPanel     from '../../components/ivr/panels/PropertyPanel.jsx';
+import BuilderToolbar    from '../../components/ivr/toolbar/BuilderToolbar.jsx';
+import VersionDrawer     from '../../components/ivr/panels/VersionDrawer.jsx';
+import BindNumbersModal  from '../../components/ivr/panels/BindNumbersModal.jsx';
+import ValidationErrorPanel from '../../components/ivr/panels/ValidationErrorPanel.jsx';
 
 const PALETTE_WIDTH  = 188;
 const PROPERTY_WIDTH = 220;
@@ -36,6 +37,7 @@ export default function IvrBuilder() {
   const [showBind,      setShowBind]      = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [showStartHint, setShowStartHint] = useState(false);
+  const [showErrorPanel, setShowErrorPanel] = useState(false);
 
   // First-node onboarding: show a one-time dismissible hint when the first node
   // is added to an empty flow. Dismissed state is stored per-flow in localStorage
@@ -86,6 +88,19 @@ export default function IvrBuilder() {
 
   const selectedNode = graph.selected ? graph.nodes[graph.selected] : null;
 
+  const totalErrors = Object.values(graph.errors).flat().length;
+
+  const handleValidateAndShow = useCallback(async () => {
+    const result = await graph.validate();
+    if (result && !result.valid) setShowErrorPanel(true);
+    return result;
+  }, [graph]);
+
+  const handleGoToNode = useCallback((nodeId) => {
+    graph.setSelected(nodeId);
+    setShowErrorPanel(false);
+  }, [graph]);
+
   if (!graph.flowMeta && Object.keys(graph.nodes).length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted text-sm">
@@ -115,12 +130,14 @@ export default function IvrBuilder() {
         saveError={graph.saveError}
         errors={graph.errors}
         warnings={graph.warnings}
-        onValidate={graph.validate}
+        onValidate={handleValidateAndShow}
         onPublished={handlePublished}
         onShowHistory={() => setShowHistory(true)}
         onShowBind={() => setShowBind(true)}
         onFlowChange={flow => graph.dispatch({ type: 'UPDATE_META', patch: flow })}
         onSaveNow={graph.saveNow}
+        onToggleErrors={() => setShowErrorPanel(v => !v)}
+        showErrors={showErrorPanel}
       />
 
       {/* Entry loss warning — persistent until a new Start node is assigned */}
@@ -150,6 +167,17 @@ export default function IvrBuilder() {
             <X size={12} />
           </button>
         </div>
+      )}
+
+      {/* Validation error panel — shown when error badge is clicked or validate fails */}
+      {showErrorPanel && totalErrors > 0 && (
+        <ValidationErrorPanel
+          errors={graph.errors}
+          warnings={graph.warnings}
+          nodes={graph.nodes}
+          onGoToNode={handleGoToNode}
+          onClose={() => setShowErrorPanel(false)}
+        />
       )}
 
       {/* Main 3-column layout */}

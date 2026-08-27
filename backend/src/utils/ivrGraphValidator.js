@@ -148,7 +148,7 @@ export async function validateGraph(graph, tenantId) {
 
   for (const nid of reachable) {
     if (!canReachTerminal.has(nid)) {
-      errors.push(`Node "${nid}" can never reach an end of call (hangup/transfer/ers) — infinite loop with no exit`);
+      errors.push(`node ${nid}: can never reach an end of call (hangup/transfer/ers) — infinite loop with no exit branch`);
     }
   }
 
@@ -229,22 +229,27 @@ export async function validateGraph(graph, tenantId) {
 
   // ── Pass 2e: DB foreign key existence checks ──────────────────────────────
 
-  const ensIds       = [];
-  const ersIds       = [];
-  const audioFileIds = [];
+  // Track configId → nodeId so FK errors can reference the node that owns the bad ID.
+  const ensIdToNode   = new Map(); // configId → nid
+  const ersIdToNode   = new Map();
+  const audioIdToNode = new Map();
 
   // Any node type carrying an ens_configuration_id / ers_configuration_id
   // gets FK-checked — collected by FIELD, not by a hardcoded type list, so
   // node types like ers_ring_all, ers_overflow_check, ens_blast_record and any
   // future registry type that references a configuration are covered automatically.
-  for (const node of Object.values(nodes)) {
+  for (const [nid, node] of Object.entries(nodes)) {
     if (!node) continue;
-    if (typeof node.ens_configuration_id === 'number') ensIds.push(node.ens_configuration_id);
-    if (typeof node.ers_configuration_id === 'number') ersIds.push(node.ers_configuration_id);
-    if (node.type === 'play'   && node.audio_file_id)        audioFileIds.push(node.audio_file_id);
-    if (node.type === 'hangup' && node.play_audio_file_id)   audioFileIds.push(node.play_audio_file_id);
-    if (node.type === 'gather' && node.prompt_audio_file_id) audioFileIds.push(node.prompt_audio_file_id);
+    if (typeof node.ens_configuration_id === 'number') ensIdToNode.set(node.ens_configuration_id, nid);
+    if (typeof node.ers_configuration_id === 'number') ersIdToNode.set(node.ers_configuration_id, nid);
+    if (node.type === 'play'   && node.audio_file_id)        audioIdToNode.set(node.audio_file_id, nid);
+    if (node.type === 'hangup' && node.play_audio_file_id)   audioIdToNode.set(node.play_audio_file_id, nid);
+    if (node.type === 'gather' && node.prompt_audio_file_id) audioIdToNode.set(node.prompt_audio_file_id, nid);
   }
+
+  const ensIds       = [...ensIdToNode.keys()];
+  const ersIds       = [...ersIdToNode.keys()];
+  const audioFileIds = [...audioIdToNode.keys()];
 
   const checks = [];
 
@@ -257,7 +262,10 @@ export async function validateGraph(graph, tenantId) {
       ).then(r => {
         const found = new Set(r.rows.map(x => x.id));
         for (const id of ensIds) {
-          if (!found.has(id)) errors.push(`ens_configuration_id ${id} not found or wrong tenant`);
+          if (!found.has(id)) {
+            const nid = ensIdToNode.get(id);
+            errors.push(`node ${nid}: ens_configuration_id ${id} not found or wrong tenant`);
+          }
         }
       }).catch(() => {
         // Column may not exist on older schema — skip FK check
@@ -275,7 +283,10 @@ export async function validateGraph(graph, tenantId) {
       ).then(r => {
         const found = new Set(r.rows.map(x => x.id));
         for (const id of ersIds) {
-          if (!found.has(id)) errors.push(`ers_configuration_id ${id} not found or wrong tenant`);
+          if (!found.has(id)) {
+            const nid = ersIdToNode.get(id);
+            errors.push(`node ${nid}: ers_configuration_id ${id} not found or wrong tenant`);
+          }
         }
       }).catch(() => {
         warnings.push('ERS configuration FK check skipped (schema upgrade pending)');
@@ -297,7 +308,10 @@ export async function validateGraph(graph, tenantId) {
       ).then(r => {
         const found = new Set(r.rows.map(x => x.id));
         for (const id of audioFileIds) {
-          if (!found.has(id)) errors.push(`audio_file_id ${id} not found or belongs to a different tenant`);
+          if (!found.has(id)) {
+            const nid = audioIdToNode.get(id);
+            errors.push(`node ${nid}: audio_file_id ${id} not found or belongs to a different tenant`);
+          }
         }
       }).catch(() => {
         warnings.push('Media file FK check skipped (schema upgrade pending)');

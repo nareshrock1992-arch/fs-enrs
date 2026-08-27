@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil } from 'lucide-react';
+import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil, ListChecks } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
 
@@ -16,6 +16,8 @@ export default function BuilderToolbar({
   onShowBind,
   onFlowChange,
   onSaveNow,
+  onToggleErrors,
+  showErrors,
 }) {
   const [showPublish, setShowPublish] = useState(false);
   const [changeNotes, setChangeNotes] = useState('');
@@ -68,8 +70,7 @@ export default function BuilderToolbar({
     }
   }
 
-  const errorCount   = Object.values(errors).flat().filter(e => e && !e.startsWith('__')).length
-    + (errors.__global?.length || 0);
+  const errorCount = Object.values(errors).flat().length;
   const latestVer    = flow?.latest_version;
 
   async function handleValidate() {
@@ -163,12 +164,17 @@ export default function BuilderToolbar({
           {latestVer ? `● Published v${latestVer.version_number}` : '○ Draft'}
         </div>
 
-        {/* Error badge */}
+        {/* Error badge — clickable to open error panel */}
         {errorCount > 0 && (
-          <div className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-full
-                          bg-red-500/15 text-red-400 border border-red-500/20 shrink-0">
+          <button
+            onClick={onToggleErrors}
+            className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border shrink-0 transition-colors
+              ${showErrors
+                ? 'bg-red-500/25 text-red-400 border-red-500/40'
+                : 'bg-red-500/15 text-red-400 border-red-500/20 hover:bg-red-500/25'}`}
+          >
             <AlertTriangle size={10} /> {errorCount} error{errorCount !== 1 ? 's' : ''}
-          </div>
+          </button>
         )}
 
         {/* Validate */}
@@ -302,10 +308,14 @@ export default function BuilderToolbar({
               )}
               {!validating && lastValidation && !lastValidation.valid && (
                 <div>
-                  <p className="font-medium mb-1">Graph has errors — fix before publishing:</p>
-                  {lastValidation.errors?.slice(0, 3).map((e, i) => (
-                    <p key={i} className="text-[10px]">• {e}</p>
-                  ))}
+                  <p className="font-medium mb-1.5">
+                    Graph has {lastValidation.errors?.length} error{lastValidation.errors?.length !== 1 ? 's' : ''} — fix before publishing:
+                  </p>
+                  <div className="max-h-32 overflow-y-auto space-y-0.5">
+                    {lastValidation.errors?.map((e, i) => (
+                      <p key={i} className="text-[10px]">• {e}</p>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

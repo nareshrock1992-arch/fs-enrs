@@ -394,7 +394,7 @@ export function useIvrGraph(flowUuid) {
       const result = await api.ivr.validate(s.flowMeta.flow_uuid);
       const errorMap = {};
       for (const err of result.errors || []) {
-        const match = err.match(/^node ([^\s:]+)/);
+        const match = err.match(/^node ([^.\s:]+)/);
         const nodeId = match?.[1];
         if (nodeId && s.nodes[nodeId]) errorMap[nodeId] = [...(errorMap[nodeId] || []), err];
         else errorMap['__global'] = [...(errorMap['__global'] || []), err];
