@@ -1040,8 +1040,7 @@ export const ersRingAll = asyncHandler(async (req, res) => {
 });
 
 // GET /api/v1/internal/ers/playback/authorize?configuration_id=X&caller=N
-// The UUUU authorized-playback line (ens_playback_gate node). Message is
-// valid for 24h from its recording START (per spec). Every attempt —
+// Legacy ERS playback authorization endpoint. Every attempt —
 // allowed or rejected — is logged to audit_logs for the report.
 export const ersPlaybackAuthorize = asyncHandler(async (req, res) => {
   const configId = parseInt(req.query.configuration_id, 10);

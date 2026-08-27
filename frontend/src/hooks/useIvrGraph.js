@@ -13,21 +13,21 @@ function genId() {
 export const NODE_DEFAULTS = {
   play:              { audio_url: '/media/', next: '' },
   say:               { text: '', language: 'en-US', next: '' },
-  gather:            { max_digits: 4, timeout_seconds: 10, terminators: '#', variable_name: 'gather_result', branches: { _default: '', timeout: '', invalid: '' } },
+  gather:            { max_digits: 4, timeout_seconds: 10, terminators: '#', variable_name: 'gather_result', prompt_source_type: 'tts', prompt_text: '', branches: { _default: '', timeout: '', invalid: '' } },
   goto:              { target_node_id: '' },
   ens:               { ens_config_var: 'ens_configuration_id', recording_file_var: 'recorded_file_path', next: '' },
   ers:               { ers_configuration_id: '' },
-  hangup:            {},
+  hangup:            { goodbye_source_type: 'none' },
   condition:         { variable: 'gather_result', operator: '==', expected_value: '', true_node: '', false_node: '' },
-  record_message:    { variable_name: 'recorded_file_path', prompt_text: 'Please record your message after the tone. Press pound when done.', max_seconds: 60, silence_threshold: 500, silence_hits: 3, next: '' },
+  record_message:    { variable_name: 'recorded_file_path', prompt_source_type: 'tts', prompt_text: 'Please record your message after the tone. Press pound when done.', max_seconds: 60, silence_threshold: 500, silence_hits: 3, next: '' },
   set_variable:      { variable: '', value: '', next: '' },
   transfer:          { destination: '', dialplan: 'XML', context: 'default' },
   webhook:           { url: '', body_template: '', next: '' },
   ers_ring_all:      { tier: 'primary' },
   ers_overflow_check: { branches: { primary: '', secondary: '', full: '' } },
-  ers_overflow_wait: { hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
-  ens_blast_record:  { pin_prompt_text: 'Please enter your authorization PIN followed by pound.', record_prompt_text: 'Record your emergency message after the tone. Press pound when finished.', max_record_seconds: 120, next: '' },
-  ens_playback_gate: { no_message_text: 'There is no active emergency message at this time.', true_node: '', false_node: '' },
+  ers_overflow_wait: { hold_source_type: 'tts', hold_prompt_text: 'All emergency responders are currently engaged. Please remain on the line.', max_wait_seconds: 300, next: '' },
+  ens_blast_record:  { pin_prompt_source_type: 'tts', pin_prompt_text: 'Please enter your authorization PIN followed by pound.', pin_prompt_audio_url: '', record_prompt_source_type: 'tts', record_prompt_text: 'Record your emergency message after the tone. Press pound when finished.', record_prompt_audio_url: '', max_record_seconds: 120, next: '' },
+  ens_playback: { branches: { active: '', unauthorized: '', no_campaign: '', expired: '' } },
 };
 
 // ── Derive edges from node fields ─────────────────────────────────────────────

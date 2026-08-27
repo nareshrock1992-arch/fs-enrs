@@ -364,6 +364,11 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
 // ── Generic field renderer — dispatches on fieldType, not node.type ──────────
 
 function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
+  // showWhen: { field, value } — hide this field when the named sibling field
+  // does not equal the specified value. Used to show/hide audio_url or text fields
+  // based on an explicit source_type selector on the same node.
+  if (fieldDef.showWhen && node[fieldDef.showWhen.field] !== fieldDef.showWhen.value) return null;
+
   // conditionalOn: the field's label/hint/placeholder swap based on another
   // field's current value (e.g. condition node's expected_value field
   // means something different when operator === 'ens_pin_valid').
@@ -398,7 +403,7 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
       break;
     case 'audio_url':
       // For play node: hide the audio_url field when source type is 'variable'.
-      // Other nodes that use audio_url (say, hangup, gather prompt) always show it.
+      // (showWhen handles per-source_type visibility for other nodes at the top of this function.)
       if (node.audio_source_type === 'variable') return null;
       // MediaPickerField: search + select from Media Library instead of manual path entry.
       control = <MediaPickerField value={value} onChange={set} />;

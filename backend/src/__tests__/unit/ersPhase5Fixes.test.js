@@ -43,7 +43,7 @@ describe('deterministicRoom()', () => {
 // ── Registry summaryTemplate ──────────────────────────────────────────────────
 
 describe('NODE_TYPE_REGISTRY summaryTemplate', () => {
-  const PHASE5_TYPES = ['ers_ring_all', 'ers_overflow_check', 'ers_overflow_wait', 'ens_blast_record', 'ens_playback_gate'];
+  const PHASE5_TYPES = ['ers_ring_all', 'ers_overflow_check', 'ers_overflow_wait', 'ens_blast_record', 'ens_playback'];
 
   it.each(PHASE5_TYPES)('%s has a summaryTemplate', (type) => {
     const entry = getNodeType(type);

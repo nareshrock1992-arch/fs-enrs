@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useAuthStore } from '../../store/authStore.js';
-import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Users, User, ChevronDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Users, User, ChevronDown, Search, Play, Check, X } from 'lucide-react';
 import { api } from '../../api/client.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
@@ -25,6 +25,140 @@ function Section({ id, title, open, onToggle, children }) {
         />
       </button>
       {open && <div className="px-4 py-3 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+// ── Media picker (reused from PropertyPanel pattern) ─────────────────────────
+
+function MediaPickerField({ value, onChange }) {
+  const [open, setOpen]       = useState(false);
+  const [query, setQuery]     = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [previewId, setPreviewId] = useState(null);
+  const audioRef = useRef(null);
+  const timerRef = useRef(null);
+  const displayName = value ? value.replace(/^\/media\//, '') : '';
+
+  const search = useCallback(async (q) => {
+    setLoading(true);
+    try {
+      const r = await api.mediaLibrary.list({ search: q || undefined, limit: 30, deployed: 'true' });
+      setResults(r.files || []);
+    } catch { setResults([]); } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => search(query), 250);
+    return () => clearTimeout(timerRef.current);
+  }, [query, open, search]);
+
+  useEffect(() => { if (open) search(query); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function selectFile(file) {
+    const leaf = file.fs_path
+      ? file.fs_path.split('/').pop()
+      : file.path_or_uri ? file.path_or_uri.split('/').pop() : file.name || String(file.id);
+    onChange('/media/' + leaf);
+    setOpen(false);
+    setPreviewId(null);
+  }
+
+  function togglePreview(fileId, e) {
+    e.stopPropagation();
+    if (previewId === fileId) { audioRef.current?.pause(); setPreviewId(null); }
+    else setPreviewId(fileId);
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-1.5 items-center">
+        <div className="flex-1 bg-surface border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-text-primary truncate min-w-0">
+          {displayName || <span className="text-text-muted">No file selected</span>}
+        </div>
+        {value && (
+          <button onClick={() => onChange('')} title="Clear" className="text-text-muted hover:text-red-400 p-1 shrink-0">
+            <X size={12} />
+          </button>
+        )}
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs bg-brand/10 text-brand border border-brand/20 hover:bg-brand/20 transition-colors"
+        >
+          <Search size={11} /> Browse
+        </button>
+      </div>
+      {open && (
+        <div className="border border-surface-border rounded-lg bg-surface shadow-lg overflow-hidden">
+          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-surface-border">
+            <Search size={12} className="text-text-muted shrink-0" />
+            <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Search media…"
+              className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none" />
+            {loading && <span className="text-[9px] text-text-muted">Loading…</span>}
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {results.length === 0 && !loading && (
+              <div className="px-3 py-4 text-center text-[10px] text-text-muted">
+                {query ? 'No files match your search' : 'No deployed media files found'}
+              </div>
+            )}
+            {results.map(file => {
+              const leaf     = file.fs_path ? file.fs_path.split('/').pop() : file.name;
+              const mediaUrl = '/media/' + leaf;
+              const selected = value === mediaUrl;
+              const durRaw   = file.duration_sec;
+              const durNum   = durRaw == null ? null : Number(durRaw);
+              const dur      = (durNum != null && !isNaN(durNum) && durNum > 0)
+                ? (durNum < 60 ? `${durNum.toFixed(0)}s` : `${(durNum / 60).toFixed(1)}m`) : null;
+              return (
+                <div key={file.id} onClick={() => selectFile(file)}
+                  className={`flex items-center gap-2 px-2.5 py-2 cursor-pointer hover:bg-surface-hover border-b border-surface-border/50 last:border-0 ${selected ? 'bg-brand/5' : ''}`}>
+                  <button onClick={e => togglePreview(file.id, e)}
+                    className="shrink-0 text-text-muted hover:text-brand p-0.5" title="Preview">
+                    <Play size={10} className={previewId === file.id ? 'text-brand' : ''} />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-text-primary truncate">{file.name}</p>
+                    <p className="text-[9px] text-text-muted truncate">{[file.category, dur].filter(Boolean).join(' · ')}</p>
+                  </div>
+                  {selected && <Check size={11} className="text-brand shrink-0" />}
+                </div>
+              );
+            })}
+          </div>
+          {previewId && (
+            <audio ref={audioRef} autoPlay src={api.mediaLibrary.streamUrl(previewId)}
+              onEnded={() => setPreviewId(null)} className="hidden" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Per-announcement source selector ─────────────────────────────────────────
+
+function AnnouncementField({ sourceType, text, audioUrl, onSourceType, onText, onAudioUrl, textPlaceholder }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-3">
+        {['tts', 'audio'].map(st => (
+          <label key={st} className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-text-secondary">
+            <input type="radio" name={undefined} checked={sourceType === st} onChange={() => onSourceType(st)}
+              className="accent-brand" />
+            {st === 'tts' ? 'Text to Speech' : 'Audio File'}
+          </label>
+        ))}
+      </div>
+      {sourceType === 'tts' ? (
+        <input className="input" value={text} onChange={e => onText(e.target.value)} placeholder={textPlaceholder} />
+      ) : (
+        <MediaPickerField value={audioUrl} onChange={onAudioUrl} />
+      )}
     </div>
   );
 }
@@ -91,9 +225,15 @@ const EMPTY = {
   ext_prefix:                '',
   ext_suffix:                '',
   // Announcements
-  expiry_announcement:       '',
+  no_pending_source_type:    'tts',
   no_pending_msg:            '',
+  no_pending_audio_url:      '',
+  expiry_source_type:        'tts',
+  expiry_announcement:       '',
+  expiry_audio_url:          '',
+  unauthorized_source_type:  'tts',
   unauthorized_msg:          '',
+  unauthorized_audio_url:    '',
   // Recipients
   group_ids:                 [],
   contact_ids:               [],
@@ -184,9 +324,15 @@ export default function EnsList() {
         pin:                       form.pin                     || null,
         sip_gateway:               form.sip_gateway             || null,
         gateway_override:          form.gateway_override        || null,
-        expiry_announcement:       form.expiry_announcement     || null,
+        no_pending_source_type:    form.no_pending_source_type  || 'tts',
         no_pending_msg:            form.no_pending_msg          || null,
+        no_pending_audio_url:      form.no_pending_audio_url    || null,
+        expiry_source_type:        form.expiry_source_type      || 'tts',
+        expiry_announcement:       form.expiry_announcement     || null,
+        expiry_audio_url:          form.expiry_audio_url        || null,
+        unauthorized_source_type:  form.unauthorized_source_type || 'tts',
         unauthorized_msg:          form.unauthorized_msg        || null,
+        unauthorized_audio_url:    form.unauthorized_audio_url  || null,
         mobile_prefix:             form.mobile_prefix           || null,
         mobile_suffix:             form.mobile_suffix           || null,
         ext_prefix:                form.ext_prefix              || null,
@@ -251,9 +397,15 @@ export default function EnsList() {
         ext_normalize_enabled:     full.ext_normalize_enabled     ?? false,
         ext_prefix:                full.ext_prefix                ?? '',
         ext_suffix:                full.ext_suffix                ?? '',
-        expiry_announcement:       full.expiry_announcement      ?? '',
+        no_pending_source_type:    full.no_pending_source_type   ?? 'tts',
         no_pending_msg:            full.no_pending_msg           ?? '',
+        no_pending_audio_url:      full.no_pending_audio_url     ?? '',
+        expiry_source_type:        full.expiry_source_type       ?? 'tts',
+        expiry_announcement:       full.expiry_announcement      ?? '',
+        expiry_audio_url:          full.expiry_audio_url         ?? '',
+        unauthorized_source_type:  full.unauthorized_source_type ?? 'tts',
         unauthorized_msg:          full.unauthorized_msg         ?? '',
+        unauthorized_audio_url:    full.unauthorized_audio_url   ?? '',
         group_ids:                 (full.groups   || []).map(g => g.responder_group_id ?? g.id),
         contact_ids:               (full.contacts || []).map(c => c.emergency_contact_id ?? c.id),
       });
@@ -672,21 +824,42 @@ export default function EnsList() {
             <Section id="announcements" title="Announcements" open={openSections.has('announcements')} onToggle={toggleSection}>
               <div>
                 <label className="label">No Pending Message</label>
-                <input className="input" value={form.no_pending_msg}
-                       onChange={e => f('no_pending_msg', e.target.value)}
-                       placeholder="Spoken when there is no active blast" />
+                <p className="text-[10px] text-text-muted mb-1.5">Played when the caller is authorized but no blast has been sent yet.</p>
+                <AnnouncementField
+                  sourceType={form.no_pending_source_type}
+                  text={form.no_pending_msg}
+                  audioUrl={form.no_pending_audio_url}
+                  onSourceType={v => f('no_pending_source_type', v)}
+                  onText={v => f('no_pending_msg', v)}
+                  onAudioUrl={v => f('no_pending_audio_url', v)}
+                  textPlaceholder="There are no pending emergency notifications at this time."
+                />
               </div>
               <div>
                 <label className="label">Expiry Announcement</label>
-                <input className="input" value={form.expiry_announcement}
-                       onChange={e => f('expiry_announcement', e.target.value)}
-                       placeholder="Spoken when the recording has expired" />
+                <p className="text-[10px] text-text-muted mb-1.5">Played when the latest campaign has passed its retention window.</p>
+                <AnnouncementField
+                  sourceType={form.expiry_source_type}
+                  text={form.expiry_announcement}
+                  audioUrl={form.expiry_audio_url}
+                  onSourceType={v => f('expiry_source_type', v)}
+                  onText={v => f('expiry_announcement', v)}
+                  onAudioUrl={v => f('expiry_audio_url', v)}
+                  textPlaceholder="This emergency notification has expired."
+                />
               </div>
               <div>
                 <label className="label">Unauthorized Message</label>
-                <input className="input" value={form.unauthorized_msg}
-                       onChange={e => f('unauthorized_msg', e.target.value)}
-                       placeholder="Spoken when the caller is not in any blast list" />
+                <p className="text-[10px] text-text-muted mb-1.5">Played when the caller is not in any blast destination list.</p>
+                <AnnouncementField
+                  sourceType={form.unauthorized_source_type}
+                  text={form.unauthorized_msg}
+                  audioUrl={form.unauthorized_audio_url}
+                  onSourceType={v => f('unauthorized_source_type', v)}
+                  onText={v => f('unauthorized_msg', v)}
+                  onAudioUrl={v => f('unauthorized_audio_url', v)}
+                  textPlaceholder="You are not authorized to access this message."
+                />
               </div>
             </Section>
 

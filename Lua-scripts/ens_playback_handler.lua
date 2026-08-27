@@ -52,6 +52,17 @@ local TTS_ENGINE   = os.getenv("ENRS_TTS_ENGINE")   or "flite"
 local TTS_VOICE    = os.getenv("ENRS_TTS_VOICE")    or "slt"
 local HTTP_TIMEOUT = 8
 
+-- Resolve /media/<leaf> → SOUNDS_DIR/enrs/<leaf>; pass-through for other URIs.
+local _fsapi     = freeswitch.API()
+local SOUNDS_DIR = _fsapi:execute("global_getvar", "sounds_dir") or "/usr/share/freeswitch/sounds"
+local function resolve_audio(uri)
+  if not uri or uri == "" then return nil end
+  if uri:sub(1, 7) == "/media/" then
+    return SOUNDS_DIR .. "/enrs/" .. uri:sub(8)
+  end
+  return uri
+end
+
 local json_ok, json = pcall(require, "cjson")
 if not json_ok then json = nil end
 
@@ -84,6 +95,32 @@ local function speak(text)
   end
 end
 
+-- Play an announcement using the explicit source_type from ENS configuration.
+-- source_type="audio": resolve and play audio_url; log ERR if missing, no TTS fallback.
+-- source_type="tts":   speak text; use fallback_text if text is empty.
+-- No cross-type fallback in either direction.
+local function ens_announce(source_type, audio_url, text, fallback_text)
+  local st = source_type or "tts"
+  if st == "audio" then
+    local resolved = resolve_audio(audio_url)
+    if resolved then
+      session:execute("playback", resolved)
+    else
+      log("ERR", "ens_announce: source_type=audio but audio_url is missing/unresolvable"
+          .. " (audio_url=" .. tostring(audio_url) .. ") — announcement cannot be played")
+      speak("An announcement is not available. Please contact your administrator.")
+    end
+  else
+    -- source_type == "tts" — never switches to audio
+    local msg = (text and text ~= "") and text or fallback_text
+    if msg and msg ~= "" then
+      speak(msg)
+    else
+      log("WARN", "ens_announce: source_type=tts but no text configured and no fallback")
+    end
+  end
+end
+
 local function collect_digit(timeout_ms)
   session:execute("read", string.format("0 1 %s noname %d #", "", timeout_ms or 5000))
   return session:getVariable("read_result") or ""
@@ -112,16 +149,17 @@ local cfg = lookup.data
 log("INFO", "ENS playback config: id=" .. tostring(cfg.configuration_id) ..
     " name=" .. tostring(cfg.name))
 
--- Default messages (overridden by config values if set)
-local no_pending_msg  = (cfg.no_pending_msg and cfg.no_pending_msg ~= "")
-                        and cfg.no_pending_msg
-                        or  "There are no pending emergency notifications at this time."
-local expiry_msg      = (cfg.expiry_announcement and cfg.expiry_announcement ~= "")
-                        and cfg.expiry_announcement
-                        or  "This emergency notification has expired."
-local unauthorized_msg = (cfg.unauthorized_msg and cfg.unauthorized_msg ~= "")
-                         and cfg.unauthorized_msg
-                         or  "You are not authorized to access this message."
+-- Announcement config — source_type + audio_url + text, with system fallback text.
+-- source_type defaults to 'tts' for rows that pre-date the audio column addition.
+local no_pending_src   = cfg.no_pending_source_type  or "tts"
+local no_pending_url   = cfg.no_pending_audio_url
+local no_pending_text  = cfg.no_pending_msg
+local expiry_src       = cfg.expiry_source_type      or "tts"
+local expiry_url       = cfg.expiry_audio_url
+local expiry_text      = cfg.expiry_announcement
+local unauth_src       = cfg.unauthorized_source_type or "tts"
+local unauth_url       = cfg.unauthorized_audio_url
+local unauth_text      = cfg.unauthorized_msg
 
 session:answer()
 session:sleep(400)
@@ -142,22 +180,26 @@ local campaign_id = nil
 
 if not latest then
   log("ERR", "No response from campaigns/latest for config " .. tostring(cfg.configuration_id))
-  speak(no_pending_msg)
+  ens_announce(no_pending_src, no_pending_url, no_pending_text,
+    "There are no pending emergency notifications at this time.")
 
 elseif latest.authorized == false or latest.status == "UNAUTHORIZED" then
   -- Caller is not in any campaign destination for this ENS configuration.
   -- Do not reveal campaign existence; play only the generic unauthorized message.
   log("INFO", "Unauthorized playback attempt: config=" .. tostring(cfg.configuration_id)
       .. " caller=" .. caller)
-  speak(unauthorized_msg)
+  ens_announce(unauth_src, unauth_url, unauth_text,
+    "You are not authorized to access this message.")
 
 elseif latest.status == "NO_CAMPAIGN" then
   log("INFO", "No pending campaign for authorized caller: config=" .. tostring(cfg.configuration_id))
-  speak(no_pending_msg)
+  ens_announce(no_pending_src, no_pending_url, no_pending_text,
+    "There are no pending emergency notifications at this time.")
 
 elseif latest.status == "EXPIRED" then
   log("INFO", "Latest authorized campaign is expired: config=" .. tostring(cfg.configuration_id))
-  speak(expiry_msg)
+  ens_announce(expiry_src, expiry_url, expiry_text,
+    "This emergency notification has expired.")
 
 elseif latest.status == "ACTIVE" then
   -- Authorized and playable — determine audio source
@@ -173,7 +215,8 @@ elseif latest.status == "ACTIVE" then
         .. " campaign=" .. tostring(campaign_id))
   else
     log("WARN", "ACTIVE campaign has no playable audio: campaign=" .. tostring(campaign_id))
-    speak(no_pending_msg)
+    ens_announce(no_pending_src, no_pending_url, no_pending_text,
+      "There are no pending emergency notifications at this time.")
   end
 
   if audio_file then
@@ -191,7 +234,8 @@ elseif latest.status == "ACTIVE" then
 
 else
   log("WARN", "Unexpected status from campaigns/latest: " .. tostring(latest.status))
-  speak(no_pending_msg)
+  ens_announce(no_pending_src, no_pending_url, no_pending_text,
+    "There are no pending emergency notifications at this time.")
 end
 
 -- 4. Offer replay if we played something

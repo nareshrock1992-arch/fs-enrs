@@ -16,7 +16,9 @@ const gatewayOverride = z.preprocess(
   z.string().regex(/^[a-zA-Z0-9\-_.]+$/, 'Only letters, numbers, -, _, . allowed').max(255).nullable()
 );
 
-const EnsConfigSchema = z.object({
+// Base object — used for partial() in updateConfiguration.
+// Full schema adds cross-field refinements on top.
+const EnsConfigBase = z.object({
   organization_id:           z.number().int().positive(),
   name:                      z.string().min(1).max(128),
   description:               emptyToNull,
@@ -65,10 +67,18 @@ const EnsConfigSchema = z.object({
   ext_prefix:                emptyToNull,
   ext_suffix:                emptyToNull,
 
-  // Messages
+  // Messages — each announcement supports source_type: 'tts' | 'audio'
+  no_pending_source_type:    z.enum(['tts', 'audio']).default('tts'),
   no_pending_msg:            emptyToNull,
+  no_pending_audio_url:      emptyToNull,
+
+  expiry_source_type:        z.enum(['tts', 'audio']).default('tts'),
   expiry_announcement:       emptyToNull,
+  expiry_audio_url:          emptyToNull,
+
+  unauthorized_source_type:  z.enum(['tts', 'audio']).default('tts'),
   unauthorized_msg:          emptyToNull,
+  unauthorized_audio_url:    emptyToNull,
 
   // Destinations (junction references)
   group_ids:                 z.array(z.number().int().positive()).default([]),
@@ -76,6 +86,23 @@ const EnsConfigSchema = z.object({
 
   is_active: z.boolean().default(true),
 });
+
+function refineAnnouncementSources(d, ctx) {
+  const pairs = [
+    { st: d.no_pending_source_type,   url: d.no_pending_audio_url,  label: 'No Pending Message' },
+    { st: d.expiry_source_type,       url: d.expiry_audio_url,      label: 'Expiry Announcement' },
+    { st: d.unauthorized_source_type, url: d.unauthorized_audio_url,label: 'Unauthorized Message' },
+  ];
+  for (const { st, url, label } of pairs) {
+    if (st === 'audio' && !url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom,
+        message: `${label}: an Audio File must be selected when source type is "audio".` });
+    }
+  }
+}
+
+// Full schema for CREATE (all fields present, cross-field rules apply)
+const EnsConfigSchema = EnsConfigBase.superRefine(refineAnnouncementSources);
 
 // ── Sync helpers ──────────────────────────────────────────────────────────────
 
@@ -201,11 +228,14 @@ export const createConfiguration = asyncHandler(async (req, res) => {
        routing_mode, dial_preference, fallback_mode, skip_behavior,
        allow_mobile, mobile_normalize_enabled, mobile_strip_leading_zero, mobile_prefix, mobile_suffix,
        allow_extension, ext_normalize_enabled, ext_prefix, ext_suffix,
-       no_pending_msg, expiry_announcement, unauthorized_msg,
+       no_pending_source_type, no_pending_msg, no_pending_audio_url,
+       expiry_source_type, expiry_announcement, expiry_audio_url,
+       unauthorized_source_type, unauthorized_msg, unauthorized_audio_url,
        is_active
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
+       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,
+       $34,$35,$36,$37,$38,$39,$40,$41,$42,$43
      ) RETURNING *`,
     [
       d.organization_id, tenantId, d.name, d.description,
@@ -219,7 +249,9 @@ export const createConfiguration = asyncHandler(async (req, res) => {
       d.allow_mobile, d.mobile_normalize_enabled, d.mobile_strip_leading_zero,
       d.mobile_prefix, d.mobile_suffix,
       d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
-      d.no_pending_msg, d.expiry_announcement, d.unauthorized_msg,
+      d.no_pending_source_type, d.no_pending_msg, d.no_pending_audio_url,
+      d.expiry_source_type, d.expiry_announcement, d.expiry_audio_url,
+      d.unauthorized_source_type, d.unauthorized_msg, d.unauthorized_audio_url,
       d.is_active,
     ]
   );
@@ -237,7 +269,12 @@ export const createConfiguration = asyncHandler(async (req, res) => {
 // ── Update ───────────────────────────────────────────────────────────────────
 
 export const updateConfiguration = asyncHandler(async (req, res) => {
-  const d = EnsConfigSchema.partial().parse(req.body);
+  // Use the base schema for partial() so ZodEffects doesn't block it.
+  // Then apply cross-field validation only for the announcement pairs that
+  // are both present in this payload.
+  const d = EnsConfigBase.partial().superRefine((data, ctx) => {
+    refineAnnouncementSources(data, ctx);
+  }).parse(req.body);
   // gateway_override uses direct assignment (not COALESCE) so administrators
   // can clear it by sending an empty string or null.  When the field is absent
   // from the request body entirely, fall back to the existing DB value.
@@ -278,11 +315,17 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
        no_pending_msg            = COALESCE($32, no_pending_msg),
        expiry_announcement       = COALESCE($33, expiry_announcement),
        unauthorized_msg          = COALESCE($34, unauthorized_msg),
-       is_active                 = COALESCE($35, is_active),
-       gateway_override          = CASE WHEN $36::boolean THEN $37 ELSE gateway_override END,
-       tenant_id                 = COALESCE(tenant_id, $38),
+       no_pending_source_type    = COALESCE($35, no_pending_source_type),
+       no_pending_audio_url      = COALESCE($36, no_pending_audio_url),
+       expiry_source_type        = COALESCE($37, expiry_source_type),
+       expiry_audio_url          = COALESCE($38, expiry_audio_url),
+       unauthorized_source_type  = COALESCE($39, unauthorized_source_type),
+       unauthorized_audio_url    = COALESCE($40, unauthorized_audio_url),
+       is_active                 = COALESCE($41, is_active),
+       gateway_override          = CASE WHEN $42::boolean THEN $43 ELSE gateway_override END,
+       tenant_id                 = COALESCE(tenant_id, $44),
        updated_at                = now()
-     WHERE id = $1 AND deleted_at IS NULL AND ($38::int IS NULL OR tenant_id = $38) RETURNING *`,
+     WHERE id = $1 AND deleted_at IS NULL AND ($44::int IS NULL OR tenant_id = $44) RETURNING *`,
     [
       req.params.id,
       d.name, d.description,
@@ -297,10 +340,13 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
       d.mobile_prefix, d.mobile_suffix,
       d.allow_extension, d.ext_normalize_enabled, d.ext_prefix, d.ext_suffix,
       d.no_pending_msg, d.expiry_announcement, d.unauthorized_msg,
+      d.no_pending_source_type, d.no_pending_audio_url,
+      d.expiry_source_type, d.expiry_audio_url,
+      d.unauthorized_source_type, d.unauthorized_audio_url,
       d.is_active,
-      gatewayOverrideInBody,   // $36 — boolean: was the key present in req.body?
-      d.gateway_override,      // $37 — the validated value (null when cleared)
-      effectiveTenantId(req),  // $38
+      gatewayOverrideInBody,   // $42 — boolean: was the key present in req.body?
+      d.gateway_override,      // $43 — the validated value (null when cleared)
+      effectiveTenantId(req),  // $44
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ENS configuration not found' });

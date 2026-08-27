@@ -201,10 +201,13 @@ export async function validateGraph(graph, tenantId) {
       warnings.push(`Node "${nid}" (ENS Blast Record): Next Node not connected`);
     }
 
-    // ENS Playback Gate: missing configuration
-    if (node.type === 'ens_playback_gate') {
-      if (!node.ers_configuration_id) {
-        warnings.push(`Node "${nid}" (ENS Playback Gate): ERS Configuration is required`);
+    // ENS Playback: warn if no branches wired
+    if (node.type === 'ens_playback') {
+      const br = node.branches || {};
+      for (const key of ['active', 'unauthorized', 'no_campaign', 'expired']) {
+        if (!br[key]) {
+          warnings.push(`Node "${nid}" (ENS Playback): branch "${key}" is not connected`);
+        }
       }
     }
 
@@ -232,9 +235,8 @@ export async function validateGraph(graph, tenantId) {
 
   // Any node type carrying an ens_configuration_id / ers_configuration_id
   // gets FK-checked — collected by FIELD, not by a hardcoded type list, so
-  // Phase 5 node types (ers_ring_all, ers_overflow_check, ers_overflow_wait,
-  // ens_blast_record, ens_playback_gate) and any future registry type that
-  // references a configuration are covered automatically.
+  // node types like ers_ring_all, ers_overflow_check, ens_blast_record and any
+  // future registry type that references a configuration are covered automatically.
   for (const node of Object.values(nodes)) {
     if (!node) continue;
     if (typeof node.ens_configuration_id === 'number') ensIds.push(node.ens_configuration_id);

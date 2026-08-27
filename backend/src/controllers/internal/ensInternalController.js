@@ -282,7 +282,9 @@ export const ensLookup = asyncHandler(async (req, res) => {
             COALESCE(ec.campaign_priority, 5)         AS campaign_priority,
             COALESCE(ec.adaptive_throttling, false)   AS adaptive_throttling,
             COALESCE(ec.retry_failed_only, false)     AS retry_failed_only,
-            ec.no_pending_msg, ec.expiry_announcement, ec.unauthorized_msg
+            ec.no_pending_source_type, ec.no_pending_msg, ec.no_pending_audio_url,
+            ec.expiry_source_type, ec.expiry_announcement, ec.expiry_audio_url,
+            ec.unauthorized_source_type, ec.unauthorized_msg, ec.unauthorized_audio_url
      FROM emergency_numbers en
      JOIN ens_configurations ec
        ON ec.id = en.ens_configuration_id
@@ -324,9 +326,15 @@ export const ensLookup = asyncHandler(async (req, res) => {
       campaign_priority:         cfg.campaign_priority,
       adaptive_throttling:       cfg.adaptive_throttling,
       retry_failed_only:         cfg.retry_failed_only,
+      no_pending_source_type:    cfg.no_pending_source_type   || 'tts',
       no_pending_msg:            cfg.no_pending_msg,
+      no_pending_audio_url:      cfg.no_pending_audio_url,
+      expiry_source_type:        cfg.expiry_source_type       || 'tts',
       expiry_announcement:       cfg.expiry_announcement,
+      expiry_audio_url:          cfg.expiry_audio_url,
+      unauthorized_source_type:  cfg.unauthorized_source_type || 'tts',
       unauthorized_msg:          cfg.unauthorized_msg,
+      unauthorized_audio_url:    cfg.unauthorized_audio_url,
       contacts,
     },
   });

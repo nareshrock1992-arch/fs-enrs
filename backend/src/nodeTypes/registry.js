@@ -160,17 +160,27 @@ end`,
       },
       {
         key: 'inter_digit_timeout', label: 'Inter-digit timeout (seconds)', fieldType: 'number', min: 0, max: 30,
-        hint: 'Maximum seconds allowed between consecutive digits. Defaults to 2s. Set to 0 to use FreeSWITCH\'s built-in default. Applies to playAndGetDigits path (Prompt Audio File configured).',
+        hint: 'Maximum seconds allowed between consecutive digits. Defaults to 2s. Set to 0 to use FreeSWITCH\'s built-in default. Applies to audio prompt path.',
+      },
+      {
+        key: 'prompt_source_type', label: 'Prompt Source', fieldType: 'select',
+        options: [
+          { value: 'tts',   label: 'Text to Speech' },
+          { value: 'audio', label: 'Audio File' },
+        ],
+        hint: 'Audio File: plays the selected media library file. Text to Speech: speaks the configured text. The selected source is used exclusively — no silent fallback.',
       },
       {
         key: 'prompt_audio_url', label: 'Prompt Audio File', fieldType: 'audio_url',
         placeholder: '/media/menu.wav',
-        hint: 'Played before digit collection starts. Takes priority over Prompt Text when both are set.',
+        hint: 'Played before digit collection starts.',
+        showWhen: { field: 'prompt_source_type', value: 'audio' },
       },
       {
-        key: 'prompt_text', label: 'Prompt Text (TTS fallback)', fieldType: 'text',
+        key: 'prompt_text', label: 'Prompt Text', fieldType: 'text',
         placeholder: 'Please enter your PIN followed by pound.',
-        hint: 'Spoken when no Prompt Audio File is configured.',
+        hint: 'Spoken before digit collection starts.',
+        showWhen: { field: 'prompt_source_type', value: 'tts' },
       },
       {
         key: 'branches', label: 'Branches (digit / key → target node)', fieldType: 'branches_map',
@@ -184,27 +194,28 @@ local function exec_gather(s, node)
   local min_d   = node.min_digits          or 1
   local max_d   = node.max_digits          or 1
   local timeout = (node.timeout_seconds    or 10) * 1000
-  -- inter_digit_timeout: seconds between digits (0 = FreeSWITCH built-in default).
-  -- Converted to ms for playAndGetDigits's 10th argument.
   local idt     = (node.inter_digit_timeout or 2) * 1000
-  -- Empty string means "no terminator" — collection ends at max_digits or timeout.
   local terms   = node.terminators or ""
   local digits  = ""
+  local src     = node.prompt_source_type or "tts"
 
-  local pf = resolve_audio(node.prompt_audio_url)
-  if pf then
-    -- playAndGetDigits(min, max, tries, timeout, terminators, file, invalid_file, regexp, var, inter_digit_timeout)
-    -- FreeSWITCH re-prompts up to 3 times until min_digits are collected.
-    digits = s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt) or ""
+  if src == "audio" then
+    local pf = resolve_audio(node.prompt_audio_url)
+    if pf then
+      digits = s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt) or ""
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] gather: prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.prompt_audio_url) .. ")\\n")
+      -- Source configuration error — no cross-type fallback. Collect digits without prompt.
+      digits = s:getDigits(max_d, terms, timeout) or ""
+    end
   else
     -- TTS path: manual retry loop enforces min_d (getDigits has no min parameter).
-    -- Up to 3 attempts; breaks immediately on timeout (empty string from getDigits).
     local tries = 3
     while tries > 0 and s:ready() do
       local pt = interp(s, node.prompt_text)
       if pt ~= "" then speak(s, pt) end
       local d = s:getDigits(max_d, terms, timeout) or ""
-      if d == "" then break end   -- timeout → no point re-prompting
+      if d == "" then break end
       if #d >= min_d then digits = d; break end
       tries = tries - 1
       if tries > 0 then speak(s, "Please enter at least " .. tostring(min_d) .. " digit" .. (min_d > 1 and "s" or "") .. ".") end
@@ -503,12 +514,33 @@ end`,
     description: 'End the call',
     ports: 'none',
     configSchema: [
-      { key: 'play_audio_url', label: 'Goodbye Audio URL (optional)', fieldType: 'audio_url', placeholder: '/media/goodbye.wav' },
+      {
+        key: 'goodbye_source_type', label: 'Goodbye Source', fieldType: 'select',
+        options: [
+          { value: 'none',  label: 'None — hang up silently' },
+          { value: 'audio', label: 'Audio File' },
+          { value: 'tts',   label: 'Text to Speech' },
+        ],
+        hint: 'What to play before hanging up. None: silent hangup. Audio File or TTS: play/speak the configured content.',
+      },
+      { key: 'play_audio_url', label: 'Goodbye Audio File', fieldType: 'audio_url', placeholder: '/media/goodbye.wav', showWhen: { field: 'goodbye_source_type', value: 'audio' } },
+      { key: 'goodbye_text', label: 'Goodbye Text', fieldType: 'textarea', placeholder: 'Thank you for calling. Goodbye.', showWhen: { field: 'goodbye_source_type', value: 'tts' } },
     ],
     luaHandler: `
 local function exec_hangup(s, node)
-  local f = resolve_audio(node.play_audio_url)
-  if f then s:streamFile(f) end
+  local src = node.goodbye_source_type or "none"
+  if src == "audio" then
+    local f = resolve_audio(node.play_audio_url)
+    if f then
+      s:streamFile(f)
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] hangup: goodbye_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.play_audio_url) .. ")\\n")
+    end
+  elseif src == "tts" then
+    local msg = node.goodbye_text or ""
+    if msg ~= "" then speak(s, msg)
+    else freeswitch.consoleLog("WARN", "[ivr_executor] hangup: goodbye_source_type=tts but goodbye_text is empty\\n") end
+  end
   s:hangup()
   return nil
 end`,
@@ -526,8 +558,16 @@ end`,
     summaryTemplate: '→ ${variable_name} · max ${max_seconds}s',
     configSchema: [
       { key: 'variable_name', label: 'Variable name', fieldType: 'mono_text', required: true, placeholder: 'recorded_file_path', hint: 'Session variable that stores the recorded file path — read by downstream ENS node' },
-      { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Played before recording starts. Takes priority over prompt text.' },
-      { key: 'prompt_text', label: 'Prompt text (TTS fallback)', fieldType: 'textarea', placeholder: 'Please record your message after the tone. Press pound when done.', hint: 'Spoken when no prompt audio file is configured' },
+      {
+        key: 'prompt_source_type', label: 'Prompt Source', fieldType: 'select',
+        options: [
+          { value: 'tts',   label: 'Text to Speech' },
+          { value: 'audio', label: 'Audio File' },
+        ],
+        hint: 'Audio File: plays the selected media library file. Text to Speech: speaks the configured text. Selected source is used exclusively — no silent fallback.',
+      },
+      { key: 'prompt_audio_url', label: 'Prompt audio file', fieldType: 'audio_url', placeholder: '/media/record_after_tone.wav', hint: 'Played before recording starts.', showWhen: { field: 'prompt_source_type', value: 'audio' } },
+      { key: 'prompt_text', label: 'Prompt text', fieldType: 'textarea', placeholder: 'Please record your message after the tone. Press pound when done.', showWhen: { field: 'prompt_source_type', value: 'tts' } },
       {
         key: 'max_seconds', label: 'Maximum Duration (seconds)', fieldType: 'number', min: 1, max: 300,
         hint: 'Recording stops automatically after this many seconds even if the caller has not pressed the stop key.',
@@ -573,11 +613,16 @@ local function exec_record_message(s, node)
   local fpath = rec_dir .. "/ivr_" .. call_uuid .. "_" .. os.time() .. ".wav"
   freeswitch.consoleLog("INFO", "[ivr_executor] record_message: path=" .. fpath .. "\\n")
 
-  -- Play prompt before recording (audio file takes priority; TTS spoken as fallback)
-  local pf = resolve_audio(node.prompt_audio_url)
-  if pf and pf ~= "" then
-    freeswitch.consoleLog("INFO", "[ivr_executor] record_message: playing prompt file\\n")
-    s:streamFile(pf)
+  -- Play prompt before recording — selected source is used exclusively, no cross-type fallback.
+  local src = node.prompt_source_type or "tts"
+  if src == "audio" then
+    local pf = resolve_audio(node.prompt_audio_url)
+    if pf and pf ~= "" then
+      freeswitch.consoleLog("INFO", "[ivr_executor] record_message: playing prompt file\\n")
+      s:streamFile(pf)
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] record_message: prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.prompt_audio_url) .. ")\\n")
+    end
   elseif node.prompt_text and node.prompt_text ~= "" then
     freeswitch.consoleLog("INFO", "[ivr_executor] record_message: speaking prompt (TTS)\\n")
     speak(s, interp(s, node.prompt_text))
@@ -894,8 +939,16 @@ end`,
     summaryTemplate: 'Wait ${max_wait_seconds}s · Config ${ers_configuration_id}',
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
-      { key: 'hold_prompt_text', label: 'Hold announcement (TTS)', fieldType: 'textarea', placeholder: 'All emergency responders are currently engaged. Please remain on the line.' },
-      { key: 'hold_audio_url', label: 'Hold audio URL (overrides TTS)', fieldType: 'audio_url', placeholder: '/media/hold.wav' },
+      {
+        key: 'hold_source_type', label: 'Hold Announcement Source', fieldType: 'select',
+        options: [
+          { value: 'tts',   label: 'Text to Speech' },
+          { value: 'audio', label: 'Audio File' },
+        ],
+        hint: 'Audio File: plays the selected media library file. Text to Speech: speaks the configured text. Selected source is used exclusively — no silent fallback.',
+      },
+      { key: 'hold_audio_url', label: 'Hold audio file', fieldType: 'audio_url', placeholder: '/media/hold.wav', showWhen: { field: 'hold_source_type', value: 'audio' } },
+      { key: 'hold_prompt_text', label: 'Hold announcement text', fieldType: 'textarea', placeholder: 'All emergency responders are currently engaged. Please remain on the line.', showWhen: { field: 'hold_source_type', value: 'tts' } },
       { key: 'max_wait_seconds', label: 'Max wait (seconds)', fieldType: 'number', min: 10, max: 3600, hint: 'After this, routes to the fallback Next Node' },
       { key: 'next', label: 'Fallback Node (wait cap / cancelled)', fieldType: 'node_ref', required: true },
     ],
@@ -912,10 +965,18 @@ local function exec_ers_overflow_wait(s, node)
     return node.next
   end
 
-  local hold_file = resolve_audio(node.hold_audio_url)
-  local hold_text = interp(s, node.hold_prompt_text)
-  if hold_file then s:streamFile(hold_file)
-  elseif hold_text ~= "" then speak(s, hold_text) end
+  local hold_src = node.hold_source_type or "tts"
+  if hold_src == "audio" then
+    local hold_file = resolve_audio(node.hold_audio_url)
+    if hold_file then
+      s:streamFile(hold_file)
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] ers_overflow_wait: hold_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.hold_audio_url) .. ")\\n")
+    end
+  else
+    local hold_text = interp(s, node.hold_prompt_text)
+    if hold_text ~= "" then speak(s, hold_text) end
+  end
 
   local max_wait = node.max_wait_seconds or 300
   local deadline = os.time() + max_wait
@@ -951,8 +1012,26 @@ end`,
     summaryTemplate: 'Config ${ens_configuration_id}',
     configSchema: [
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank to resolve from the dialed number' },
-      { key: 'pin_prompt_text', label: 'PIN prompt (TTS)', fieldType: 'textarea', placeholder: 'Please enter your authorization PIN followed by pound.' },
-      { key: 'record_prompt_text', label: 'Record prompt (TTS)', fieldType: 'textarea', placeholder: 'Record your emergency message after the tone. Press pound when finished.' },
+      {
+        key: 'pin_prompt_source_type', label: 'PIN Prompt Source', fieldType: 'select',
+        options: [
+          { value: 'tts',   label: 'Text to Speech' },
+          { value: 'audio', label: 'Audio File' },
+        ],
+        hint: 'Explicit source for the PIN collection prompt. Selected source is used exclusively — no silent fallback.',
+      },
+      { key: 'pin_prompt_audio_url', label: 'PIN prompt — Audio File', fieldType: 'audio_url', hint: 'Played to ask the caller for their PIN.', showWhen: { field: 'pin_prompt_source_type', value: 'audio' } },
+      { key: 'pin_prompt_text', label: 'PIN prompt — Text', fieldType: 'textarea', placeholder: 'Please enter your authorization PIN followed by pound.', showWhen: { field: 'pin_prompt_source_type', value: 'tts' } },
+      {
+        key: 'record_prompt_source_type', label: 'Record Prompt Source', fieldType: 'select',
+        options: [
+          { value: 'tts',   label: 'Text to Speech' },
+          { value: 'audio', label: 'Audio File' },
+        ],
+        hint: 'Explicit source for the recording instruction prompt. Selected source is used exclusively — no silent fallback.',
+      },
+      { key: 'record_prompt_audio_url', label: 'Record prompt — Audio File', fieldType: 'audio_url', hint: 'Played to instruct the caller to record their message.', showWhen: { field: 'record_prompt_source_type', value: 'audio' } },
+      { key: 'record_prompt_text', label: 'Record prompt — Text', fieldType: 'textarea', placeholder: 'Record your emergency message after the tone. Press pound when finished.', showWhen: { field: 'record_prompt_source_type', value: 'tts' } },
       { key: 'max_record_seconds', label: 'Max recording (seconds)', fieldType: 'number', min: 5, max: 300, hint: 'Recording also stops immediately when the caller presses # or silence is detected.' },
       { key: 'silence_threshold', label: 'Silence threshold (ms)', fieldType: 'number', min: 10, max: 2000, hint: 'Energy below which audio is considered silence. Default 500.' },
       { key: 'silence_hits', label: 'Silence hits', fieldType: 'number', min: 1, max: 10, hint: 'Consecutive silence chunks required to auto-stop. Default 3.' },
@@ -965,10 +1044,20 @@ local function exec_ens_blast_record(s, node)
   -- PIN gate — /ens/verify-pin is the single source of truth (handles the
   -- "no PIN configured -> always authorized" case internally).
   local authorized = false
+  local pin_src = node.pin_prompt_source_type or "tts"
   for attempt = 1, 3 do
-    local prompt = interp(s, node.pin_prompt_text)
-    if prompt == "" then prompt = "Please enter your authorization PIN followed by pound." end
-    speak(s, prompt)
+    if pin_src == "audio" then
+      local pin_audio = resolve_audio(node.pin_prompt_audio_url)
+      if pin_audio then
+        s:streamFile(pin_audio)
+      else
+        freeswitch.consoleLog("ERR", "[ivr_executor] ens_blast_record: pin_prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.pin_prompt_audio_url) .. ")\\n")
+      end
+    else
+      local prompt = interp(s, node.pin_prompt_text)
+      if prompt == "" then prompt = "Please enter your authorization PIN followed by pound." end
+      speak(s, prompt)
+    end
     local pin = s:getDigits(8, "#", 10000)
     local verify = post("/ens/verify-pin", { trigger_number = dest, pin = pin or "" })
     if verify and verify.authorized then
@@ -1004,9 +1093,19 @@ local function exec_ens_blast_record(s, node)
   local rec_dir = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
   local fpath = rec_dir .. "/ens/ens_" .. tostring(cfg_id) .. "_" .. os.time() .. ".wav"
   os.execute("mkdir -p '" .. rec_dir .. "/ens'")
-  local rprompt = interp(s, node.record_prompt_text)
-  if rprompt == "" then rprompt = "Record your emergency message after the tone. Press pound when finished." end
-  speak(s, rprompt)
+  local rec_src = node.record_prompt_source_type or "tts"
+  if rec_src == "audio" then
+    local rec_audio = resolve_audio(node.record_prompt_audio_url)
+    if rec_audio then
+      s:streamFile(rec_audio)
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] ens_blast_record: record_prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.record_prompt_audio_url) .. ")\\n")
+    end
+  else
+    local rprompt = interp(s, node.record_prompt_text)
+    if rprompt == "" then rprompt = "Record your emergency message after the tone. Press pound when finished." end
+    speak(s, rprompt)
+  end
   s:execute("playback", "tone_stream://%(500,0,640)")
   local max_rec  = node.max_record_seconds or 120
   local sil_thr  = node.silence_threshold  or 500
@@ -1036,42 +1135,134 @@ end`,
   },
 
   {
-    type: 'ens_playback_gate',
-    label: 'Playback Gate (Authorized)',
-    icon: '🔐',
+    type: 'ens_playback',
+    label: 'ENS Playback',
+    icon: '🔊',
     bg: '#1e3b33', border: '#2a8a6a', color: '#99f6e4',
     category: 'Emergency',
-    description: 'Authorized-caller check, then play the latest message',
-    ports: 'true_false',
-    footnote: 'Callers on the authorized list hear the latest recorded message if it is within the configured retention window (or "no active message" after expiry) and route to the True node; unauthorized callers are logged and route to the False node. Retention period is set in the ENS Configuration.',
-    summaryTemplate: 'Config ${ers_configuration_id}',
+    description: 'Resolve ENS config from inbound number, authorize caller, play latest campaign recording',
+    ports: 'branches',
+    footnote: 'Routes by authorization state: active (authorized + playable campaign found — audio plays before routing), unauthorized (caller not in any campaign destination for this number), no_campaign (authorized but no campaign exists yet), expired (authorized but retention window passed). ENS configuration is resolved automatically from the dialled number via emergency_numbers — no manual config selection.',
+    summaryTemplate: 'ENS Playback',
     configSchema: [
-      { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
-      { key: 'no_message_text', label: '"No active message" text (TTS)', fieldType: 'textarea', placeholder: 'There is no active emergency message at this time.' },
-      { key: 'true_node', label: 'Authorized → Node', fieldType: 'node_ref', required: true },
-      { key: 'false_node', label: 'Rejected → Node', fieldType: 'node_ref', required: true },
+      { key: 'branches', label: 'Routes (active / unauthorized / no_campaign / expired)', fieldType: 'branches_map', required: true, hint: 'active: caller heard audio · unauthorized: not in campaign list · no_campaign: no blast sent yet · expired: retention window passed' },
     ],
     luaHandler: `
-local function exec_ens_playback_gate(s, node)
-  local caller = s:getVariable("caller_id_number") or ""
-  local d = get("/ers/playback/authorize?configuration_id=" .. tostring(node.ers_configuration_id or 0) ..
-                "&caller=" .. url_encode(caller))
-
-  if not d or not d.authorized then
-    freeswitch.consoleLog("WARN", "[ivr_executor] ens_playback_gate: rejected caller " .. caller .. " (" .. tostring(d and d.reason or "no response") .. ")\\n")
-    return node.false_node
-  end
-
-  if d.recording_file then
-    s:streamFile(d.recording_file)
+-- Play an ENS announcement using source_type from the ENS configuration.
+-- source_type=="audio": play resolved media file.
+--   If the URL is missing/unresolvable (configuration error): log ERR,
+--   speak a hardcoded system error string. Do NOT speak the configured
+--   TTS text — that is the TTS-selected content, not a fallback for audio.
+-- source_type=="tts":  speak configured text; use fallback_text if empty.
+--   Never switches to audio.
+-- No cross-type fallback in either direction.
+local function ens_announce(s, source_type, audio_url, text, fallback_text)
+  local st = source_type or "tts"
+  if st == "audio" then
+    local resolved = audio_url and resolve_audio(audio_url)
+    if resolved then
+      s:execute("playback", resolved)
+    else
+      freeswitch.consoleLog("ERR",
+        "[ivr_executor] ens_playback: source_type=audio but audio_url is missing/unresolvable" ..
+        " (audio_url=" .. tostring(audio_url) .. ") — announcement cannot be played\\n")
+      speak(s, "An announcement is not available. Please contact your administrator.")
+    end
   else
-    local msg = interp(s, node.no_message_text)
-    if msg == "" then msg = "There is no active emergency message at this time." end
-    speak(s, msg)
+    -- source_type == "tts" (or unset)
+    local msg = (text and text ~= "") and text or fallback_text
+    if msg and msg ~= "" then
+      speak(s, msg)
+    else
+      freeswitch.consoleLog("WARN",
+        "[ivr_executor] ens_playback: source_type=tts but no text configured and no fallback\\n")
+    end
   end
-  return node.true_node
+end
+
+local function exec_ens_playback(s, node)
+  local br     = node.branches or {}
+  local dest   = s:getVariable("destination_number") or ""
+  local caller = s:getVariable("caller_id_number")   or ""
+
+  -- 1. Resolve ENS configuration from the inbound emergency number.
+  --    All announcement source_type/audio_url fields come from the ENS
+  --    configuration, keyed by inbound number — guaranteed per-config isolation.
+  local lookup = get("/ens/lookup?number=" .. url_encode(dest))
+  if not lookup or not lookup.success or not lookup.data then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ens_playback: lookup failed for number=" .. dest .. "\\n")
+    speak(s, "This playback number is not configured. Please contact your system administrator.")
+    return br["unauthorized"]
+  end
+
+  local cfg    = lookup.data
+  local cfg_id = tostring(cfg.configuration_id or "")
+
+  -- 2. Authorize caller and fetch latest campaign (scoped to this ENS config only).
+  local latest = get("/ens/campaigns/latest?configuration_id=" .. url_encode(cfg_id) ..
+                     "&caller=" .. url_encode(caller))
+
+  if not latest then
+    freeswitch.consoleLog("ERR", "[ivr_executor] ens_playback: no response from campaigns/latest config=" .. cfg_id .. "\\n")
+    ens_announce(s,
+      cfg.no_pending_source_type, cfg.no_pending_audio_url, cfg.no_pending_msg,
+      "There are no pending emergency notifications at this time.")
+    return br["no_campaign"]
+  end
+
+  -- 3. Route by authorization state, playing the per-ENS-config announcement.
+  if latest.authorized == false or latest.status == "UNAUTHORIZED" then
+    freeswitch.consoleLog("INFO", "[ivr_executor] ens_playback: unauthorized caller=" .. caller .. " config=" .. cfg_id .. "\\n")
+    ens_announce(s,
+      cfg.unauthorized_source_type, cfg.unauthorized_audio_url, cfg.unauthorized_msg,
+      "You are not authorized to access this message.")
+    return br["unauthorized"]
+  end
+
+  if latest.status == "NO_CAMPAIGN" then
+    freeswitch.consoleLog("INFO", "[ivr_executor] ens_playback: no campaign caller=" .. caller .. " config=" .. cfg_id .. "\\n")
+    ens_announce(s,
+      cfg.no_pending_source_type, cfg.no_pending_audio_url, cfg.no_pending_msg,
+      "There are no pending emergency notifications at this time.")
+    return br["no_campaign"]
+  end
+
+  if latest.status == "EXPIRED" then
+    freeswitch.consoleLog("INFO", "[ivr_executor] ens_playback: expired campaign caller=" .. caller .. " config=" .. cfg_id .. "\\n")
+    ens_announce(s,
+      cfg.expiry_source_type, cfg.expiry_audio_url, cfg.expiry_announcement,
+      "This emergency notification has expired.")
+    return br["expired"]
+  end
+
+  if latest.status == "ACTIVE" then
+    -- The campaign audio is stored in ens_campaigns (recording_file or message_audio_url).
+    -- This is distinct from the ENS-config announcement audio: it is whatever was
+    -- recorded or uploaded when the blast was created, not a node config field.
+    local audio_file = nil
+    if latest.source_type == "recording" and latest.recording_file then
+      audio_file = latest.recording_file
+    elseif latest.source_type == "url" and latest.message_audio_url then
+      audio_file = latest.message_audio_url
+    end
+
+    if audio_file then
+      s:execute("playback", audio_file)
+      get("/ens/campaigns/" .. url_encode(tostring(latest.campaign_id or "")) ..
+          "/playback-log?caller=" .. url_encode(caller))
+    else
+      freeswitch.consoleLog("ERR", "[ivr_executor] ens_playback: ACTIVE campaign has no audio — campaign_id=" .. tostring(latest.campaign_id) .. " config=" .. cfg_id .. "\\n")
+      ens_announce(s,
+        cfg.no_pending_source_type, cfg.no_pending_audio_url, cfg.no_pending_msg,
+        "There are no pending emergency notifications at this time.")
+    end
+    return br["active"]
+  end
+
+  freeswitch.consoleLog("WARN", "[ivr_executor] ens_playback: unexpected status=" .. tostring(latest.status) .. " config=" .. cfg_id .. "\\n")
+  return br["no_campaign"]
 end`,
-    apiEndpoint: { method: 'GET', path: '/api/v1/internal/ers/playback/authorize' },
+    apiEndpoint: { method: 'GET', path: '/api/v1/internal/ens/campaigns/latest' },
   },
 ];
 

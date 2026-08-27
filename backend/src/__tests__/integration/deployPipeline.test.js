@@ -82,10 +82,8 @@ function phase5Graph(ersId, ensId) {
       },
       blast: { type: 'ens_blast_record', ens_configuration_id: ensId, next: 'gate' },
       gate: {
-        type: 'ens_playback_gate',
-        ers_configuration_id: ersId,
-        true_node: 'bye',
-        false_node: 'bye',
+        type: 'ens_playback',
+        branches: { active: 'bye', unauthorized: 'bye', no_campaign: 'bye', expired: 'bye' },
       },
       bye: { type: 'hangup' },
     },
@@ -200,7 +198,7 @@ describe('Phase 6 — deployFlow() succeeds end-to-end for a valid published Pha
   it('the written Lua contains every Phase 5 node handler and the quoted goto key', () => {
     expect(existsSync(report.files.lua)).toBe(true);
     const lua = readFileSync(report.files.lua, 'utf8');
-    for (const t of ['ers_ring_all', 'ers_overflow_check', 'ers_overflow_wait', 'ens_blast_record', 'ens_playback_gate']) {
+    for (const t of ['ers_ring_all', 'ers_overflow_check', 'ers_overflow_wait', 'ens_blast_record', 'ens_playback']) {
       expect(lua).toContain(`local function exec_${t}(s, node)`);
     }
     expect(lua).toContain('["goto"]');

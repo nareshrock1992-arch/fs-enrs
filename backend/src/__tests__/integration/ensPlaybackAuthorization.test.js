@@ -767,3 +767,114 @@ describe('Expiry clock uses completed_at, not just created_at', () => {
     expect(res.body.recording_file).toContain(`latestart-${SUFFIX}.wav`);
   });
 });
+
+// ── Announcement source_type fields — ensLookup returns correct audio config ──
+//
+// These tests verify that the ENS configuration's announcement source_type and
+// audio_url columns are returned correctly by the /ens/lookup endpoint and that
+// each ENS configuration's fields are completely isolated from other configs.
+
+describe('Announcement source_type: ensLookup returns per-config audio/TTS fields', () => {
+  let audioConfigId, ttsConfigId;
+  let audioNumber, ttsNumber;
+
+  beforeAll(async () => {
+    // ENS config with audio source_type for all three announcements
+    const { rows: [ac] } = await query(
+      `INSERT INTO ens_configurations
+         (name, tenant_id, organization_id, is_active,
+          max_concurrent_calls, max_attempts, retry_interval_sec,
+          no_pending_source_type, no_pending_audio_url,
+          expiry_source_type,     expiry_audio_url,
+          unauthorized_source_type, unauthorized_audio_url)
+       VALUES ($1, $2, $3, true, 5, 1, 30,
+               'audio', '/media/scc-no-pending.wav',
+               'audio', '/media/scc-expired.wav',
+               'audio', '/media/scc-unauthorized.wav')
+       RETURNING id`,
+      [`EnsPlayAuth-AudioAnn-${SUFFIX}`, tenantId, orgId]
+    );
+    audioConfigId = ac.id;
+    audioNumber = `19${SUFFIX % 10000}`.slice(0, 6);
+
+    // ENS config with tts source_type (default behavior — text fields only)
+    const { rows: [tc] } = await query(
+      `INSERT INTO ens_configurations
+         (name, tenant_id, organization_id, is_active,
+          max_concurrent_calls, max_attempts, retry_interval_sec,
+          no_pending_source_type, no_pending_msg,
+          expiry_source_type,     expiry_announcement,
+          unauthorized_source_type, unauthorized_msg)
+       VALUES ($1, $2, $3, true, 5, 1, 30,
+               'tts', 'No pending notifications for this service.',
+               'tts', 'This notification has expired for this service.',
+               'tts', 'You are not authorized for this service.')
+       RETURNING id`,
+      [`EnsPlayAuth-TtsAnn-${SUFFIX}`, tenantId, orgId]
+    );
+    ttsConfigId = tc.id;
+    ttsNumber = `28${SUFFIX % 10000}`.slice(0, 6);
+
+    // Bind numbers to the configs via emergency_numbers
+    await query(
+      `INSERT INTO emergency_numbers (number, type, ens_configuration_id, tenant_id, is_active)
+       VALUES ($1, 'ENS', $2, $3, true)`,
+      [audioNumber, audioConfigId, tenantId]
+    );
+    await query(
+      `INSERT INTO emergency_numbers (number, type, ens_configuration_id, tenant_id, is_active)
+       VALUES ($1, 'ENS', $2, $3, true)`,
+      [ttsNumber, ttsConfigId, tenantId]
+    );
+  });
+
+  afterAll(async () => {
+    await query(`DELETE FROM emergency_numbers WHERE number IN ($1, $2)`, [audioNumber, ttsNumber]);
+    if (audioConfigId) await query(`DELETE FROM ens_configurations WHERE id = $1`, [audioConfigId]);
+    if (ttsConfigId)   await query(`DELETE FROM ens_configurations WHERE id = $1`, [ttsConfigId]);
+  });
+
+  function lookup(number) {
+    return request(server)
+      .get('/api/v1/internal/ens/lookup')
+      .set('X-Internal-Key', INTERNAL_KEY)
+      .query({ number });
+  }
+
+  it('audio-config: lookup returns source_type=audio with audio_url for all three announcements', async () => {
+    const res = await lookup(audioNumber);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    const d = res.body.data;
+    expect(d.no_pending_source_type).toBe('audio');
+    expect(d.no_pending_audio_url).toBe('/media/scc-no-pending.wav');
+    expect(d.expiry_source_type).toBe('audio');
+    expect(d.expiry_audio_url).toBe('/media/scc-expired.wav');
+    expect(d.unauthorized_source_type).toBe('audio');
+    expect(d.unauthorized_audio_url).toBe('/media/scc-unauthorized.wav');
+  });
+
+  it('tts-config: lookup returns source_type=tts with text for all three announcements', async () => {
+    const res = await lookup(ttsNumber);
+    expect(res.status).toBe(200);
+    const d = res.body.data;
+    expect(d.no_pending_source_type).toBe('tts');
+    expect(d.no_pending_msg).toBe('No pending notifications for this service.');
+    expect(d.expiry_source_type).toBe('tts');
+    expect(d.expiry_announcement).toBe('This notification has expired for this service.');
+    expect(d.unauthorized_source_type).toBe('tts');
+    expect(d.unauthorized_msg).toBe('You are not authorized for this service.');
+  });
+
+  it('audio-config lookup does NOT return tts-config audio URLs (isolation)', async () => {
+    const [audioRes, ttsRes] = await Promise.all([lookup(audioNumber), lookup(ttsNumber)]);
+    // Audio config URLs must not appear in TTS config response
+    expect(ttsRes.body.data.no_pending_audio_url).toBeFalsy();
+    expect(ttsRes.body.data.expiry_audio_url).toBeFalsy();
+    expect(ttsRes.body.data.unauthorized_audio_url).toBeFalsy();
+    // TTS config texts must not appear in audio config response
+    expect(audioRes.body.data.no_pending_msg).toBeFalsy();
+    expect(audioRes.body.data.expiry_announcement).toBeFalsy();
+    expect(audioRes.body.data.unauthorized_msg).toBeFalsy();
+  });
+});
