@@ -75,10 +75,11 @@ services:
       # Mount voice model files from host.
       # Adjust this path to wherever the .onnx + .onnx.json files live.
       - /opt/freeswitch-ui/enrs-tools/voices:/app/models:ro
-    expose:
-      - "5000"
-    # Port 5000 is internal only — NOT published to the host.
-    # Only the backend container can reach it via the 'enrs' Docker network.
+    ports:
+      # Bound to localhost only — not reachable from outside this host.
+      # The backend container reaches Piper via the 'enrs' Docker network (http://piper:5000).
+      # The host binding exists solely for health verification and Phase 1 testing.
+      - "127.0.0.1:5000:5000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
       interval: 15s
