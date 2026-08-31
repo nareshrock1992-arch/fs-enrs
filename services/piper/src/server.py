@@ -33,8 +33,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from voices import voice_loader
-from audio import resample_wav, validate_audio_params
+from src.voices import voice_loader
+from src.audio import resample_wav, validate_audio_params
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -174,10 +174,6 @@ async def synthesize(req: SynthesizeRequest, http_request: Request):
         validate_audio_params(req.sample_rate, req.channels)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_audio_params", "detail": str(exc)})
-
-    # Enforce concurrency limit
-    if _semaphore._value == 0:  # noqa: SLF001
-        raise HTTPException(status_code=503, detail={"error": "server_busy", "detail": "max concurrent synthesis reached — retry"})
 
     start = time.monotonic()
     request_id = http_request.headers.get("x-request-id", "-")

@@ -118,7 +118,8 @@ class TestVoices:
 @pytest.fixture
 def mocked_app():
     """App with synthesis mocked — tests validation without model files."""
-    from src.server import app, voice_loader
+    from src.server import app
+    from src.voices import voice_loader
     import src.server as server_mod
 
     fake_wav = make_wav_bytes(8000, 1, 800)
@@ -145,7 +146,8 @@ class TestInputValidation:
         assert resp.status_code == 422
 
     def test_unknown_voice_rejected(self, mocked_app):
-        from src.server import app, voice_loader
+        from src.server import app
+        from src.voices import voice_loader
         with patch.object(voice_loader, "get", return_value=None):
             with patch.object(voice_loader, "list_voices", return_value=[]):
                 client = TestClient(app)
@@ -158,7 +160,8 @@ class TestInputValidation:
         assert resp.status_code == 422
 
     def test_invalid_sample_rate_rejected(self, mocked_app):
-        from src.server import app, voice_loader
+        from src.server import app
+        from src.voices import voice_loader
         with patch.object(voice_loader, "get", return_value=MagicMock()):
             with patch.object(voice_loader, "metadata", return_value={"native_sample_rate": 22050, "model_path": "x"}):
                 client = TestClient(app)

@@ -1,0 +1,7 @@
+# Voice model files are large binary assets (60-150 MB each).
+# They are managed outside Git and mounted via Docker volume.
+# See README.md for download instructions and checksum policy.
+*.onnx
+*.onnx.json
+*.bin
+*.pt
