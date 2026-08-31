@@ -63,4 +63,21 @@ export const config = {
     // Leave empty ('') to suppress PAI when no gateway sip_domain is set.
     sipDomain:      process.env.FS_SIP_DOMAIN        || '',
   },
+
+  // Piper TTS synthesis service (internal Docker network only).
+  // The backend calls this service to pre-generate audio assets.
+  // FreeSWITCH Lua scripts never call Piper directly.
+  piper: {
+    // Base URL of the Piper HTTP service
+    url:            process.env.PIPER_URL             || 'http://piper:5000',
+    // Default voice model name (must be registered in Piper's VOICE_REGISTRY)
+    defaultVoice:   process.env.PIPER_DEFAULT_VOICE   || 'en_US-lessac-medium',
+    // HTTP request timeout for synthesis calls (ms)
+    timeoutMs:      Number(process.env.PIPER_TIMEOUT_MS)     || 10000,
+    // Target output sample rate — must match FreeSWITCH codec profile
+    // Verify: fs_cli -x "global_getvar default_sample_rate"
+    sampleRate:     Number(process.env.PIPER_SAMPLE_RATE)    || 8000,
+    // Max concurrent synthesis requests (matches Piper's PIPER_MAX_CONCURRENT)
+    maxConcurrent:  Number(process.env.PIPER_MAX_CONCURRENT) || 2,
+  },
 };

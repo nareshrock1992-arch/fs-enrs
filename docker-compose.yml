@@ -60,6 +60,40 @@ services:
       - enrs
     restart: unless-stopped
 
+  piper:
+    build:
+      context: ./services/piper
+    environment:
+      PIPER_MODEL_DIR: /app/models
+      PIPER_DEFAULT_VOICE: en_US-lessac-medium
+      PIPER_SAMPLE_RATE: 8000
+      PIPER_MAX_CONCURRENT: 2
+      PIPER_SYNTHESIS_TIMEOUT_SEC: 30
+      PIPER_MAX_TEXT_LENGTH: 5000
+      LOG_LEVEL: INFO
+    volumes:
+      # Mount voice model files from host.
+      # Adjust this path to wherever the .onnx + .onnx.json files live.
+      - /opt/freeswitch-ui/enrs-tools/voices:/app/models:ro
+    expose:
+      - "5000"
+    # Port 5000 is internal only — NOT published to the host.
+    # Only the backend container can reach it via the 'enrs' Docker network.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - enrs
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+
   frontend:
     build:
       context: ./frontend
