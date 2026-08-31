@@ -28,6 +28,7 @@ import os
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -55,14 +56,12 @@ MAX_TEXT_LENGTH      = int(os.environ.get("PIPER_MAX_TEXT_LENGTH", "5000"))
 
 # ── App and shared state ──────────────────────────────────────────────────────
 
-app = FastAPI(title="Piper TTS", version="1.0.0", docs_url=None, redoc_url=None)
-
 _semaphore: asyncio.Semaphore | None = None
 _executor:  ThreadPoolExecutor | None = None
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global _semaphore, _executor
 
     logger.info("Piper TTS service starting — loading voices from %s",
@@ -84,12 +83,14 @@ async def startup():
         DEFAULT_VOICE, DEFAULT_SAMPLE_RATE, MAX_CONCURRENT,
     )
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown():
     if _executor:
         _executor.shutdown(wait=True)
     logger.info("Piper TTS service stopped")
+
+
+app = FastAPI(title="Piper TTS", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 # ── Request / response models ─────────────────────────────────────────────────
