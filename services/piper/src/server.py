@@ -131,11 +131,10 @@ def _synthesize_sync(text: str, voice_id: str) -> bytes:
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav_file:
-        meta = voice_loader.metadata(voice_id)
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)   # 16-bit
-        wav_file.setframerate(meta["native_sample_rate"])
-        piper_voice.synthesize(text, wav_file)
+        # synthesize_wav sets WAV format from model config (set_wav_format=True default)
+        # and writes all audio frames. The native rate is whatever the model emits
+        # (22050 Hz for lessac-medium); sox resamples to the requested rate afterward.
+        piper_voice.synthesize_wav(text, wav_file)
 
     return buf.getvalue()
 
