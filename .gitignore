@@ -4,6 +4,7 @@
 .env.*.local
 backend/.env
 frontend/.env
+services/piper/.env.dev
 *.env
 
 # Dependencies
