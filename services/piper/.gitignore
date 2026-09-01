@@ -1,0 +1,17 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Test / tool caches
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# DEV environment file (contains local paths — never commit)
+.env.dev

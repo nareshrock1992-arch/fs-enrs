@@ -16,8 +16,8 @@
 #   PIPER_MAX_CONCURRENT  (default: 2)
 #   LOG_LEVEL             (default: INFO)
 #
-# The virtualenv must already be set up: python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
-# The venv is looked for relative to the script's directory.
+# The virtualenv must already be set up: python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# The venv is looked for as .venv/ relative to the script's directory.
 
 set -euo pipefail
 
@@ -53,10 +53,10 @@ fi
 
 export PIPER_MODEL_DIR
 
-VENV="${SCRIPT_DIR}/venv"
+VENV="${SCRIPT_DIR}/.venv"
 if [[ ! -x "${VENV}/bin/python3" ]]; then
   echo "[piper-start-dev] ERROR: virtualenv not found at ${VENV}" >&2
-  echo "[piper-start-dev]        Run: python3.11 -m venv venv && venv/bin/pip install -r requirements.txt" >&2
+  echo "[piper-start-dev]        Run: python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
   exit 1
 fi
 
@@ -67,7 +67,7 @@ echo "[piper-start-dev] PIPER_MODEL_DIR=${PIPER_MODEL_DIR} (${onnx_count} model(
 echo "[piper-start-dev] Starting uvicorn on ${HOST}:${PORT}"
 
 cd "${SCRIPT_DIR}"
-exec "${VENV}/bin/python3" -m uvicorn src.server:app \
+exec "${VENV}/bin/uvicorn" src.server:app \
   --host "${HOST}" \
   --port "${PORT}" \
   --workers 1

@@ -58,11 +58,13 @@ volumes:
 
 | Voice | File | SHA-256 | Verified |
 |---|---|---|---|
-| en_US-lessac-medium | en_US-lessac-medium.onnx | (compute with `sha256sum en_US-lessac-medium.onnx`) | Pending dev-server verification |
+| en_US-lessac-medium | en_US-lessac-medium.onnx | `5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f` | DEV server 2026-09-01 |
+| en_US-lessac-medium | en_US-lessac-medium.onnx.json | `efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0` | DEV server 2026-09-01 |
 
-Compute and record the checksum after first download:
+Verify after download:
 ```bash
 sha256sum en_US-lessac-medium.onnx
+sha256sum en_US-lessac-medium.onnx.json
 ```
 
 ---

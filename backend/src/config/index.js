@@ -72,8 +72,9 @@ export const config = {
     url:            process.env.PIPER_URL             || 'http://piper:5000',
     // Default voice model name (must be registered in Piper's VOICE_REGISTRY)
     defaultVoice:   process.env.PIPER_DEFAULT_VOICE   || 'en_US-lessac-medium',
-    // HTTP request timeout for synthesis calls (ms)
-    timeoutMs:      Number(process.env.PIPER_TIMEOUT_MS)     || 10000,
+    // HTTP request timeout for synthesis calls (ms).
+    // lessac-medium cold synthesis takes 12-16s — 30s gives safe headroom.
+    timeoutMs:      Number(process.env.PIPER_TIMEOUT_MS)     || 30000,
     // Target output sample rate — must match FreeSWITCH codec profile
     // Verify: fs_cli -x "global_getvar default_sample_rate"
     sampleRate:     Number(process.env.PIPER_SAMPLE_RATE)    || 8000,
