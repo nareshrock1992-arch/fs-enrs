@@ -229,7 +229,7 @@ export function generateIvrExecutorLua({ apiBase, apiKey, ttsEngine = 'flite|kal
     '    local body      = \'{"text":\' .. string.format("%q", text) .. \',"sample_rate":8000}\'',
     '    local safe_b    = body:gsub("\'", "\'\\\\\'\'")  -- escape \' for shell single-quote context',
     '    local cmd = string.format(',
-    '      "curl -sf -m 10 -X POST -H \'Content-Type: application/json\' -d \'%s\' \'%s/synthesize\' -o \'%s\' && echo piper_ok",',
+    '      "curl -sf -m 25 -X POST -H \'Content-Type: application/json\' -d \'%s\' \'%s/synthesize\' -o \'%s\' && echo piper_ok",',
     '      safe_b, PIPER_URL, wav_path)',
     '    local h   = io.popen(cmd .. " 2>/dev/null")',
     '    local out = h and h:read("*a") or ""',

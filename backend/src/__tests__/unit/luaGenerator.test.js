@@ -147,6 +147,15 @@ describe('luaGenerator — Piper TTS speak() integration', () => {
     expect(luaWithPiper).toContain('s:streamFile(wav_path)');
   });
 
+  it('Piper curl timeout is at least 20 seconds to survive cold model-load synthesis', () => {
+    // lessac-medium cold synthesis takes 10-15s on this server — a 10s timeout fires
+    // on the very first request after idle. 25s gives a safe margin without masking
+    // genuine Piper unavailability for too long.
+    const match = luaWithPiper.match(/curl -sf -m (\d+)/);
+    expect(match).not.toBeNull();
+    expect(parseInt(match[1], 10)).toBeGreaterThanOrEqual(20);
+  });
+
   it('speak() falls back to FreeSWITCH TTS when Piper fails', () => {
     expect(luaWithPiper).toContain('s:execute("speak", TTS_ENGINE .. "|" .. text)');
     expect(luaWithPiper).toContain('Piper TTS failed');
