@@ -156,8 +156,16 @@ describe('luaGenerator — Piper TTS speak() integration', () => {
     expect(parseInt(match[1], 10)).toBeGreaterThanOrEqual(20);
   });
 
-  it('speak() falls back to FreeSWITCH TTS when Piper fails', () => {
-    expect(luaWithPiper).toContain('s:execute("speak", TTS_ENGINE .. "|" .. text)');
+  it('speak() does NOT fall through to FreeSWITCH TTS when Piper is configured but fails', () => {
+    // When PIPER_URL is set, Piper is the TTS engine. A FreeSWITCH TTS fallback
+    // (e.g. flite) is not guaranteed to be installed, so a failed Piper synthesis
+    // must return early — calling an absent TTS module produces a confusing ERR log
+    // and silence anyway, no better than a clean skip.
+    const piperFailBlock = luaWithPiper.slice(
+      luaWithPiper.indexOf('Piper TTS failed'),
+      luaWithPiper.indexOf('Piper TTS failed') + 200,
+    );
+    expect(piperFailBlock).toContain('return');
     expect(luaWithPiper).toContain('Piper TTS failed');
   });
 
