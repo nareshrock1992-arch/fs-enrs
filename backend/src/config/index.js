@@ -64,9 +64,11 @@ export const config = {
     sipDomain:      process.env.FS_SIP_DOMAIN        || '',
   },
 
-  // Piper TTS synthesis service (internal Docker network only).
-  // The backend calls this service to pre-generate audio assets.
-  // FreeSWITCH Lua scripts never call Piper directly.
+  // Piper TTS synthesis service.
+  // Docker: PIPER_URL=http://piper:5000 (set by docker-compose).
+  // Source-level DEV: PIPER_URL=http://127.0.0.1:5002 (set in backend/.env.dev).
+  // The backend (ENS pre-synthesis via piperClient.js) calls this service.
+  // IVR Lua scripts call Piper directly via curl using the PIPER_URL injected at deploy time.
   piper: {
     // Base URL of the Piper HTTP service
     url:            process.env.PIPER_URL             || 'http://piper:5000',
