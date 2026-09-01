@@ -124,6 +124,49 @@ describe('luaGenerator — ENS notification trigger', () => {
   });
 });
 
+describe('luaGenerator — Piper TTS speak() integration', () => {
+  const luaWithPiper = generateIvrExecutorLua({
+    apiBase:   'http://127.0.0.1:4100',
+    apiKey:    'test-key',
+    ttsEngine: 'flite|kal',
+    piperUrl:  'http://127.0.0.1:5002',
+  });
+
+  it('embeds PIPER_URL constant from the piperUrl option', () => {
+    expect(luaWithPiper).toContain('local PIPER_URL    = "http://127.0.0.1:5002"');
+  });
+
+  it('speak() synthesizes via Piper curl when PIPER_URL is set', () => {
+    expect(luaWithPiper).toContain('PIPER_URL .. "/synthesize"');
+    expect(luaWithPiper).toContain('s:streamFile(wav_path)');
+  });
+
+  it('speak() falls back to FreeSWITCH TTS when Piper fails', () => {
+    expect(luaWithPiper).toContain('s:execute("speak", TTS_ENGINE .. "|" .. text)');
+    expect(luaWithPiper).toContain('Piper TTS failed');
+  });
+
+  it('uses a per-call sequence counter for unique WAV filenames', () => {
+    expect(luaWithPiper).toContain('local _tts_seq = 0');
+    expect(luaWithPiper).toContain('_tts_seq = _tts_seq + 1');
+  });
+
+  it('uses string.format %q for JSON-safe body encoding without cjson', () => {
+    expect(luaWithPiper).toContain('string.format("%q", text)');
+  });
+
+  it('cleans up the temp WAV after streamFile to avoid accumulation', () => {
+    expect(luaWithPiper).toContain('os.remove(wav_path)');
+  });
+
+  it('when piperUrl is empty, speak() uses FreeSWITCH TTS directly (no curl)', () => {
+    // Default lua has no piperUrl — PIPER_URL is ""
+    expect(lua).toContain('local PIPER_URL    = ""');
+    // The PIPER_URL guard means Piper block is skipped at runtime
+    expect(lua).toContain('if PIPER_URL ~= "" then');
+  });
+});
+
 describe('luaGenerator — HTTP transport has no luasocket dependency', () => {
   it('never requires socket.http or ltn12', () => {
     expect(lua).not.toContain('require("socket.http")');

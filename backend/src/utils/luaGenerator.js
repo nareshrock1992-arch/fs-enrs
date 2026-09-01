@@ -44,11 +44,12 @@ function buildDispatchTable() {
   return entries.join('\n');
 }
 
-export function generateIvrExecutorLua({ apiBase, apiKey, ttsEngine = 'flite|kal' }) {
+export function generateIvrExecutorLua({ apiBase, apiKey, ttsEngine = 'flite|kal', piperUrl = '' }) {
   // Sanitise inputs — these are embedded verbatim in the Lua file
   const safeApiBase  = String(apiBase  || 'http://127.0.0.1:4100').replace(/"/g, '\\"');
   const safeApiKey   = String(apiKey   || '').replace(/"/g, '\\"');
   const safeTts      = String(ttsEngine || 'flite|kal').replace(/"/g, '\\"');
+  const safePiperUrl = String(piperUrl  || '').replace(/"/g, '\\"');
 
   return [
     '-- ============================================================',
@@ -60,7 +61,8 @@ export function generateIvrExecutorLua({ apiBase, apiKey, ttsEngine = 'flite|kal
     '-- ── Configuration ──────────────────────────────────────────────',
     `local API_BASE     = "${safeApiBase}/api/v1/internal"`,
     `local API_KEY      = "${safeApiKey}"`,
-    `local TTS_ENGINE   = "${safeTts}"   -- engine|voice format`,
+    `local TTS_ENGINE   = "${safeTts}"   -- engine|voice format (FreeSWITCH built-in fallback)`,
+    `local PIPER_URL    = "${safePiperUrl}"  -- empty = skip Piper, use FS TTS only`,
     'local MAX_STEPS    = 100            -- safety cap for loop detection',
     'local HTTP_TIMEOUT = 8              -- curl timeout in seconds',
     '',
@@ -156,10 +158,43 @@ export function generateIvrExecutorLua({ apiBase, apiKey, ttsEngine = 'flite|kal
     '  return uri',
     'end',
     '',
-    '-- ── TTS speak ────────────────────────────────────────────────────',
+    '-- ── TTS speak (Piper-first, FreeSWITCH built-in fallback) ─────────',
+    '',
+    '-- Per-call sequence counter for unique TTS filenames within one call session.',
+    '-- mod_lua creates a fresh Lua state per call, so this resets naturally.',
+    'local _tts_seq = 0',
     '',
     'local function speak(s, text)',
     '  if not text or text == "" then return end',
+    '  if PIPER_URL ~= "" then',
+    '    local rec_base  = _api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"',
+    '    local tts_dir   = rec_base .. "/ivr_tts"',
+    '    os.execute("mkdir -p \'" .. tts_dir .. "\'")',
+    '    _tts_seq = _tts_seq + 1',
+    '    local call_uuid = s:getVariable("uuid") or "u"',
+    '    local wav_path  = tts_dir .. "/tts_" .. call_uuid .. "_" .. _tts_seq .. ".wav"',
+    '    -- string.format("%q", ...) produces a Lua-quoted string compatible with JSON',
+    '    -- for all printable ASCII — safe for TTS text without external cjson.',
+    '    local body      = \'{"text":\' .. string.format("%q", text) .. \',"sample_rate":8000}\'',
+    '    local safe_b    = body:gsub("\'", "\'\\\\\'\'")  -- escape \' for shell single-quote context',
+    '    local cmd = string.format(',
+    '      "curl -sf -m 10 -X POST -H \'Content-Type: application/json\' -d \'%s\' \'%s/synthesize\' -o \'%s\' && echo piper_ok",',
+    '      safe_b, PIPER_URL, wav_path)',
+    '    local h   = io.popen(cmd .. " 2>/dev/null")',
+    '    local out = h and h:read("*a") or ""',
+    '    if h then h:close() end',
+    '    local fsize = 0',
+    '    local fh = io.open(wav_path, "rb")',
+    '    if fh then fsize = fh:seek("end") or 0; fh:close() end',
+    '    if out:find("piper_ok", 1, true) and fsize > 100 then',
+    '      s:streamFile(wav_path)',
+    '      os.remove(wav_path)',
+    '      return',
+    '    end',
+    '    freeswitch.consoleLog("WARN",',
+    '      "[ivr_executor] Piper TTS failed (url=" .. PIPER_URL .. " size=" .. fsize .. ") — falling back to FreeSWITCH TTS\\n")',
+    '    os.remove(wav_path)',
+    '  end',
     '  s:execute("speak", TTS_ENGINE .. "|" .. text)',
     'end',
     '',
