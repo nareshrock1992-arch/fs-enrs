@@ -42,10 +42,14 @@ describe('luaGenerator — ERS incident creation', () => {
     expect(lua).not.toMatch(/post\("\/ers\/incidents",\s*\{[^}]*ers_configuration_id\s*=/s);
   });
 
-  it('generates conference_room client-side and checks incident_uuid in the response, never conference_room', () => {
+  it('generates conference_room client-side in exec_ers and checks incident_uuid, never d.conference_room', () => {
     expect(lua).toContain('local room = "ers_"');
     expect(lua).toContain('d.incident_uuid');
-    expect(lua).not.toContain('d.conference_room');
+    // exec_ers builds the room name locally and must NOT read d.conference_room.
+    // (ers_ring_all legitimately reads d.conference_room from the ring-all API
+    // response — that node's API contract returns the room; exec_ers does not.)
+    const ersBlock = lua.slice(lua.indexOf('local function exec_ers('), lua.indexOf('local function exec_ers_ring_all('));
+    expect(ersBlock).not.toContain('d.conference_room');
   });
 });
 
@@ -137,7 +141,9 @@ describe('luaGenerator — Piper TTS speak() integration', () => {
   });
 
   it('speak() synthesizes via Piper curl when PIPER_URL is set', () => {
-    expect(luaWithPiper).toContain('PIPER_URL .. "/synthesize"');
+    // curl format string passes PIPER_URL as the %s placeholder for the endpoint host
+    expect(luaWithPiper).toContain('%s/synthesize');
+    expect(luaWithPiper).toContain('safe_b, PIPER_URL, wav_path');
     expect(luaWithPiper).toContain('s:streamFile(wav_path)');
   });
 
