@@ -19,6 +19,4 @@ ALTER TABLE ens_configurations
       CHECK (unauthorized_source_type IN ('tts','audio')),
   ADD COLUMN IF NOT EXISTS unauthorized_audio_url   VARCHAR(512);
 
-INSERT INTO schema_migrations (version) VALUES ('048') ON CONFLICT DO NOTHING;
-
 COMMIT;
