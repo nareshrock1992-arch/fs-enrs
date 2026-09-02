@@ -114,8 +114,13 @@ sox --version
 ```bash
 cd services/piper
 python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+# Install production + development/test dependencies:
+.venv/bin/pip install -r requirements-dev.txt
 ```
+
+> `requirements.txt` — production dependencies only (fastapi, uvicorn, piper-tts).  
+> `requirements-dev.txt` — extends requirements.txt with pytest, httpx for local testing.  
+> The Docker image installs only `requirements.txt`.
 
 ### Model files
 
@@ -162,17 +167,19 @@ correct URL when generating `ivr_executor.lua` at deploy time.
 
 ### Running tests from source
 
+Install `requirements-dev.txt` first (see setup above).
+
 ```bash
 cd services/piper
 
-# Unit tests — no model required
+# Unit tests — no model required (fast, always runnable)
 .venv/bin/pytest tests/ -m "not requires_model" -v
 
 # Full test suite — model + sox required
 PIPER_MODEL_DIR=/path/to/voices .venv/bin/pytest tests/ -v
 ```
 
-Expected result on a server with model + sox: 39 passed, 2 skipped, 0 failed.
+Expected result on a server with model + sox: 40 passed, 2 skipped, 0 failed.
 
 ---
 

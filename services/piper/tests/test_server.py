@@ -363,6 +363,25 @@ class TestNegativeCases:
         assert resp.status_code == 500
         assert "resample_failed" in resp.json()["detail"].get("error", "")
 
+    def test_synthesis_timeout_returns_504(self, mocked_client):
+        """When synthesis exceeds SYNTHESIS_TIMEOUT the service must return 504, not hang."""
+        import src.server as server_mod
+        import asyncio
+
+        async def slow_synthesis(*_):
+            # Sleep longer than any reasonable synthesis timeout by raising TimeoutError directly.
+            raise asyncio.TimeoutError()
+
+        # Patch run_in_executor so that awaiting it raises TimeoutError (simulates wait_for expiry).
+        async def patched_wait_for(coro, timeout):
+            raise asyncio.TimeoutError()
+
+        with patch.object(server_mod, "_synthesize_sync", side_effect=RuntimeError("never called")):
+            with patch("src.server.asyncio.wait_for", new=patched_wait_for):
+                resp = mocked_client.post("/synthesize", json={"text": "slow text"})
+        assert resp.status_code == 504
+        assert resp.json()["detail"]["error"] == "synthesis_timeout"
+
 
 # ── 7. Concurrency ────────────────────────────────────────────────────────────
 

@@ -1,0 +1,9 @@
+# Development and test dependencies for the Piper TTS service.
+# Install these for local development, testing, and CI:
+#   pip install -r requirements-dev.txt
+#
+# The production Docker image uses requirements.txt only.
+-r requirements.txt
+httpx==0.28.1
+pytest==8.3.4
+pytest-asyncio==0.25.1

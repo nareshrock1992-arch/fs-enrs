@@ -9,3 +9,9 @@ __pycache__/
 dist/
 build/
 .git/
+start-dev.sh
+requirements-dev.txt
+pytest.ini
+.env.dev
+.env.example
+.gitignore

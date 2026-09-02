@@ -72,9 +72,11 @@ services:
       PIPER_MAX_TEXT_LENGTH: 5000
       LOG_LEVEL: INFO
     volumes:
-      # Mount voice model files from host.
-      # Adjust this path to wherever the .onnx + .onnx.json files live.
-      - /opt/freeswitch-ui/enrs-tools/voices:/app/models:ro
+      # Mount voice model files from host (read-only).
+      # Set PIPER_MODEL_HOST_DIR in your .env or shell before running docker compose:
+      #   export PIPER_MODEL_HOST_DIR=/path/to/voices   # contains *.onnx + *.onnx.json
+      # The default below is the DEV server path — override for other environments.
+      - ${PIPER_MODEL_HOST_DIR:-/opt/freeswitch-ui/enrs-tools/voices}:/app/models:ro
     ports:
       # Bound to localhost only — not reachable from outside this host.
       # The backend container reaches Piper via the 'enrs' Docker network (http://piper:5000).

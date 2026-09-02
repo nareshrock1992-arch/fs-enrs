@@ -2,6 +2,3 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic==2.10.4
 piper-tts==1.4.2
-httpx==0.28.1
-pytest==8.3.4
-pytest-asyncio==0.25.1
