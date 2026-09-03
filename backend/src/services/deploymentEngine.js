@@ -131,7 +131,7 @@ async function deployLuaExecutor() {
     apiBase:   config.freeswitch?.apiUrl || `http://127.0.0.1:${config.port}`,
     apiKey:    process.env.INTERNAL_API_KEY || '',
     ttsEngine: process.env.FS_TTS_ENGINE || 'flite|kal',
-    piperUrl:  process.env.PIPER_URL || '',
+    piperUrl:  process.env.PIPER_LUA_URL || '',
   });
 
   const luaPath = fsPathService.getExecutorLuaFile();

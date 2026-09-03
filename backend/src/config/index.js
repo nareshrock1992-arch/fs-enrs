@@ -65,13 +65,13 @@ export const config = {
   },
 
   // Piper TTS synthesis service.
-  // Docker: PIPER_URL=http://piper:5000 (set by docker-compose).
-  // Source-level DEV: PIPER_URL=http://127.0.0.1:5002 (set in backend/.env.dev).
+  // Docker: PIPER_BACKEND_URL=http://piper:5000 (set by docker-compose; Docker DNS).
+  // Source-level DEV: PIPER_BACKEND_URL=http://127.0.0.1:5002 (set in backend/.env.dev).
   // The backend (ENS pre-synthesis via piperClient.js) calls this service.
-  // IVR Lua scripts call Piper directly via curl using the PIPER_URL injected at deploy time.
+  // IVR Lua scripts use PIPER_LUA_URL (host loopback), injected by deploymentEngine.js.
   piper: {
-    // Base URL of the Piper HTTP service
-    url:            process.env.PIPER_URL             || 'http://piper:5000',
+    // Base URL the backend container uses to reach Piper (Docker service name resolves inside container)
+    url:            process.env.PIPER_BACKEND_URL     || 'http://piper:5000',
     // Default voice model name (must be registered in Piper's VOICE_REGISTRY)
     defaultVoice:   process.env.PIPER_DEFAULT_VOICE   || 'en_US-lessac-medium',
     // HTTP request timeout for synthesis calls (ms).

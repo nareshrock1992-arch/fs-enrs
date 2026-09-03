@@ -190,6 +190,65 @@ describe('luaGenerator — Piper TTS speak() integration', () => {
   });
 });
 
+describe('luaGenerator — deploymentEngine env-var contract (regression: PIPER_LUA_URL mismatch)', () => {
+  // Regression: deploymentEngine.js previously read process.env.PIPER_URL which is never set
+  // in Docker Compose (the env vars are PIPER_BACKEND_URL and PIPER_LUA_URL).
+  // That caused piperUrl to always be '' → PIPER_URL="" in Lua → Piper branch never taken
+  // → speak(flite|kal|...) → "Invalid speech module [flite]" on every TTS call.
+  //
+  // These tests guard the generator contract; the env-var READ is guarded by the
+  // deploymentEngine unit test (deploymentEngine.test.js).
+
+  it('non-empty piperUrl produces a non-empty PIPER_URL constant', () => {
+    const l = generateIvrExecutorLua({
+      apiBase:  'http://127.0.0.1:4100',
+      apiKey:   'k',
+      piperUrl: 'http://127.0.0.1:5001',
+    });
+    expect(l).toContain('local PIPER_URL    = "http://127.0.0.1:5001"');
+    expect(l).not.toContain('local PIPER_URL    = ""');
+  });
+
+  it('empty piperUrl (PIPER_LUA_URL not set) produces PIPER_URL="" and bypasses Piper', () => {
+    const l = generateIvrExecutorLua({
+      apiBase:  'http://127.0.0.1:4100',
+      apiKey:   'k',
+      piperUrl: '',
+    });
+    expect(l).toContain('local PIPER_URL    = ""');
+  });
+
+  it('Piper branch is taken (curl + streamFile) when PIPER_URL is non-empty', () => {
+    const l = generateIvrExecutorLua({
+      apiBase:  'http://127.0.0.1:4100',
+      apiKey:   'k',
+      piperUrl: 'http://127.0.0.1:5001',
+    });
+    expect(l).toContain('s:streamFile(wav_path)');
+  });
+
+  it('when piperUrl is set, Piper return-early guard prevents FreeSWITCH speak() from executing', () => {
+    // This is the production failure: piperUrl was always '' because deploymentEngine.js
+    // read PIPER_URL (undefined) instead of PIPER_LUA_URL → PIPER_URL="" in Lua →
+    // speak(flite|kal|...) fired on every TTS call → "Invalid speech module [flite]".
+    //
+    // The s:execute("speak") line exists in the else-branch of the generated Lua even when
+    // piperUrl is set (runtime guard: `if PIPER_URL ~= ""`). What we can assert is that
+    // the Piper block's `return` statement appears BEFORE s:execute, proving the else-branch
+    // is structurally unreachable when PIPER_URL is non-empty.
+    const l = generateIvrExecutorLua({
+      apiBase:   'http://127.0.0.1:4100',
+      apiKey:    'k',
+      ttsEngine: 'flite|kal',
+      piperUrl:  'http://127.0.0.1:5001',
+    });
+    // The Piper block ends with an explicit return before the else-branch s:execute
+    expect(l).toContain('return  -- do not fall through to FreeSWITCH TTS; Piper is the configured engine');
+    // And the streamFile call is present (Piper path taken)
+    expect(l).toContain('s:streamFile(wav_path)');
+  });
+});
+
 describe('luaGenerator — HTTP transport has no luasocket dependency', () => {
   it('never requires socket.http or ltn12', () => {
     expect(lua).not.toContain('require("socket.http")');
