@@ -14,11 +14,15 @@
  */
 
 import { randomUUID }  from 'crypto';
+import { promises as fsPromises } from 'fs';
+import path from 'path';
 import { query, withTransaction } from '../db/pool.js';
 import { originateCampaignCall } from './eslService.js';
 import { emitInternal } from './socketService.js';
 import { config } from '../config/index.js';
 import { logger } from '../infrastructure/index.js';
+import { synthesize, PiperError } from './piperClient.js';
+import { fsConfig } from '../config/fsConfig.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,6 +42,61 @@ const RETRYABLE_CAUSES = new Set([
 ]);
 
 const BUSY_CAUSES = new Set(['BUSY', 'USER_BUSY', 'NORMAL_CIRCUIT_CONGESTION', 'SWITCH_CONGESTION']);
+
+// ── Campaign TTS synthesis ────────────────────────────────────────────────────
+
+// In-process deduplication: campaignId → Promise<string|null>
+// Prevents duplicate Piper calls when multiple ticks fire close together.
+const ttsSynthesisMap = new Map();
+
+export async function ensureCampaignTtsWav(campaignId, text) {
+  const ttsDir    = path.join(fsConfig.recordingDir, 'tts');
+  const finalPath = path.join(ttsDir, `ens_tts_campaign_${campaignId}.wav`);
+
+  // Fast path: WAV already on disk (idempotent across process restarts)
+  try {
+    await fsPromises.access(finalPath);
+    logger.info({ module: 'campaignEngine', campaignId, wavPath: finalPath },
+      'Campaign TTS WAV already exists — reusing');
+    return finalPath;
+  } catch {}
+
+  // In-process dedup: return the pending promise if another tick is already synthesizing
+  if (ttsSynthesisMap.has(campaignId)) {
+    return ttsSynthesisMap.get(campaignId);
+  }
+
+  const synthesisPromise = (async () => {
+    try {
+      await fsPromises.mkdir(ttsDir, { recursive: true });
+      const safeText = text.length > 4900 ? text.slice(0, 4900) : text;
+      const wavBytes = await synthesize(safeText, { sampleRate: 8000 });
+      if (!wavBytes || wavBytes.length < 100) {
+        throw new Error(`Piper WAV too small: ${wavBytes?.length ?? 0} bytes`);
+      }
+      const tempPath = `${finalPath}.tmp.${randomUUID()}`;
+      await fsPromises.writeFile(tempPath, wavBytes);
+      await fsPromises.rename(tempPath, finalPath);
+      logger.info({ module: 'campaignEngine', campaignId, wavPath: finalPath, bytes: wavBytes.length },
+        'Campaign TTS WAV synthesized');
+      return finalPath;
+    } catch (err) {
+      if (err instanceof PiperError) {
+        logger.error({ module: 'campaignEngine', campaignId, piperCode: err.code, textLength: text.length },
+          'Piper synthesis failed for campaign');
+      } else {
+        logger.error({ module: 'campaignEngine', campaignId, err: err.message },
+          'Campaign TTS write error');
+      }
+      return null;
+    } finally {
+      ttsSynthesisMap.delete(campaignId);
+    }
+  })();
+
+  ttsSynthesisMap.set(campaignId, synthesisPromise);
+  return synthesisPromise;
+}
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
 
@@ -349,7 +408,8 @@ async function processAllCampaigns() {
   }
 }
 
-async function processCampaign(campaign) {
+// Exported for unit testing (audio priority in Tests A/B/C).
+export async function processCampaign(campaign) {
 
   // Transition queued → running (idempotent via WHERE status='queued')
   if (campaign.status === 'queued') {
@@ -417,6 +477,28 @@ async function processCampaign(campaign) {
   const slots = Math.min(availableSlots, cpsCapacity, campaign.batch_size || 10, ready);
   if (slots === 0) return;
 
+  // Resolve audio BEFORE claiming destinations — if Piper fails after a claim,
+  // the destination rows get stuck in 'dialing' with no call ever placed.
+  let mediaPath = campaign.recording_file || campaign.message_audio_url || '';
+
+  if (!mediaPath && campaign.message_text) {
+    const wavPath = await ensureCampaignTtsWav(campaign.id, campaign.message_text);
+    if (wavPath) {
+      mediaPath = wavPath;
+      await query(
+        `UPDATE ens_campaigns SET recording_file = $2, updated_at = now() WHERE id = $1`,
+        [campaign.id, wavPath]
+      );
+    } else {
+      logger.error({
+        module: 'campaignEngine',
+        campaignId: campaign.id,
+        textLength: campaign.message_text?.length,
+      }, 'Campaign TTS synthesis failed — skipping dispatch this tick; will retry next tick');
+      return;
+    }
+  }
+
   // Claim next queued destinations atomically (SKIP LOCKED prevents double-claiming)
   const { rows: destinations } = await query(
     `UPDATE ens_campaign_destinations
@@ -467,19 +549,10 @@ async function processCampaign(campaign) {
     return;
   }
 
-  // Resolve playback content in priority order:
-  //   recording_file    — absolute FS path recorded via Lua (blast trigger)
-  //   message_audio_url — absolute FS path from media library (UI upload)
-  //   message_text      — FreeSWITCH TTS via &speak() (UI text trigger)
-  // &park() is used only as a last resort; it answers the call with no audio,
-  // inflating answered_count without actually delivering the notification.
-  const mediaPath   = campaign.recording_file || campaign.message_audio_url || '';
-  const messageText = (!mediaPath && campaign.message_text) ? campaign.message_text : null;
-
   for (const dest of destinations) {
     const callUuid = randomUUID();
     state.cpsHistory.push(Date.now());
-    await originateDestination(campaign, dest, callUuid, dest.gateway_name || null, clid, mediaPath, messageText);
+    await originateDestination(campaign, dest, callUuid, dest.gateway_name || null, clid, mediaPath, null);
   }
 
   emitInternal('enrs::campaign_progress', {

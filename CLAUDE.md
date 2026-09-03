@@ -159,4 +159,4 @@ All migration files must manage their own `BEGIN/COMMIT` and be fully idempotent
 
 ### FreeSWITCH Lua ↔ backend contract
 
-Lua scripts use `io.popen(curl ...)` for HTTP — no native HTTP library. All decisions (bridge numbers, retry counts, responder lists, PIN, queue settings) come from a single API lookup per call session. Lua never contains hardcoded business logic. Environment variables consumed by Lua: `ENRS_INTERNAL_API`, `FS_INTERNAL_KEY`, `ENRS_TTS_ENGINE`, `ENRS_TTS_VOICE`, `ENRS_ERS_REC_DIR`, `ENRS_REC_DIR`.
+Lua scripts use `io.popen(curl ...)` for HTTP — no native HTTP library. All decisions (bridge numbers, retry counts, responder lists, PIN, queue settings) come from a single API lookup per call session. Lua never contains hardcoded business logic. Environment variables consumed by Lua: `ENRS_INTERNAL_API`, `FS_INTERNAL_KEY`, `PIPER_LUA_URL`, `ENRS_ERS_REC_DIR`, `ENRS_REC_DIR`. (`ENRS_TTS_ENGINE` and `ENRS_TTS_VOICE` are deprecated — all TTS now uses Piper via `PIPER_LUA_URL`.)

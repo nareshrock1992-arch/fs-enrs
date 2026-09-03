@@ -17,7 +17,18 @@ vi.mock('../../config/index.js', () => ({
   config: {
     freeswitch: { defaultGateway: 'default', ttsEngine: 'flite|kal' },
     esl:        { domain: '127.0.0.1' },
+    piper:      { url: 'http://127.0.0.1:5002', defaultVoice: 'en_US-lessac-medium', timeoutMs: 30000, sampleRate: 8000 },
   },
+}));
+
+// campaignEngine now imports piperClient; mock it so config.piper isn't
+// accessed at module-load time in tests that don't exercise Piper.
+vi.mock('../../services/piperClient.js', () => ({
+  synthesize:            vi.fn(),
+  synthesizeToFile:      vi.fn(),
+  PiperError:            class PiperError extends Error { constructor(code, m) { super(m); this.code = code; } },
+  PiperUnavailableError: class PiperUnavailableError extends Error {},
+  PiperTimeoutError:     class PiperTimeoutError extends Error {},
 }));
 
 // Mock the DB pool and ESL service — resolveContact itself makes no DB calls,

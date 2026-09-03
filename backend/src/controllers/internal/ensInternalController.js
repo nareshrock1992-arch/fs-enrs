@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
@@ -6,8 +5,6 @@ import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
 import { createCampaign, createCampaignByConfigId } from '../../services/campaignEngine.js';
 import { logger } from '../../infrastructure/index.js';
-import { synthesizeToFile, PiperError } from '../../services/piperClient.js';
-import { fsConfig } from '../../config/fsConfig.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -168,36 +165,15 @@ export const startCampaign = asyncHandler(async (req, res) => {
     return res.status(401).json({ success: false, error: 'PIN required or invalid' });
   }
 
-  // Pre-synthesize message_text via Piper when no recording file is provided.
-  // Piper produces a higher-quality WAV than FreeSWITCH's built-in flite TTS.
-  // On any Piper error, fall back silently to message_text (FreeSWITCH speak).
-  let resolvedRecordingFile = recording_file || null;
-  let resolvedMessageText   = message_text   || null;
-
-  if (!resolvedRecordingFile && resolvedMessageText) {
-    const ttsDir = path.join(fsConfig.recordingDir, 'tts');
-    try {
-      resolvedRecordingFile = await synthesizeToFile(resolvedMessageText, ttsDir);
-      resolvedMessageText   = null; // WAV takes over; FreeSWITCH speak not needed
-      logger.info({ module: 'ensInternal', ttsDir, path: resolvedRecordingFile },
-        'Piper synthesis succeeded — using WAV for campaign');
-    } catch (err) {
-      if (err instanceof PiperError) {
-        logger.warn({ module: 'ensInternal', piperCode: err.code, err: err.message },
-          'Piper unavailable — falling back to FreeSWITCH TTS for campaign');
-      } else {
-        logger.error({ module: 'ensInternal', err }, 'Unexpected error during Piper synthesis');
-      }
-      // resolvedRecordingFile stays null, resolvedMessageText stays set → FreeSWITCH speak
-    }
-  }
-
+  // Pass message_text through to the campaign engine, which will synthesize it
+  // via Piper (ensureCampaignTtsWav) before dispatching calls.
+  // No Piper synthesis here — the engine does it once per campaign, atomically.
   const campaign = await createCampaign({
     triggerNumber:  trigger_number,
     triggeredVia:   'PHONE',
     triggeredBy:    null,
-    recordingFile:  resolvedRecordingFile,
-    messageText:    resolvedMessageText,
+    recordingFile:  recording_file || null,
+    messageText:    message_text   || null,
   });
 
   // Register the Lua blast recording in the unified recordings table.

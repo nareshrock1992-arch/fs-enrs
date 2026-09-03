@@ -31,15 +31,13 @@
 --   ENRS_INTERNAL_API  — backend base URL (default: http://127.0.0.1:4100/api/v1/internal)
 --   FS_INTERNAL_KEY    — X-Internal-Key header value (required)
 --   ENRS_ERS_REC_DIR   — recording directory (default: /opt/freeswitch/recordings/ers)
---   ENRS_TTS_ENGINE    — TTS engine (default: flite)
---   ENRS_TTS_VOICE     — TTS voice (default: slt)
+--   PIPER_LUA_URL      — Piper TTS service URL reachable from FreeSWITCH (required for TTS prompts)
 -- =============================================================================
 
 local API_BASE      = os.getenv("ENRS_INTERNAL_API") or "http://127.0.0.1:4100/api/v1/internal"
 local API_KEY       = os.getenv("FS_INTERNAL_KEY")   or ""
 local REC_DIR       = os.getenv("ENRS_ERS_REC_DIR")  or "/opt/freeswitch/recordings/ers"
-local TTS_ENGINE    = os.getenv("ENRS_TTS_ENGINE")   or "flite"
-local TTS_VOICE     = os.getenv("ENRS_TTS_VOICE")    or "slt"
+local PIPER_URL     = os.getenv("PIPER_LUA_URL") or ""
 local HTTP_TIMEOUT  = 8
 local POLL_MS       = 3000      -- queue poll interval in milliseconds
 local RETRY_RING_S  = 30        -- default seconds between retry rings
@@ -100,10 +98,49 @@ local function http_patch(path, payload)
   return ok and d or nil
 end
 
+local _tts_dir = nil
+local _tts_seq = 0
+
+local function _get_tts_dir()
+  if _tts_dir then return _tts_dir end
+  local api = freeswitch.API()
+  local rec = api:execute("global_getvar", "recordings_dir") or "/var/lib/freeswitch/recordings"
+  _tts_dir = rec .. "/ers_tts"
+  os.execute("mkdir -p '" .. _tts_dir .. "'")
+  return _tts_dir
+end
+
 local function speak(text)
-  if text and text ~= "" and session:ready() then
-    session:execute("speak", TTS_ENGINE .. "|" .. TTS_VOICE .. "|" .. text)
+  if not text or text == "" then return end
+  if not session:ready() then return end
+  if PIPER_URL == "" then
+    freeswitch.consoleLog("WARN", "[ERS_CONF] PIPER_LUA_URL not set — prompt is silent\n")
+    return
   end
+  local tts_dir   = _get_tts_dir()
+  local call_uuid = session:getVariable("uuid") or "u"
+  _tts_seq = _tts_seq + 1
+  local wav_path  = tts_dir .. "/tts_" .. call_uuid .. "_" .. _tts_seq .. ".wav"
+  local body      = '{"text":' .. string.format("%q", text) .. ',"sample_rate":8000}'
+  local safe_b    = body:gsub("'", "'\\''")
+  local cmd = string.format(
+    "curl -sf -m 25 -X POST -H 'Content-Type: application/json' -d '%s' '%s/synthesize' -o '%s' && echo piper_ok",
+    safe_b, PIPER_URL, wav_path)
+  local h   = io.popen(cmd .. " 2>/dev/null")
+  local out = h and h:read("*a") or ""
+  if h then h:close() end
+  local fsize = 0
+  local fh = io.open(wav_path, "rb")
+  if fh then fsize = fh:seek("end") or 0; fh:close() end
+  if out:find("piper_ok", 1, true) and fsize > 100 then
+    session:streamFile(wav_path)
+    os.remove(wav_path)
+    return
+  end
+  freeswitch.consoleLog("ERR",
+    "[ERS_CONF] Piper synthesis failed (url=" .. PIPER_URL .. " fsize=" .. fsize .. ") — prompt is silent\n")
+  os.remove(wav_path)
+  -- No flite fallback; mod_flite is disabled.
 end
 
 -- Originate outbound call to a responder and bridge them into the conference.

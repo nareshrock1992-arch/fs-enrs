@@ -1797,13 +1797,14 @@ export async function originateCampaignCall({
   let app;
   if (playbackFile) {
     app = `&playback(${playbackFile})`;
-  } else if (messageText) {
-    // FreeSWITCH speak app: speak(engine|voice|text)
-    // config.freeswitch.ttsEngine is 'engine|voice' (e.g. 'flite|kal').
-    // Strip characters that would break the FreeSWITCH command parser.
-    const safeText = String(messageText).replace(/[|{}\\[\]]/g, ' ').trim();
-    app = `&speak(${config.freeswitch.ttsEngine}|${safeText})`;
   } else {
+    if (messageText) {
+      // messageText should always be resolved to a WAV by campaignEngine before
+      // reaching this point. If it arrives here, TTS synthesis failed — park the call
+      // rather than attempting FreeSWITCH speak (mod_flite is disabled).
+      logger.error({ module: 'eslService', campaignId, destId },
+        'messageText reached originateCampaignCall without a WAV — mod_flite is disabled; parking call');
+    }
     app = '&park()';
   }
   const fullCmd = `originate {${varStr}}${resolved} ${app}`;
