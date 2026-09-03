@@ -11,6 +11,14 @@ const lua = generateIvrExecutorLua({
   ttsEngine: 'flite|kal',
 });
 
+// Module-level — used by both the Piper TTS block and the HTML-entity regression block.
+const luaWithPiper = generateIvrExecutorLua({
+  apiBase:   'http://127.0.0.1:4100',
+  apiKey:    'test-key',
+  ttsEngine: 'flite|kal',
+  piperUrl:  'http://127.0.0.1:5002',
+});
+
 describe('luaGenerator — reserved-word dispatch key', () => {
   it('uses bracket syntax for the "goto" dispatch key, never a bare identifier', () => {
     // `goto` has been a reserved word since Lua 5.2 — `goto = fn` inside a
@@ -129,12 +137,7 @@ describe('luaGenerator — ENS notification trigger', () => {
 });
 
 describe('luaGenerator — Piper TTS speak() integration', () => {
-  const luaWithPiper = generateIvrExecutorLua({
-    apiBase:   'http://127.0.0.1:4100',
-    apiKey:    'test-key',
-    ttsEngine: 'flite|kal',
-    piperUrl:  'http://127.0.0.1:5002',
-  });
+  // Uses module-level luaWithPiper (defined at top of file).
 
   it('embeds PIPER_URL constant from the piperUrl option', () => {
     expect(luaWithPiper).toContain('local PIPER_URL    = "http://127.0.0.1:5002"');
@@ -247,6 +250,48 @@ describe('luaGenerator — deploymentEngine env-var contract (regression: PIPER_
     // And the streamFile call is present (Piper path taken)
     expect(l).toContain('s:streamFile(wav_path)');
   });
+});
+
+describe('luaGenerator — no HTML entities in generated Lua (regression: external file-editor escaping)', () => {
+  // Root cause forensic finding: HTML entities (&amp;, &gt;, &lt;) were observed in the
+  // deployed ivr_executor.lua on the production server. Investigation confirmed the
+  // fs-enrs source code NEVER produced these entities — they were introduced by a
+  // server-side file manager or web-based editor that HTML-encodes file content when
+  // writing. These tests guard the generator output itself so the source is proven clean.
+  //
+  // The entities corrupt the Piper curl command at runtime:
+  //   && echo piper_ok  →  &amp;&amp; echo piper_ok  (shell syntax error)
+  //   2>/dev/null       →  2&gt;/dev/null           (shell redirect broken)
+  //   fsize > 100       →  fsize &gt; 100           (Lua syntax error in Lua 5.1)
+
+  it('no &amp; entity in generated Lua', () => {
+    expect(lua).not.toContain('&amp;');
+    expect(luaWithPiper).not.toContain('&amp;');
+  });
+
+  it('no &gt; entity in generated Lua', () => {
+    expect(lua).not.toContain('&gt;');
+    expect(luaWithPiper).not.toContain('&gt;');
+  });
+
+  it('no &lt; entity in generated Lua', () => {
+    expect(lua).not.toContain('&lt;');
+    expect(luaWithPiper).not.toContain('&lt;');
+  });
+
+  it('curl shell && separator is literal && not HTML-escaped', () => {
+    // The Piper curl command must end with: && echo piper_ok
+    // If this becomes &amp;&amp;, the shell never appends "piper_ok" to stdout,
+    // out:find("piper_ok") returns nil, and Piper synthesis is treated as a failure.
+    expect(luaWithPiper).toContain('&& echo piper_ok');
+  });
+
+  it('stderr redirect 2>/dev/null uses literal > not &gt;', () => {
+    // If 2>/dev/null becomes 2&gt;/dev/null the shell ignores the redirect and
+    // Piper stderr floods the FreeSWITCH log instead of being suppressed.
+    expect(luaWithPiper).toContain('2>/dev/null');
+  });
+
 });
 
 describe('luaGenerator — HTTP transport has no luasocket dependency', () => {
