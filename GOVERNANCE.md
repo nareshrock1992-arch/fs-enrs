@@ -1109,3 +1109,64 @@ Any task touching more than one repository must proceed in phases:
 - **Phase 4 — Build and test:** Docker build, integration test, report results.
 
 **Stop at the end of each phase. Do not proceed to the next phase without explicit approval.**
+
+### Environment Layers (Where Code Lives vs. Runs)
+
+| Layer | Path / host | Allowed | Forbidden |
+|---|---|---|---|
+| 1. Laptop authoritative repo | `C:\Users\USER\Documents\fs-enrs` (and fs-cc, fs-cp) | Edit code, commit, push. Sole source of truth. | Running the live stack against it. |
+| 2. WSL test clone | a WSL-native clone with its OWN node_modules/venv | `git pull`, install deps, run tests, run an ISOLATED dev instance | Editing source here as the authority; sharing deps with the laptop |
+| 3. Dev server runtime | `/opt/freeswitch-ui/fs-enrs` (+ systemd/PM2, FreeSWITCH) | Pull tested code, restart/redeploy, smoke-test | Editing source here; treating it as authoritative |
+| 4. fs-cp integration | fs-cp repo | Promote a tested, committed point of fs-enrs/fs-cc; build images | Authoring application code (see rules above) |
+
+Code moves layer 1 → 2 → 3, and (separately) layer 1 → fs-cp. It never moves backward.
+
+### Restart Is Not a Deploy
+
+A `systemctl restart` / `pm2 restart` runs whatever code is **already on disk** — it does not fetch
+new code. Before restarting or redeploying to prove a change, VERIFY the new code actually landed:
+- `git -C <path> log -1 --oneline` shows the expected commit, and
+- grep the specific changed line/symbol in the deployed file.
+Only then restart. Generated artifacts (e.g. `ivr_executor.lua`) must also be **regenerated via their
+build step** (IVR Deploy), not merely picked up by a restart.
+
+### Repository Hygiene
+
+- `.gitignore` must exclude: `node_modules/`, `venv/`, `.venv/`, `__pycache__/`, `*.pyc`, every
+  `*.env` except `*.env.example`, build output, and logs.
+- **One `node_modules`/`venv` per environment.** Never share or copy them between the laptop and the
+  WSL/dev-server layers — native binaries (rollup, esbuild, onnxruntime) are platform-specific and
+  will break. Each layer runs its own install.
+- Lockfiles (`package-lock.json`, pinned `requirements*.txt`) are tracked and kept in a state that
+  lets a deploy target `git pull` cleanly — never commit a half-resolved or platform-specific lock
+  that blocks pull/install on another layer.
+
+### Environment Variables (applies to fs-enrs AND fs-cc)
+
+- Only `*.env.example` is tracked. A real `.env` is NEVER committed.
+- When you add code that reads a new env var, **in the same commit** add it to that service's
+  `.env.example` with a safe default/placeholder (never a real secret) and document what it controls.
+  fs-cp then wires it into compose per its Environment-Variable Wiring Rule.
+
+### Adding or Changing Any Backend Service (generic checklist)
+
+For any backend/service change (not tied to one specific service):
+1. Author + test it in the authoritative repo (fs-enrs/fs-cc); it needs its **own `.env.example`
+   entries** for any new vars.
+2. **Run its tests green in the WSL test layer BEFORE touching the dev server.**
+3. Commit it. **Only a tested, COMMITTED point of fs-enrs/fs-cc may be promoted to fs-cp** — never
+   uncommitted working-tree state. fs-cp verifies the promoted code by content compare (LF-normalized
+   git blob) per FS-CP-GOVERNANCE §7; this is stricter than a tag pointer, and no tag system is used.
+4. A new standalone service also needs its Dockerfile / compose service / healthcheck (+ the dual-URL
+   pattern if other containers call it) per FS-CP-GOVERNANCE §5/§14.
+
+### Known Security Debt — .env files committed in dev repos
+
+These real `.env` files are tracked in git and must be remediated — `git rm --cached`, purge from
+history, and rotate the exposed credentials:
+- `fs-enrs/backend/.env`
+- `fs-enrs/frontend/.env`
+- `fs-cc/backend/.env` (also recorded in FS-CP-GOVERNANCE §8)
+
+Until remediated: never propagate them into fs-cp, and verify each is `.gitignore`d so no further
+versions are committed.

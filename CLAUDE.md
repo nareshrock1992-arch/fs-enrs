@@ -23,6 +23,8 @@ All ENRS application development happens here. The latest valid ENRS code must c
 
 **The default assumption is always: "The existing framework is sufficient unless I can prove otherwise."**
 
+> **Operational rules** — environment layers (laptop → WSL test → dev server → fs-cp), "restart is not a deploy", repository hygiene, the env-var same-commit rule, the generic add/change-a-service checklist, and the known `.env` secrets debt live in [`GOVERNANCE.md`](GOVERNANCE.md) → Multi-Repository Governance. Read them before any deploy/restart or dependency change.
+
 ## Commands
 
 ### Backend (run from `backend/`)
