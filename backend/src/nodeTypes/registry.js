@@ -112,11 +112,15 @@ end`,
       { key: 'text', label: 'Text to speak', fieldType: 'textarea', required: true, placeholder: 'Please press 1 for emergency…' },
       { key: 'language', label: 'Language', fieldType: 'select', options: ['en-US','en-AU','en-GB','es-ES','fr-FR','de-DE'].map(l => ({ value: l, label: l })) },
       { key: 'voice', label: 'Voice (optional)', fieldType: 'text', placeholder: 'Joanna' },
+      {
+        key: 'sentence_silence_ms', label: 'Pause between sentences (ms)', fieldType: 'number', min: 0, max: 5000,
+        hint: 'Silence inserted between sentences/lines so multi-line text is not read as one run-on sentence. Leave blank to use the server default (PIPER_SENTENCE_SILENCE_MS).',
+      },
       { key: 'next', label: 'Next Node', fieldType: 'node_ref', required: true, hint: 'Node to go to after speaking' },
     ],
     luaHandler: `
 local function exec_say(s, node)
-  speak(s, interp(s, node.text))
+  speak(s, interp(s, node.text), node.sentence_silence_ms)
   return node.next
 end`,
     apiEndpoint: null,

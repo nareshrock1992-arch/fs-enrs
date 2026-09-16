@@ -10,6 +10,14 @@ services/piper/.env.dev
 # Dependencies
 node_modules/
 
+# Python (virtualenvs, bytecode, test caches)
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
 # Build output
 dist/
 build/

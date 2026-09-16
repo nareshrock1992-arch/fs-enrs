@@ -434,3 +434,79 @@ class TestAudioUtils:
         assert meta["channels"] == 1
         assert meta["n_frames"] == 800
         assert abs(meta["duration_sec"] - 0.1) < 0.001
+
+
+# ── 9. Sentence-silence insertion (no model required — fake per-sentence voice) ─
+
+class _FakeChunk:
+    """Mimics a piper-tts AudioChunk: nonzero 16-bit PCM at a fixed rate."""
+    def __init__(self, rate: int, samples: int, channels: int = 1):
+        self.sample_rate = rate
+        self.sample_width = 2
+        self.sample_channels = channels
+        # Nonzero payload so real speech is distinguishable from inserted silence.
+        self.audio_int16_bytes = b"\x11\x11" * samples * channels
+
+
+class _FakeVoice:
+    """A voice whose synthesize() yields one chunk per 'sentence' (like piper-tts)."""
+    def __init__(self, n_chunks: int, rate: int = 22050, samples_per_chunk: int = 2205):
+        self._n = n_chunks
+        self._rate = rate
+        self._spc = samples_per_chunk
+
+    def synthesize(self, text, syn_config=None):
+        for _ in range(self._n):
+            yield _FakeChunk(self._rate, self._spc)
+
+
+def _wav_frames(data: bytes) -> int:
+    with wave.open(io.BytesIO(data)) as wf:
+        return wf.getnframes()
+
+
+class TestSentenceSilence:
+    RATE = 22050
+    SPC = 2205          # 0.1s per "sentence" chunk
+
+    def test_zero_silence_reproduces_concatenation(self):
+        """sentence_silence_ms=0 → chunks written back-to-back (original behaviour)."""
+        import src.server as server_mod
+        from src.voices import voice_loader
+        with patch.object(voice_loader, "get", return_value=_FakeVoice(3, self.RATE, self.SPC)):
+            wav = server_mod._synthesize_sync("A. B. C.", "v", 0, None, None, None)
+        assert _wav_frames(wav) == 3 * self.SPC, "zero-silence output must equal summed chunks"
+
+    def test_silence_inserted_between_sentences(self):
+        """sentence_silence_ms>0 → (n_chunks-1) gaps of exactly the requested duration."""
+        import src.server as server_mod
+        from src.voices import voice_loader
+        ms = 350
+        gap = int(self.RATE * ms / 1000)
+        with patch.object(voice_loader, "get", return_value=_FakeVoice(3, self.RATE, self.SPC)):
+            wav = server_mod._synthesize_sync("A. B. C.", "v", ms, None, None, None)
+        # 3 chunks → 2 inter-sentence gaps inserted between them.
+        assert _wav_frames(wav) == 3 * self.SPC + 2 * gap
+
+    def test_single_sentence_gets_no_silence(self):
+        """One chunk → no 'between' gap regardless of sentence_silence_ms."""
+        import src.server as server_mod
+        from src.voices import voice_loader
+        with patch.object(voice_loader, "get", return_value=_FakeVoice(1, self.RATE, self.SPC)):
+            wav = server_mod._synthesize_sync("Hello.", "v", 350, None, None, None)
+        assert _wav_frames(wav) == self.SPC
+
+    def test_inserted_gap_is_actual_silence(self):
+        """The inserted frames between chunks must be zero-valued PCM."""
+        import src.server as server_mod
+        from src.voices import voice_loader
+        ms = 200
+        gap = int(self.RATE * ms / 1000)
+        with patch.object(voice_loader, "get", return_value=_FakeVoice(2, self.RATE, self.SPC)):
+            wav = server_mod._synthesize_sync("A. B.", "v", ms, None, None, None)
+        with wave.open(io.BytesIO(wav)) as wf:
+            frames = wf.readframes(wf.getnframes())
+        # The gap sits immediately after the first chunk's samples.
+        gap_start = self.SPC * 2                      # bytes (16-bit mono)
+        gap_slice = frames[gap_start: gap_start + gap * 2]
+        assert gap_slice == b"\x00" * (gap * 2), "inter-sentence gap must be pure silence"

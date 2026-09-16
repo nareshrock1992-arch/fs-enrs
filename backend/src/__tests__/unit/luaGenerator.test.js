@@ -177,8 +177,17 @@ describe('luaGenerator — Piper TTS speak() integration', () => {
     expect(luaWithPiper).toContain('_tts_seq = _tts_seq + 1');
   });
 
-  it('uses string.format %q for JSON-safe body encoding without cjson', () => {
-    expect(luaWithPiper).toContain('string.format("%q", text)');
+  it('uses json_escape (not string.format %q) so multi-line text yields valid JSON', () => {
+    // Regression: %q emitted backslash+newline (invalid JSON) for multi-line text,
+    // silently defeating line-based sentence pauses. speak() now escapes properly.
+    expect(luaWithPiper).toContain('local function json_escape(v)');
+    expect(luaWithPiper).toContain('json_escape(text)');
+    expect(luaWithPiper).not.toContain('string.format("%q", text)');
+  });
+
+  it('passes the per-node sentence_silence_ms override through to Piper', () => {
+    expect(luaWithPiper).toContain('local function speak(s, text, sentence_silence_ms)');
+    expect(luaWithPiper).toContain('"sentence_silence_ms":');
   });
 
   it('cleans up the temp WAV after streamFile to avoid accumulation', () => {

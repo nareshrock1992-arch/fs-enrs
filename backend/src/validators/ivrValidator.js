@@ -34,6 +34,8 @@ const SayNodeSchema = z.object({
   next:     nodeId,
   language: z.string().max(10).optional().default('en-US'),
   voice:    z.string().max(64).optional(),
+  // Optional per-node pause between sentences/lines (ms). Omitted → Piper service default.
+  sentence_silence_ms: z.number().int().min(0).max(5000).optional(),
 });
 
 // gather now supports: digit branches, _default catch-all, timeout, invalid

@@ -54,6 +54,23 @@ MAX_CONCURRENT       = int(os.environ.get("PIPER_MAX_CONCURRENT", "2"))
 SYNTHESIS_TIMEOUT    = float(os.environ.get("PIPER_SYNTHESIS_TIMEOUT_SEC", "30"))
 MAX_TEXT_LENGTH      = int(os.environ.get("PIPER_MAX_TEXT_LENGTH", "5000"))
 
+# Sentence pacing + voice tuning defaults (used when a request omits them).
+# piper-tts 1.4.2 yields one audio chunk per sentence and concatenates them with
+# NO gap, and its SynthesisConfig exposes no sentence_silence parameter — so we
+# insert the pause ourselves (see _synthesize_sync). 0 = original back-to-back
+# behaviour. length/noise scales fall back to the model config when unset.
+DEFAULT_SENTENCE_SILENCE_MS = int(os.environ.get("PIPER_SENTENCE_SILENCE_MS", "350"))
+
+
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    return float(raw) if raw not in (None, "") else None
+
+
+DEFAULT_LENGTH_SCALE = _env_float("PIPER_LENGTH_SCALE")
+DEFAULT_NOISE_SCALE  = _env_float("PIPER_NOISE_SCALE")
+DEFAULT_NOISE_W      = _env_float("PIPER_NOISE_W")
+
 # ── App and shared state ──────────────────────────────────────────────────────
 
 _semaphore: asyncio.Semaphore | None = None
@@ -100,6 +117,11 @@ class SynthesizeRequest(BaseModel):
     voice:       str   = Field(DEFAULT_VOICE)
     sample_rate: int   = Field(DEFAULT_SAMPLE_RATE, ge=8000, le=48000)
     channels:    int   = Field(1, ge=1, le=2)
+    # Optional per-request overrides — fall back to the PIPER_* env defaults when None.
+    sentence_silence_ms: int   | None = Field(None, ge=0, le=5000)
+    length_scale:        float | None = Field(None, gt=0, le=5)
+    noise_scale:         float | None = Field(None, ge=0, le=5)
+    noise_w:             float | None = Field(None, ge=0, le=5)
 
     @field_validator("text")
     @classmethod
@@ -121,21 +143,61 @@ class SynthesizeRequest(BaseModel):
 
 # ── Synthesis ─────────────────────────────────────────────────────────────────
 
-def _synthesize_sync(text: str, voice_id: str) -> bytes:
+def _synthesize_sync(
+    text: str,
+    voice_id: str,
+    sentence_silence_ms: int = 0,
+    length_scale: float | None = None,
+    noise_scale: float | None = None,
+    noise_w: float | None = None,
+) -> bytes:
     """
     Synchronous synthesis — runs in a thread executor.
     Returns WAV bytes at the model's native sample rate.
+
+    piper-tts 1.4.2 yields one audio chunk per sentence and (via synthesize_wav)
+    concatenates them with no gap; it exposes no sentence_silence parameter. We
+    therefore iterate the per-sentence chunks ourselves and insert
+    `sentence_silence_ms` of silence between them (0 reproduces the original
+    back-to-back behaviour). The native rate is whatever the model emits
+    (22050 Hz for lessac-medium); sox resamples to the requested rate afterward.
     """
     piper_voice = voice_loader.get(voice_id)
     if piper_voice is None:
         raise ValueError(f"Voice not loaded: {voice_id}")
 
+    syn_config = None
+    if length_scale is not None or noise_scale is not None or noise_w is not None:
+        # Imported lazily so this module stays importable without piper installed
+        # (e.g. API-layer unit tests that mock synthesis).
+        from piper import SynthesisConfig
+        syn_config = SynthesisConfig(
+            length_scale=length_scale,
+            noise_scale=noise_scale,
+            noise_w_scale=noise_w,   # renamed from noise_w in piper-tts 1.x
+        )
+
     buf = io.BytesIO()
+    silence_frames = b""
+    wrote_any = False
     with wave.open(buf, "wb") as wav_file:
-        # synthesize_wav sets WAV format from model config (set_wav_format=True default)
-        # and writes all audio frames. The native rate is whatever the model emits
-        # (22050 Hz for lessac-medium); sox resamples to the requested rate afterward.
-        piper_voice.synthesize_wav(text, wav_file)
+        for chunk in piper_voice.synthesize(text, syn_config=syn_config):
+            if not wrote_any:
+                # First chunk defines the WAV format (native model rate/width/channels).
+                wav_file.setframerate(chunk.sample_rate)
+                wav_file.setsampwidth(chunk.sample_width)
+                wav_file.setnchannels(chunk.sample_channels)
+                if sentence_silence_ms > 0:
+                    n = int(chunk.sample_rate * sentence_silence_ms / 1000)
+                    silence_frames = b"\x00" * (n * chunk.sample_width * chunk.sample_channels)
+                wrote_any = True
+            elif silence_frames:
+                # Inter-sentence pause: written before every chunk after the first.
+                wav_file.writeframes(silence_frames)
+            wav_file.writeframes(chunk.audio_int16_bytes)
+
+    if not wrote_any:
+        raise ValueError("synthesis produced no audio")
 
     return buf.getvalue()
 
@@ -178,16 +240,27 @@ async def synthesize(req: SynthesizeRequest, http_request: Request):
     start = time.monotonic()
     request_id = http_request.headers.get("x-request-id", "-")
 
+    # Resolve per-request overrides against the env defaults.
+    sentence_silence_ms = (
+        req.sentence_silence_ms if req.sentence_silence_ms is not None else DEFAULT_SENTENCE_SILENCE_MS
+    )
+    length_scale = req.length_scale if req.length_scale is not None else DEFAULT_LENGTH_SCALE
+    noise_scale  = req.noise_scale  if req.noise_scale  is not None else DEFAULT_NOISE_SCALE
+    noise_w      = req.noise_w      if req.noise_w      is not None else DEFAULT_NOISE_W
+
     logger.info(
-        "synthesize  req=%s  voice=%s  rate=%d  text_len=%d",
-        request_id, req.voice, req.sample_rate, len(req.text),
+        "synthesize  req=%s  voice=%s  rate=%d  text_len=%d  sentence_silence_ms=%d",
+        request_id, req.voice, req.sample_rate, len(req.text), sentence_silence_ms,
     )
 
     async with _semaphore:
         loop = asyncio.get_event_loop()
         try:
             wav_bytes = await asyncio.wait_for(
-                loop.run_in_executor(_executor, _synthesize_sync, req.text, req.voice),
+                loop.run_in_executor(
+                    _executor, _synthesize_sync, req.text, req.voice,
+                    sentence_silence_ms, length_scale, noise_scale, noise_w,
+                ),
                 timeout=SYNTHESIS_TIMEOUT,
             )
         except asyncio.TimeoutError:
