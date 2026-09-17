@@ -278,24 +278,33 @@ const EnsPlaybackNodeSchema = z.object({
 //   AnyNodeSchema      — adds cross-field semantic validation via superRefine.
 //                        Used by validateGraph and publishFlow.
 
+// Base fields available on EVERY node type (Genericity Rule). Purely cosmetic
+// authoring/display metadata — never read by the Lua/XML generator and never
+// affecting call execution. Merged into every node schema via .extend() below
+// so the field is explicitly accepted and length-bounded (not relying on
+// implicit strip-mode / raw-graph persistence).
+const BASE_NODE_FIELDS = {
+  description: z.string().max(500).optional(),
+};
+
 export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
-  PlayNodeSchema,         // ZodObject ✓
-  SayNodeSchema,          // ZodObject ✓
-  GatherNodeSchema,       // ZodObject ✓  (refine is on the branches field, not the outer object)
-  GotoNodeSchema,         // ZodObject ✓
-  EnsNodeSchema,          // ZodObject ✓
-  ErsNodeSchema,          // ZodObject ✓
-  HangupNodeSchema,       // ZodObject ✓
-  ConditionNodeSchema,    // ZodObject ✓
-  RecordMessageNodeSchema,// ZodObject ✓
-  SetVariableNodeSchema,  // ZodObject ✓
-  TransferNodeSchema,     // ZodObject ✓
-  WebhookNodeSchema,      // ZodObject ✓
-  ErsRingAllNodeSchema,       // ZodObject ✓
-  ErsOverflowCheckNodeSchema, // ZodObject ✓  (refine is on the branches field)
-  ErsOverflowWaitNodeSchema,  // ZodObject ✓
-  EnsBlastRecordNodeSchema,   // ZodObject ✓
-  EnsPlaybackNodeSchema,      // ZodObject ✓
+  PlayNodeSchema.extend(BASE_NODE_FIELDS),          // ZodObject ✓
+  SayNodeSchema.extend(BASE_NODE_FIELDS),           // ZodObject ✓
+  GatherNodeSchema.extend(BASE_NODE_FIELDS),        // ZodObject ✓  (refine is on the branches field, not the outer object)
+  GotoNodeSchema.extend(BASE_NODE_FIELDS),          // ZodObject ✓
+  EnsNodeSchema.extend(BASE_NODE_FIELDS),           // ZodObject ✓
+  ErsNodeSchema.extend(BASE_NODE_FIELDS),           // ZodObject ✓
+  HangupNodeSchema.extend(BASE_NODE_FIELDS),        // ZodObject ✓
+  ConditionNodeSchema.extend(BASE_NODE_FIELDS),     // ZodObject ✓
+  RecordMessageNodeSchema.extend(BASE_NODE_FIELDS), // ZodObject ✓
+  SetVariableNodeSchema.extend(BASE_NODE_FIELDS),   // ZodObject ✓
+  TransferNodeSchema.extend(BASE_NODE_FIELDS),      // ZodObject ✓
+  WebhookNodeSchema.extend(BASE_NODE_FIELDS),       // ZodObject ✓
+  ErsRingAllNodeSchema.extend(BASE_NODE_FIELDS),        // ZodObject ✓
+  ErsOverflowCheckNodeSchema.extend(BASE_NODE_FIELDS),  // ZodObject ✓  (refine is on the branches field)
+  ErsOverflowWaitNodeSchema.extend(BASE_NODE_FIELDS),   // ZodObject ✓
+  EnsBlastRecordNodeSchema.extend(BASE_NODE_FIELDS),    // ZodObject ✓
+  EnsPlaybackNodeSchema.extend(BASE_NODE_FIELDS),       // ZodObject ✓
 ]);
 
 export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {

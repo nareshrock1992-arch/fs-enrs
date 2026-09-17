@@ -3,19 +3,25 @@ import { Trash2 } from 'lucide-react';
 import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
+import { nodeSubtitleLines } from './nodeSubtitle.js';
 import ConnectionDot from './ConnectionDot.jsx';
 
 const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc' };
 
+// Canvas subtitle: the node's summary (primary) plus its optional description
+// (secondary line beneath). See nodeSubtitle.js for the exact composition rules
+// (incl. the Go To Node case where a description replaces the raw-id summary).
 function nodeSummary(node, cfg) {
-  const tmpl = cfg?.summaryTemplate;
-  if (!tmpl) return null;
-  const text = tmpl.replace(/\$\{(\w+)\}/g, (_, key) => {
-    const v = node[key];
-    if (v === undefined || v === null || v === '') return '?';
-    return String(v).slice(0, 24);
-  });
-  return <span className="truncate block">{text}</span>;
+  const { primary, secondary } = nodeSubtitleLines(node, cfg);
+  if (!primary && !secondary) return null;
+  return (
+    <>
+      {primary && <span className="truncate block">{primary}</span>}
+      {secondary && (
+        <span className="truncate block italic opacity-80" title={secondary}>{secondary}</span>
+      )}
+    </>
+  );
 }
 
 export const NODE_WIDTH  = 148;

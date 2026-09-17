@@ -489,6 +489,22 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
 
       {/* Fields — generated from configSchema */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
+        {/* Generic base field: Description — cosmetic authoring note shown as the
+            node's canvas subtitle (beneath its summary). Available on every node
+            type; never read by the Lua/XML generator. */}
+        <label className="block mb-3">
+          <span className="block text-[10px] font-semibold text-text-muted mb-1 uppercase tracking-wide">Description</span>
+          <textarea
+            value={node.description || ''}
+            onChange={e => onChange({ description: e.target.value || undefined })}
+            placeholder="Optional note shown on the node (e.g. Escalate unresolved billing calls to Tier 2)"
+            rows={2}
+            maxLength={500}
+            className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                       text-xs text-text-primary placeholder:text-text-muted focus:outline-none
+                       focus:border-brand transition-colors resize-none"
+          />
+        </label>
         {(cfg.configSchema || []).map(fieldDef => (
           <GenericField
             key={fieldDef.key}
