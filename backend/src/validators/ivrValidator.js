@@ -55,10 +55,39 @@ const GatherNodeSchema = z.object({
   // Kept as string (not null) so the Lua handler's nil check works correctly.
   terminators:           z.string().max(4).optional().default(''),
   variable_name:         varName.optional().default('gather_result'),
-  prompt_source_type:    z.enum(['tts', 'audio']).optional().default('tts'),
+  prompt_source_type:    z.enum(['tts', 'audio', 'none']).optional().default('tts'),
   prompt_audio_file_id:  z.number().int().positive().optional(),
   prompt_text:           z.string().max(1000).optional(),
   prompt_audio_url:      localAudioUrl.optional(),
+
+  // ── Configurable retry model (OPT-IN) ──────────────────────────────────────
+  // Presence of max_attempts activates the new failure-reason-aware retry path
+  // in exec_gather. Absent → legacy behavior is preserved verbatim. All fields
+  // optional so legacy Gather JSON continues to validate unchanged.
+  max_attempts:            z.number().int().min(1).max(10).optional(),
+  // Retry toggles accept boolean or the 'yes'/'no' the select field stores.
+  retry_on_no_input:       z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+  retry_on_invalid_length: z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+  retry_on_invalid_option: z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+
+  // Per-reason retry prompt slots — each an independent TTS / Audio / None
+  // source. Language-neutral: the engine only reads source_type and plays.
+  // NOTE (R2): audio mode is satisfied ONLY by <slot>_audio_url. There is no
+  // audio_file_id → audio_url resolution in the runtime path, so these slots
+  // deliberately have no *_audio_file_id field (the media picker writes the
+  // /media/... value straight into *_audio_url).
+  no_input_source_type:        z.enum(['tts', 'audio', 'none']).optional(),
+  no_input_text:               z.string().max(1000).optional(),
+  no_input_audio_url:          localAudioUrl.optional(),
+  invalid_length_source_type:  z.enum(['tts', 'audio', 'none']).optional(),
+  invalid_length_text:         z.string().max(1000).optional(),
+  invalid_length_audio_url:    localAudioUrl.optional(),
+  invalid_option_source_type:  z.enum(['tts', 'audio', 'none']).optional(),
+  invalid_option_text:         z.string().max(1000).optional(),
+  invalid_option_audio_url:    localAudioUrl.optional(),
+  max_attempts_exceeded_source_type: z.enum(['tts', 'audio', 'none']).optional(),
+  max_attempts_exceeded_text:        z.string().max(1000).optional(),
+  max_attempts_exceeded_audio_url:   localAudioUrl.optional(),
 });
 
 const GotoNodeSchema = z.object({
@@ -278,6 +307,39 @@ export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
         code: z.ZodIssueCode.custom,
         message: `min_digits (${minD}) must not exceed max_digits (${maxD})`,
       });
+    }
+    // R1 — explicit new-mode opt-in contract. The configurable retry model is
+    // activated ONLY by max_attempts. If any configurable field is supplied
+    // without max_attempts, fail loudly rather than silently falling back to
+    // legacy (which would ignore those fields). Legacy fields are NOT listed
+    // here, so a genuinely legacy node is unaffected.
+    const configurableFields = [
+      'retry_on_no_input', 'retry_on_invalid_length', 'retry_on_invalid_option',
+      'no_input_source_type', 'no_input_text', 'no_input_audio_url',
+      'invalid_length_source_type', 'invalid_length_text', 'invalid_length_audio_url',
+      'invalid_option_source_type', 'invalid_option_text', 'invalid_option_audio_url',
+      'max_attempts_exceeded_source_type', 'max_attempts_exceeded_text', 'max_attempts_exceeded_audio_url',
+    ];
+    if (node.max_attempts === undefined) {
+      const present = configurableFields.filter(f => node[f] !== undefined);
+      if (present.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `configurable retry fields (${present.join(', ')}) require max_attempts to be set — set max_attempts to enable configurable retry behavior, or remove these fields to use legacy Gather`,
+        });
+      }
+    }
+    // R2 — per-reason prompt slots: source=audio needs <slot>_audio_url (audio_file_id
+    // is NOT accepted, as there is no runtime file_id → url resolution); source=tts
+    // needs non-empty text; source=none (or unset) needs nothing. No hidden fallback.
+    for (const slot of ['no_input', 'invalid_length', 'invalid_option', 'max_attempts_exceeded']) {
+      const st = node[`${slot}_source_type`];
+      if (st === 'audio' && (!node[`${slot}_audio_url`] || String(node[`${slot}_audio_url`]).trim() === '')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${slot}_source_type=audio requires ${slot}_audio_url` });
+      }
+      if (st === 'tts' && (!node[`${slot}_text`] || String(node[`${slot}_text`]).trim() === '')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${slot}_source_type=tts requires ${slot}_text` });
+      }
     }
   }
   if (node.type === 'play') {

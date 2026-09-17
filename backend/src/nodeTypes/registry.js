@@ -171,8 +171,9 @@ end`,
         options: [
           { value: 'tts',   label: 'Text to Speech' },
           { value: 'audio', label: 'Audio File' },
+          { value: 'none',  label: 'None (silent)' },
         ],
-        hint: 'Audio File: plays the selected media library file. Text to Speech: speaks the configured text. The selected source is used exclusively — no silent fallback.',
+        hint: 'Audio File: plays the selected media library file. Text to Speech: speaks the configured text. None: collect input without an initial prompt. The selected source is used exclusively — no silent fallback.',
       },
       {
         key: 'prompt_audio_url', label: 'Prompt Audio File', fieldType: 'audio_url',
@@ -186,55 +187,216 @@ end`,
         hint: 'Spoken before digit collection starts.',
         showWhen: { field: 'prompt_source_type', value: 'tts' },
       },
+      // ── Configurable retry model (OPT-IN) ────────────────────────────────
+      // Setting "Max attempts" activates the new failure-reason-aware retry
+      // path. Leaving it blank preserves the exact legacy Gather behavior.
+      {
+        key: 'max_attempts', label: 'Max attempts (enables configurable retry)', fieldType: 'number', min: 1, max: 10,
+        hint: 'Leave BLANK for legacy behavior (native 3-try retry). Set a value (e.g. 3) to enable the configurable retry model below, where each failure reason has its own retry toggle and its own prompt.',
+      },
+      {
+        key: 'retry_on_no_input', label: 'Retry on no-input', fieldType: 'select',
+        options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to no_input branch' } ],
+        hint: 'Only used when Max attempts is set. Whether an empty (no digits) attempt is retried.',
+      },
+      {
+        key: 'retry_on_invalid_length', label: 'Retry on invalid length', fieldType: 'select',
+        options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to invalid_length branch' } ],
+        hint: 'Only used when Max attempts is set. Whether an entry shorter than Minimum Digits is retried.',
+      },
+      {
+        key: 'retry_on_invalid_option', label: 'Retry on invalid option', fieldType: 'select',
+        options: [ { value: 'no', label: 'No (default) — route to invalid_option branch' }, { value: 'yes', label: 'Yes — re-prompt' } ],
+        hint: 'Only used when Max attempts is set. A complete entry that matches no branch and no _default. Default is No (route immediately).',
+      },
+
+      // ── Per-reason retry prompts (each TTS / Audio / None, language-neutral) ─
+      {
+        key: 'no_input_source_type', label: 'No-input prompt source', fieldType: 'select',
+        options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
+        hint: 'Prompt replayed before a no-input retry. None replays nothing.',
+      },
+      { key: 'no_input_text', label: 'No-input prompt text', fieldType: 'text', showWhen: { field: 'no_input_source_type', value: 'tts' } },
+      { key: 'no_input_audio_url', label: 'No-input prompt audio', fieldType: 'audio_url', showWhen: { field: 'no_input_source_type', value: 'audio' } },
+      {
+        key: 'invalid_length_source_type', label: 'Invalid-length prompt source', fieldType: 'select',
+        options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
+        hint: 'Prompt replayed before an invalid-length retry.',
+      },
+      { key: 'invalid_length_text', label: 'Invalid-length prompt text', fieldType: 'text', showWhen: { field: 'invalid_length_source_type', value: 'tts' } },
+      { key: 'invalid_length_audio_url', label: 'Invalid-length prompt audio', fieldType: 'audio_url', showWhen: { field: 'invalid_length_source_type', value: 'audio' } },
+      {
+        key: 'invalid_option_source_type', label: 'Invalid-option prompt source', fieldType: 'select',
+        options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
+        hint: 'Prompt replayed before an invalid-option retry (only when Retry on invalid option = Yes).',
+      },
+      { key: 'invalid_option_text', label: 'Invalid-option prompt text', fieldType: 'text', showWhen: { field: 'invalid_option_source_type', value: 'tts' } },
+      { key: 'invalid_option_audio_url', label: 'Invalid-option prompt audio', fieldType: 'audio_url', showWhen: { field: 'invalid_option_source_type', value: 'audio' } },
+      {
+        key: 'max_attempts_exceeded_source_type', label: 'Attempts-exhausted prompt source', fieldType: 'select',
+        options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
+        hint: 'Optional prompt played once when all attempts are exhausted, before routing to the max_attempts_exceeded branch.',
+      },
+      { key: 'max_attempts_exceeded_text', label: 'Attempts-exhausted prompt text', fieldType: 'text', showWhen: { field: 'max_attempts_exceeded_source_type', value: 'tts' } },
+      { key: 'max_attempts_exceeded_audio_url', label: 'Attempts-exhausted prompt audio', fieldType: 'audio_url', showWhen: { field: 'max_attempts_exceeded_source_type', value: 'audio' } },
+
       {
         key: 'branches', label: 'Branches (digit / key → target node)', fieldType: 'branches_map',
-        hint: 'Map digit sequences to target nodes. Use _default to catch any input not listed. Use timeout for no-input timeout. Use invalid for inputs that fall through all branches.',
+        hint: 'Map digit sequences to target nodes. Use _default to catch any input not listed. Legacy keys: timeout (no input), invalid (fell through). Configurable-retry reserved keys: no_input, invalid_length, invalid_option, max_attempts_exceeded.',
         required: true,
       },
     ],
     luaHandler: `
 local function exec_gather(s, node)
-  local br      = node.branches or {}
-  local min_d   = node.min_digits          or 1
-  local max_d   = node.max_digits          or 1
-  local timeout = (node.timeout_seconds    or 10) * 1000
-  local idt     = (node.inter_digit_timeout or 2) * 1000
-  local terms   = node.terminators or ""
-  local digits  = ""
-  local src     = node.prompt_source_type or "tts"
+  local br = node.branches or {}
 
-  if src == "audio" then
-    local pf = resolve_audio(node.prompt_audio_url)
-    if pf then
-      digits = s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt) or ""
+  -- ─────────────────────────────────────────────────────────────────────
+  -- LEGACY PATH — executed verbatim when the designer has NOT opted into the
+  -- configurable retry model (node.max_attempts is absent). Behavior, prompts,
+  -- native 3-try retry, and routing are IDENTICAL to the pre-existing node.
+  -- Do not reinterpret legacy flows.
+  -- ─────────────────────────────────────────────────────────────────────
+  if node.max_attempts == nil then
+    local min_d   = node.min_digits          or 1
+    local max_d   = node.max_digits          or 1
+    local timeout = (node.timeout_seconds    or 10) * 1000
+    local idt     = (node.inter_digit_timeout or 2) * 1000
+    local terms   = node.terminators or ""
+    local digits  = ""
+    local src     = node.prompt_source_type or "tts"
+
+    if src == "audio" then
+      local pf = resolve_audio(node.prompt_audio_url)
+      if pf then
+        digits = s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt) or ""
+      else
+        freeswitch.consoleLog("ERR", "[ivr_executor] gather: prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.prompt_audio_url) .. ")\\n")
+        -- Source configuration error — no cross-type fallback. Collect digits without prompt.
+        digits = s:getDigits(max_d, terms, timeout) or ""
+      end
     else
-      freeswitch.consoleLog("ERR", "[ivr_executor] gather: prompt_source_type=audio but audio_url is missing/unresolvable (audio_url=" .. tostring(node.prompt_audio_url) .. ")\\n")
-      -- Source configuration error — no cross-type fallback. Collect digits without prompt.
-      digits = s:getDigits(max_d, terms, timeout) or ""
+      -- TTS path: manual retry loop enforces min_d (getDigits has no min parameter).
+      local tries = 3
+      while tries > 0 and s:ready() do
+        local pt = interp(s, node.prompt_text)
+        if pt ~= "" then speak(s, pt) end
+        local d = s:getDigits(max_d, terms, timeout) or ""
+        if d == "" then break end
+        if #d >= min_d then digits = d; break end
+        tries = tries - 1
+        if tries > 0 then speak(s, "Please enter at least " .. tostring(min_d) .. " digit" .. (min_d > 1 and "s" or "") .. ".") end
+      end
     end
-  else
-    -- TTS path: manual retry loop enforces min_d (getDigits has no min parameter).
-    local tries = 3
-    while tries > 0 and s:ready() do
-      local pt = interp(s, node.prompt_text)
-      if pt ~= "" then speak(s, pt) end
-      local d = s:getDigits(max_d, terms, timeout) or ""
-      if d == "" then break end
-      if #d >= min_d then digits = d; break end
-      tries = tries - 1
-      if tries > 0 then speak(s, "Please enter at least " .. tostring(min_d) .. " digit" .. (min_d > 1 and "s" or "") .. ".") end
+
+    s:setVariable(node.variable_name or "gather_result", digits)
+
+    -- Explicit timeout route: empty string means no input was received.
+    -- Falls through to _default when no timeout branch is wired.
+    if digits == "" then
+      return br["timeout"] or br["_default"]
     end
+    -- Input received: match exact branch, then _default (catch-all), then invalid.
+    return br[digits] or br["_default"] or br["invalid"]
   end
 
-  s:setVariable(node.variable_name or "gather_result", digits)
+  -- ─────────────────────────────────────────────────────────────────────
+  -- NEW CONFIGURABLE PATH — designer set node.max_attempts. Failure reasons
+  -- are distinguished (no_input / invalid_length / invalid_option / VALID);
+  -- each reason has its own optional retry toggle and its own configured
+  -- prompt source (tts / audio / none). ZERO user-facing text is hardcoded:
+  -- every played prompt comes from node configuration via play_prompt().
+  -- ─────────────────────────────────────────────────────────────────────
+  local min_d   = node.min_digits       or 1
+  local max_d   = node.max_digits       or 1
+  local timeout = (node.timeout_seconds or 5) * 1000
+  local terms   = node.terminators or ""
+  local var     = node.variable_name or "gather_result"
 
-  -- Explicit timeout route: empty string means no input was received.
-  -- Falls through to _default when no timeout branch is wired.
-  if digits == "" then
-    return br["timeout"] or br["_default"]
+  -- R5: normalize a value read from RAW JSONB to a whole number >= 1. This is
+  -- DEFENSIVE handling for malformed graph JSON only (fractions floored, <1 and
+  -- non-numeric coerced to 1) — it is NOT a product default. Zod/publish
+  -- validation remains authoritative for normal published flows (int 1-10).
+  -- The legacy gate above is on ABSENCE of max_attempts, so this runs only when
+  -- max_attempts was explicitly provided.
+  local max_att = math.floor(tonumber(node.max_attempts) or 1)
+  if max_att < 1 then max_att = 1 end
+
+  -- Retry policy — configuration-driven; nil-safe defaults because raw JSONB
+  -- config is read at call time (Zod defaults are not persisted). Accepts a
+  -- boolean true/false or the string "yes"/"no" from the designer.
+  local retry_ni = node.retry_on_no_input
+  if retry_ni == nil then retry_ni = true else retry_ni = (retry_ni == true or retry_ni == "yes") end
+  local retry_il = node.retry_on_invalid_length
+  if retry_il == nil then retry_il = true else retry_il = (retry_il == true or retry_il == "yes") end
+  local retry_io = node.retry_on_invalid_option
+  if retry_io == nil then retry_io = false else retry_io = (retry_io == true or retry_io == "yes") end
+
+  local retry_src, retry_url, retry_text
+  local attempt = 0
+
+  while attempt < max_att and s:ready() do
+    attempt = attempt + 1
+
+    -- Attempt 1 plays the initial prompt; later attempts play the retry prompt
+    -- chosen (by failure reason) at the end of the previous attempt.
+    local psrc, purl, ptext
+    if attempt == 1 then
+      psrc, purl, ptext = node.prompt_source_type, node.prompt_audio_url, node.prompt_text
+    else
+      psrc, purl, ptext = retry_src, retry_url, retry_text
+    end
+
+    -- A prompt (playback) failure is NOT a caller-input failure: log it and
+    -- still collect input. It must not consume the input attempt on its own.
+    local played = play_prompt(s, psrc, purl, ptext)
+    if not played then
+      freeswitch.consoleLog("WARN", "[ivr_executor] gather: prompt playback failed on attempt " .. attempt .. "/" .. max_att .. " (var=" .. var .. ") — collecting input anyway; NOT counted as no_input\\n")
+    end
+
+    -- Single-attempt collection so each failure reason is classifiable.
+    -- getDigits returns "" on no input; a shorter-than-min result is incomplete.
+    local d = s:getDigits(max_d, terms, timeout) or ""
+    s:setVariable(var, d)
+
+    local reason
+    if d == "" then
+      reason = "no_input"
+    elseif #d < min_d then
+      reason = "invalid_length"
+    else
+      -- Complete, well-formed entry: VALID if it maps to a branch/_default.
+      local target = br[d] or br["_default"]
+      if target then
+        freeswitch.consoleLog("INFO", "[ivr_executor] gather: var=" .. var .. " attempt=" .. attempt .. "/" .. max_att .. " reason=VALID\\n")
+        return target
+      end
+      reason = "invalid_option"
+    end
+
+    freeswitch.consoleLog("INFO", "[ivr_executor] gather: var=" .. var .. " attempt=" .. attempt .. "/" .. max_att .. " reason=" .. reason .. "\\n")
+
+    local do_retry
+    if reason == "no_input" then do_retry = retry_ni
+    elseif reason == "invalid_length" then do_retry = retry_il
+    else do_retry = retry_io end
+
+    if not do_retry then
+      -- Route immediately on this reason (reserved key, then legacy fallbacks).
+      return br[reason] or br["_default"] or br["timeout"] or br["invalid"]
+    end
+
+    -- Prepare the reason-specific retry prompt for the NEXT attempt.
+    retry_src  = node[reason .. "_source_type"]
+    retry_url  = node[reason .. "_audio_url"]
+    retry_text = node[reason .. "_text"]
   end
-  -- Input received: match exact branch, then _default (catch-all), then invalid.
-  return br[digits] or br["_default"] or br["invalid"]
+
+  -- Attempts exhausted — optional configured terminal prompt, then terminal branch.
+  play_prompt(s, node.max_attempts_exceeded_source_type,
+                 node.max_attempts_exceeded_audio_url,
+                 node.max_attempts_exceeded_text)
+  freeswitch.consoleLog("INFO", "[ivr_executor] gather: attempts exhausted (" .. max_att .. ") var=" .. var .. "\\n")
+  return br["max_attempts_exceeded"] or br["timeout"] or br["_default"]
 end`,
     apiEndpoint: null,
   },

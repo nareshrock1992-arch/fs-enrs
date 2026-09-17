@@ -74,7 +74,8 @@ async function runStep(report, name, fn) {
 
 // ── Audio validation ──────────────────────────────────────────────────────────
 
-async function validateAudioFiles(graph) {
+// Exported for unit testing (R3). Internal callers use it unchanged.
+export async function validateAudioFiles(graph) {
   const issues = [];
   const nodes  = graph.nodes || {};
 
@@ -85,6 +86,13 @@ async function validateAudioFiles(graph) {
     if (node.audio_url)        uris.push({ field: 'audio_url',        uri: node.audio_url });
     if (node.play_audio_url)   uris.push({ field: 'play_audio_url',   uri: node.play_audio_url });
     if (node.prompt_audio_url) uris.push({ field: 'prompt_audio_url', uri: node.prompt_audio_url });
+    // R3 — configurable Gather retry-prompt slots (present only on new-mode
+    // gather nodes). Reuses the same /media/ existence check as above; only
+    // fields actually present in the graph are inspected.
+    if (node.no_input_audio_url)              uris.push({ field: 'no_input_audio_url',              uri: node.no_input_audio_url });
+    if (node.invalid_length_audio_url)        uris.push({ field: 'invalid_length_audio_url',        uri: node.invalid_length_audio_url });
+    if (node.invalid_option_audio_url)        uris.push({ field: 'invalid_option_audio_url',        uri: node.invalid_option_audio_url });
+    if (node.max_attempts_exceeded_audio_url) uris.push({ field: 'max_attempts_exceeded_audio_url', uri: node.max_attempts_exceeded_audio_url });
 
     for (const { field, uri } of uris) {
       if (!uri.startsWith('/media/')) continue;
