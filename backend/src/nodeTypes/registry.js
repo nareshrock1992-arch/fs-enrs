@@ -1008,6 +1008,86 @@ end`,
     apiEndpoint: null,
   },
 
+  {
+    type: 'rest_api',
+    label: 'REST API',
+    icon: '🔌',
+    bg: '#12303b', border: '#2a6c7c', color: '#7fdbe8',
+    category: 'Integrations',
+    description: 'Call an external REST API (synchronous) and branch on the result',
+    ports: 'branches',
+    summaryTemplate: '${method} ${url}',
+    configSchema: [
+      {
+        key: 'method', label: 'HTTP Method', fieldType: 'select',
+        options: ['GET','POST','PUT','PATCH','DELETE'].map(m => ({ value: m, label: m })),
+        hint: 'Request method.',
+      },
+      { key: 'url', label: 'URL', fieldType: 'mono_text', required: true, placeholder: 'https://api.example.com/accounts/${caller_id_number}', hint: 'Supports ${variables}.' },
+      {
+        key: 'auth_type', label: 'Authentication', fieldType: 'select',
+        options: [
+          { value: 'none', label: 'None' },
+          { value: 'api_key_header', label: 'API key (header)' },
+          { value: 'api_key_query', label: 'API key (query param)' },
+          { value: 'basic', label: 'Basic (user/pass)' },
+          { value: 'bearer_static', label: 'Bearer (static token)' },
+          { value: 'oauth2_client_credentials', label: 'OAuth2 client credentials' },
+        ],
+        hint: 'The secret itself lives in a backend env var — never here. See Credential Name.',
+      },
+      { key: 'credential_name', label: 'Credential Name', fieldType: 'mono_text', placeholder: 'acme', hint: 'References backend env vars IVR_CRED_<NAME>_* (e.g. IVR_CRED_ACME_KEY). Required unless Authentication is None. The raw secret is NEVER stored in the flow.' },
+      { key: 'auth_param_name', label: 'Auth header / query name', fieldType: 'mono_text', placeholder: 'X-API-Key', hint: 'For API-key auth: the header name (api_key_header) or query-param name (api_key_query).' },
+      { key: 'headers_template', label: 'Headers (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"X-Trace-Id": "${uuid}"}', hint: 'Optional JSON object of extra request headers. Values support ${variables}.' },
+      { key: 'body_template', label: 'Request body (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"account": "${caller_id_number}"}', hint: 'Optional. Sent for POST/PUT/PATCH. Supports ${variables}.' },
+      { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 15, hint: 'Hard cap so a slow external system never blocks the call. Max 15s → routes the "timeout" branch.' },
+      { key: 'response_mappings', label: 'Response mappings (JSON)', fieldType: 'textarea', placeholder: '[{"json_path":"data.balance","variable_name":"acct_balance"}]', hint: 'JSON array mapping a dot-path in the JSON response to a flow variable, usable downstream via ${variable_name} and in Condition nodes.' },
+      {
+        key: 'branches', label: 'Branches (outcome → target node)', fieldType: 'branches_map', required: true,
+        hint: 'Reserved outcome keys: success (2xx + parseable), http_error (non-2xx / config error), timeout, invalid_response (2xx but unparseable). Use _default to catch any outcome not listed.',
+      },
+    ],
+    luaHandler: `
+local function exec_rest_api(s, node)
+  local br = node.branches or {}
+  local url = interp(s, node.url) or ""
+  if url == "" then
+    freeswitch.consoleLog("ERR", "[ivr_executor] rest_api: empty url\\n")
+    return br["http_error"] or br["_default"]
+  end
+  -- Interpolate URL/headers/body from channel vars (reuses interp()). The backend
+  -- proxy holds the credential and applies auth — Lua never sees a secret.
+  local tmo = tonumber(node.timeout_seconds) or 10
+  if tmo < 1 then tmo = 1 end
+  if tmo > 15 then tmo = 15 end
+  local resp = internal_post_t("/ivr/rest-call", {
+    credential_name   = node.credential_name,
+    auth_type         = node.auth_type,
+    auth_param_name   = node.auth_param_name,
+    method            = node.method or "GET",
+    url               = url,
+    headers           = interp(s, node.headers_template or ""),
+    body              = interp(s, node.body_template or ""),
+    timeout_seconds   = tmo,
+    response_mappings = node.response_mappings,
+  }, tmo + 5)
+  if resp == nil then
+    -- Proxy unreachable or internal curl timed out. Not the external system's
+    -- fault per se, but there is no usable response — route http_error.
+    freeswitch.consoleLog("ERR", "[ivr_executor] rest_api: no response from proxy\\n")
+    return br["http_error"] or br["_default"]
+  end
+  -- Apply server-computed mappings (names → values). NEVER log the values (O-7).
+  if type(resp.vars) == "table" then
+    for k, v in pairs(resp.vars) do s:setVariable(k, tostring(v)) end
+  end
+  local outcome = resp.outcome or "http_error"
+  freeswitch.consoleLog("INFO", "[ivr_executor] rest_api: status=" .. tostring(resp.status) .. " outcome=" .. outcome .. "\\n")
+  return br[outcome] or br["_default"]
+end`,
+    apiEndpoint: null,
+  },
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Phase 5 — 3-scenario emergency flow node types.
   // Connection fields deliberately reuse the existing ref names (branches /

@@ -204,6 +204,31 @@ const WebhookNodeSchema = z.object({
   next:           nodeId,
 });
 
+// rest_api: synchronous external REST call proxied through the backend
+// (POST /internal/ivr/rest-call). The raw secret is NEVER stored here — only a
+// credential_name that references backend env vars. headers_template and
+// response_mappings are JSON-text fields parsed defensively by the proxy.
+const RestApiNodeSchema = z.object({
+  type:              z.literal('rest_api'),
+  method:            z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional().default('GET'),
+  url:               z.string().min(1).max(2048),
+  headers_template:  z.string().max(4000).optional(),
+  body_template:     z.string().max(8000).optional(),
+  auth_type:         z.enum([
+                       'none', 'api_key_header', 'api_key_query',
+                       'basic', 'bearer_static', 'oauth2_client_credentials',
+                     ]).optional().default('none'),
+  // credential_name references env vars only — no raw secret field exists here.
+  credential_name:   z.string().max(64).regex(/^[A-Za-z0-9_-]*$/, 'credential_name must be alphanumeric/underscore/hyphen').optional(),
+  auth_param_name:   z.string().max(64).optional(),
+  timeout_seconds:   z.number().int().min(1).max(15).optional().default(10),
+  response_mappings: z.string().max(4000).optional(),   // JSON array text, parsed by the proxy
+  branches:          z.record(z.string().max(24), nodeId).refine(
+                       b => Object.keys(b).length >= 1,
+                       'rest_api node requires at least one branch'
+                     ),
+});
+
 // ── Phase 5 emergency-scenario node types ─────────────────────────────────────
 // Connection fields deliberately reuse existing ref names (branches / next /
 // true_node / false_node) so refsOf() and the canvas port strategies work
@@ -303,6 +328,7 @@ export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   SetVariableNodeSchema.extend(BASE_NODE_FIELDS),   // ZodObject ✓
   TransferNodeSchema.extend(BASE_NODE_FIELDS),      // ZodObject ✓
   WebhookNodeSchema.extend(BASE_NODE_FIELDS),       // ZodObject ✓
+  RestApiNodeSchema.extend(BASE_NODE_FIELDS),        // ZodObject ✓
   ErsRingAllNodeSchema.extend(BASE_NODE_FIELDS),        // ZodObject ✓
   ErsOverflowCheckNodeSchema.extend(BASE_NODE_FIELDS),  // ZodObject ✓  (refine is on the branches field)
   ErsOverflowWaitNodeSchema.extend(BASE_NODE_FIELDS),   // ZodObject ✓
@@ -352,6 +378,15 @@ export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
       if (st === 'tts' && (!node[`${slot}_text`] || String(node[`${slot}_text`]).trim() === '')) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${slot}_source_type=tts requires ${slot}_text` });
       }
+    }
+  }
+  if (node.type === 'rest_api') {
+    const at = node.auth_type ?? 'none';
+    if (at !== 'none' && (!node.credential_name || node.credential_name.trim() === '')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `auth_type "${at}" requires credential_name (references backend env vars; never the raw secret)` });
+    }
+    if ((at === 'api_key_header' || at === 'api_key_query') && (!node.auth_param_name || node.auth_param_name.trim() === '')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `auth_type "${at}" requires auth_param_name (the header or query-param name for the API key)` });
     }
   }
   if (node.type === 'play') {

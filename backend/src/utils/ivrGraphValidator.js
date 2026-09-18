@@ -267,6 +267,25 @@ export async function validateGraph(graph, tenantId) {
       }
     }
 
+    // REST API: same predicate as gather — warn only when an outcome's real
+    // fallback chain (outcome → _default) bottoms out at nil (silent hangup),
+    // not merely because an individual outcome key is unset while _default exists.
+    if (node.type === 'rest_api') {
+      const br  = node.branches || {};
+      const has = k => !!br[k];
+      const unguarded = [];
+      for (const outcome of ['success', 'http_error', 'timeout', 'invalid_response']) {
+        if (!has(outcome) && !has('_default')) unguarded.push(outcome);
+      }
+      if (unguarded.length > 0) {
+        warnings.push(
+          `Node "${nid}" (REST API): no catch-all for ${unguarded.join(', ')} — a call reaching ` +
+          `${unguarded.length > 1 ? 'these outcomes' : 'this outcome'} will be silently disconnected. ` +
+          `Wire a "_default" branch (covers all outcomes), or the specific ${unguarded.join(' / ')} branch.`
+        );
+      }
+    }
+
   }
 
   // Mixed ERS node types — legacy ers + ers_ring_all in same flow is confusing.
