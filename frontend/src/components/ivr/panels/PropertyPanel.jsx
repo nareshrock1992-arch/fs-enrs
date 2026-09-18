@@ -411,42 +411,67 @@ function MediaPickerField({ value, onChange }) {
 // 'branches_map' rather than a per-type component.
 function BranchesMapField({ node, onUpdate, nodes, byType }) {
   const branches = node.branches || {};
-  const branchKeys = Object.keys(branches);
+  // Node types can declare fixed outcome keys (e.g. rest_api). When present, the
+  // editor offers those keys BY NAME instead of gather's numeric digit keys.
+  const declared = Array.isArray(byType?.[node.type]?.branchKeys) ? byType[node.type].branchKeys : [];
+  const fixedMode = declared.length > 0;
 
   const updateBranch = (k, v) => onUpdate(node.id, { branches: { ...branches, [k]: v } });
-  const addBranch = () => {
-    const next = String(branchKeys.filter(k => !['timeout','invalid','_default'].includes(k)).length + 1);
-    onUpdate(node.id, { branches: { ...branches, [next]: '' } });
-  };
   const removeBranch = (k) => {
     const { [k]: _removed, ...rest } = branches;
     onUpdate(node.id, { branches: rest });
   };
 
+  const Row = ({ k, removable }) => (
+    <div key={k} className="flex gap-1.5 items-center">
+      <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-28 text-center shrink-0 truncate" title={k}>
+        {k}
+      </span>
+      <div className="flex-1">
+        <NodePicker
+          value={branches[k] || ''}
+          onChange={v => updateBranch(k, v)}
+          nodes={nodes}
+          excludeId={node.id}
+          placeholder="Select target node…"
+          byType={byType}
+        />
+      </div>
+      {removable && (
+        <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
+          <Trash2 size={11} />
+        </button>
+      )}
+    </div>
+  );
+
+  if (fixedMode) {
+    // Extra keys present in the data but not declared and not _default (e.g. a
+    // stray "1" left over from before this node had named ports) — show them so
+    // the author can see and remove them.
+    const extraKeys = Object.keys(branches).filter(k => !declared.includes(k) && k !== '_default');
+    return (
+      <div className="space-y-1.5">
+        {declared.map(k => <Row key={k} k={k} removable={false} />)}
+        {extraKeys.map(k => <Row key={k} k={k} removable={true} />)}
+        <Row key="_default" k="_default" removable={false} />
+        <p className="text-[9px] text-text-muted opacity-70 mt-1">
+          Wire each outcome to the node it should route to. Unwired outcomes fall back to
+          <span className="font-mono"> _default</span>; if that is also unwired the call ends.
+        </p>
+      </div>
+    );
+  }
+
+  // Free-form (gather) mode — numeric digit keys + gather's reserved keys.
+  const branchKeys = Object.keys(branches);
+  const addBranch = () => {
+    const next = String(branchKeys.filter(k => !['timeout','invalid','_default'].includes(k)).length + 1);
+    onUpdate(node.id, { branches: { ...branches, [next]: '' } });
+  };
   return (
     <div className="space-y-1.5">
-      {branchKeys.map(k => (
-        <div key={k} className="flex gap-1.5 items-center">
-          <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-16 text-center shrink-0">
-            {k}
-          </span>
-          <div className="flex-1">
-            <NodePicker
-              value={branches[k]}
-              onChange={v => updateBranch(k, v)}
-              nodes={nodes}
-              excludeId={node.id}
-              placeholder="Select target node…"
-              byType={byType}
-            />
-          </div>
-          {!['timeout','invalid','_default'].includes(k) && (
-            <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
-              <Trash2 size={11} />
-            </button>
-          )}
-        </div>
-      ))}
+      {branchKeys.map(k => <Row key={k} k={k} removable={!['timeout','invalid','_default'].includes(k)} />)}
       <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
         + Add digit branch
       </button>

@@ -1016,6 +1016,11 @@ end`,
     category: 'Integrations',
     description: 'Call an external REST API (synchronous) and branch on the result',
     ports: 'branches',
+    // Fixed outcome branch keys (machine-readable, consumed by the canvas port
+    // renderer + the branches editor). Unlike gather's free-form digit keys,
+    // these are the exact keys exec_rest_api routes on, so the UI must offer
+    // them by name rather than generating numeric keys.
+    branchKeys: ['success', 'http_error', 'timeout', 'invalid_response'],
     summaryTemplate: '${method} ${url}',
     configSchema: [
       {
@@ -1537,6 +1542,6 @@ export function getNodeType(type) {
 
 // Public shape for the frontend — never leak Lua handler source over the API.
 export function publicNodeTypes() {
-  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote, summaryTemplate }) =>
-    ({ type, label, icon, bg, border, color, category, description, ports, configSchema, footnote, summaryTemplate }));
+  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate }) =>
+    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate }));
 }

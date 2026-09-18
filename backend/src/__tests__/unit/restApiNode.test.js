@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { generateIvrExecutorLua } from '../../utils/luaGenerator.js';
 import { AnyNodeSchema } from '../../validators/ivrValidator.js';
 import { validateGraph } from '../../utils/ivrGraphValidator.js';
+import { getNodeType, publicNodeTypes } from '../../nodeTypes/registry.js';
 
 const lua = generateIvrExecutorLua({ apiBase: 'http://x', apiKey: 'k', piperUrl: 'http://p' });
 
@@ -79,6 +80,22 @@ describe('Zod — RestApiNodeSchema', () => {
   it('bounds timeout at 15s', () => {
     expect(AnyNodeSchema.safeParse({ ...base, timeout_seconds: 15 }).success).toBe(true);
     expect(AnyNodeSchema.safeParse({ ...base, timeout_seconds: 16 }).success).toBe(false);
+  });
+});
+
+describe('branchKeys — declared fixed outcome ports exposed to the frontend', () => {
+  it('rest_api declares its four outcome keys in the registry', () => {
+    expect(getNodeType('rest_api').branchKeys).toEqual(
+      ['success', 'http_error', 'timeout', 'invalid_response'],
+    );
+  });
+  it('publicNodeTypes() exposes branchKeys for rest_api (canvas can read it)', () => {
+    const pub = publicNodeTypes().find(n => n.type === 'rest_api');
+    expect(pub).toBeTruthy();
+    expect(pub.branchKeys).toEqual(['success', 'http_error', 'timeout', 'invalid_response']);
+  });
+  it('gather declares NO fixed branchKeys (keeps free-form digit behavior)', () => {
+    expect(getNodeType('gather').branchKeys).toBeUndefined();
   });
 });
 

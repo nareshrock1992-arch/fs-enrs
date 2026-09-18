@@ -46,7 +46,7 @@ export default function FlowNode({
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
-  const ports = getPortsForNode(node, cfg.ports);
+  const ports = getPortsForNode(node, cfg.ports, cfg.branchKeys);
   const nodeRef   = useRef(null);
   const startPos  = useRef({ x: node.x, y: node.y });
   const [isDragging, setIsDragging] = useState(false);

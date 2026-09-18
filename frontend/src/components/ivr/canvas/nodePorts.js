@@ -12,15 +12,22 @@
  * header comment for the full strategy list and why it's a small closed
  * set rather than fully free-form per-node-type port specs.
  */
-export function getPortsForNode(node, portsStrategy) {
+export function getPortsForNode(node, portsStrategy, branchKeys) {
   switch (portsStrategy) {
     case 'next':
       return [{ key: 'next', label: 'next' }];
     case 'next_optional':
       return node.next ? [{ key: 'next', label: 'next' }] : [];
     case 'branches': {
-      const branches = node.branches || {};
-      return Object.keys(branches).map(k => ({ key: k, label: k }));
+      const existing = Object.keys(node.branches || {});
+      // Node types that declare fixed outcome keys (e.g. rest_api:
+      // success/http_error/timeout/invalid_response) always show those ports —
+      // even before they are wired — so authors can connect them by name.
+      // Free-form nodes (gather digit menus) declare none and keep the existing
+      // data-driven behavior. Declared keys first, then any extra author keys.
+      const declared = Array.isArray(branchKeys) ? branchKeys : [];
+      const keys = [...declared, ...existing.filter(k => !declared.includes(k))];
+      return keys.map(k => ({ key: k, label: k }));
     }
     case 'goto_target':
       return [{ key: 'goto', label: 'target' }];
@@ -36,6 +43,6 @@ export function getPortsForNode(node, portsStrategy) {
 }
 
 /** Just the keys — the shape FlowCanvas.jsx's positioning math wants. */
-export function getPortKeysForNode(node, portsStrategy) {
-  return getPortsForNode(node, portsStrategy).map(p => p.key);
+export function getPortKeysForNode(node, portsStrategy, branchKeys) {
+  return getPortsForNode(node, portsStrategy, branchKeys).map(p => p.key);
 }

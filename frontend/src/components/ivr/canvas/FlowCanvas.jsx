@@ -143,7 +143,7 @@ export default function FlowCanvas({
   const { transform, setTransform, transformRef, cssTransform, onWheel, pan, zoomTo, reset, toCanvas } = useZoomPan();
   const { byType, nodeTypes } = useNodeTypes();
   const portKeysFor = useCallback(
-    (node) => getPortKeysForNode(node, byType[node.type]?.ports),
+    (node) => getPortKeysForNode(node, byType[node.type]?.ports, byType[node.type]?.branchKeys),
     [byType]
   );
 
