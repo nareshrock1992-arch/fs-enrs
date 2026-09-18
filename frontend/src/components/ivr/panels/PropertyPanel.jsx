@@ -95,8 +95,13 @@ function VariableInserter({ onInsert }) {
         Inserts a <code>{'${variable}'}</code> — e.g. <code>Welcome {'${caller_id_name}'}</code> → “Welcome John Smith”.
       </p>
       {open && (
-        <div className="absolute z-20 mt-1 w-full border border-surface-border rounded-lg bg-surface shadow-lg overflow-hidden">
-          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-surface-border">
+        // Anchored directly below this field's picker button (top-full/left-0),
+        // solid opaque background (bg-surface-panel — bg-surface has no DEFAULT
+        // and renders transparent), and z-30 so it sits above the field below
+        // instead of bleeding into it. Each VariableInserter has its own
+        // relative parent + open state, so instances never overlap each other.
+        <div className="absolute left-0 top-full z-30 mt-1 w-full border border-surface-border rounded-lg bg-surface-panel shadow-lg overflow-hidden">
+          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-surface-border bg-surface-panel">
             <Search size={12} className="text-text-muted shrink-0" />
             <input
               autoFocus
@@ -106,7 +111,7 @@ function VariableInserter({ onInsert }) {
               className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none"
             />
           </div>
-          <div className="max-h-56 overflow-y-auto">
+          <div className="max-h-56 overflow-y-auto bg-surface-panel">
             {list.length === 0 && (
               <div className="px-3 py-4 text-center text-[10px] text-text-muted">No variables match.</div>
             )}
