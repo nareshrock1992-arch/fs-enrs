@@ -217,6 +217,56 @@ export async function validateGraph(graph, tenantId) {
       }
     }
 
+    // Gather DTMF: warn ONLY when a reachable exit's real fallback chain
+    // genuinely bottoms out at nil (a silent hangup) — never merely because an
+    // optional reserved key is unset while _default (or another chain link)
+    // still catches it. Chains are traced from exec_gather in registry.js.
+    if (node.type === 'gather') {
+      const br  = node.branches || {};
+      const has = k => !!br[k];
+      const unguarded = [];
+
+      if (node.max_attempts !== undefined && node.max_attempts !== null) {
+        // ── Configurable model ──
+        // Exhaustion route (registry.js:414): max_attempts_exceeded → timeout → _default
+        if (!has('max_attempts_exceeded') && !has('timeout') && !has('_default')) {
+          unguarded.push('attempts-exhausted');
+        }
+        // A reason that does NOT retry routes immediately (registry.js:400):
+        //   <reason> → _default → timeout → invalid
+        // Only off-retry reasons are reachable as an immediate exit; retrying
+        // reasons fall through to the exhaustion route checked above.
+        // Retry defaults mirror the Lua: no_input=on, invalid_length=on, invalid_option=off.
+        const retryOff = (v, def) => (v === undefined || v === null)
+          ? !def                                   // unset → use default
+          : !(v === true || v === 'yes');          // explicit value
+        const reasons = [
+          ['no_input',       retryOff(node.retry_on_no_input, true)],
+          ['invalid_length', retryOff(node.retry_on_invalid_length, true)],
+          ['invalid_option', retryOff(node.retry_on_invalid_option, false)],
+        ];
+        for (const [reason, off] of reasons) {
+          if (off && !has(reason) && !has('_default') && !has('timeout') && !has('invalid')) {
+            unguarded.push(reason);
+          }
+        }
+      } else {
+        // ── Legacy model ──
+        // No-input route (registry.js:311): timeout → _default
+        if (!has('timeout') && !has('_default')) unguarded.push('no-input');
+        // Unmapped complete entry (registry.js:314): _default → invalid
+        if (!has('_default') && !has('invalid')) unguarded.push('unmatched-input');
+      }
+
+      if (unguarded.length > 0) {
+        warnings.push(
+          `Node "${nid}" (Gather DTMF): no catch-all for ${unguarded.join(', ')} — a caller reaching ` +
+          `${unguarded.length > 1 ? 'these outcomes' : 'this outcome'} will be silently disconnected. ` +
+          `Wire a "_default" branch (covers all exits), or the specific ${unguarded.join(' / ')} branch.`
+        );
+      }
+    }
+
   }
 
   // Mixed ERS node types — legacy ers + ers_ring_all in same flow is confusing.

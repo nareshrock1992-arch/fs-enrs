@@ -179,7 +179,7 @@ end`,
       },
       {
         key: 'inter_digit_timeout', label: 'Inter-digit timeout (seconds)', fieldType: 'number', min: 0, max: 30,
-        hint: 'Maximum seconds allowed between consecutive digits. Defaults to 2s. Set to 0 to use FreeSWITCH\'s built-in default. Applies to audio prompt path.',
+        hint: 'Maximum seconds allowed between consecutive digits. Defaults to 2s. Set to 0 to use FreeSWITCH\'s built-in default. Applies to the legacy audio-prompt path and the configurable-retry model; the legacy Text-to-Speech path uses a single overall timeout only.',
       },
       {
         key: 'prompt_source_type', label: 'Prompt Source', fieldType: 'select',
@@ -324,6 +324,9 @@ local function exec_gather(s, node)
   local min_d   = node.min_digits       or 1
   local max_d   = node.max_digits       or 1
   local timeout = (node.timeout_seconds or 5) * 1000
+  -- Inter-digit timeout: getDigits accepts an optional 4th arg (ms allowed
+  -- between consecutive digits). Same field/default as the legacy audio path.
+  local idt     = (node.inter_digit_timeout or 2) * 1000
   local terms   = node.terminators or ""
   local var     = node.variable_name or "gather_result"
 
@@ -370,7 +373,8 @@ local function exec_gather(s, node)
 
     -- Single-attempt collection so each failure reason is classifiable.
     -- getDigits returns "" on no input; a shorter-than-min result is incomplete.
-    local d = s:getDigits(max_d, terms, timeout) or ""
+    -- 4th arg = inter-digit timeout (ms between consecutive digits).
+    local d = s:getDigits(max_d, terms, timeout, idt) or ""
     s:setVariable(var, d)
 
     local reason

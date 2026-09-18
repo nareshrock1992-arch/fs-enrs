@@ -93,7 +93,7 @@ describe('B — new path distinguishes failure reasons', () => {
     expect(newHalf).toContain('elseif #d < min_d then');
   });
   it('does NOT collapse everything into the timeout bucket (uses getDigits per attempt)', () => {
-    expect(newHalf).toContain('local d = s:getDigits(max_d, terms, timeout) or ""');
+    expect(newHalf).toContain('local d = s:getDigits(max_d, terms, timeout, idt) or ""');
   });
 });
 
