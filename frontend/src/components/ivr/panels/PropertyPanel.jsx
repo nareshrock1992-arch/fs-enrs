@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { api } from '../../../api/client.js';
+import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -65,6 +66,101 @@ function Textarea({ value, onChange, placeholder, rows = 3 }) {
                  text-xs text-text-primary placeholder:text-text-muted focus:outline-none
                  focus:border-brand transition-colors resize-none"
     />
+  );
+}
+
+// ── Variable picker — generic to any interpolation field ─────────────────────
+// A searchable catalog (ivrVariables.js) whose entries insert the correct
+// ${name} syntax at the cursor, with a human-readable label, description, and a
+// live example so authors need no external docs.
+function VariableInserter({ onInsert }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const needle = q.trim().toLowerCase();
+  const list = needle
+    ? IVR_VARIABLES.filter(v =>
+        `${v.label} ${v.name} ${v.description} ${v.category}`.toLowerCase().includes(needle))
+    : IVR_VARIABLES;
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px]
+                   bg-brand/10 text-brand border border-brand/20 hover:bg-brand/20 transition-colors"
+      >
+        <Search size={10} /> Insert variable ▾
+      </button>
+      <p className="text-[9px] text-text-muted mt-1 opacity-70">
+        Inserts a <code>{'${variable}'}</code> — e.g. <code>Welcome {'${caller_id_name}'}</code> → “Welcome John Smith”.
+      </p>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full border border-surface-border rounded-lg bg-surface shadow-lg overflow-hidden">
+          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-surface-border">
+            <Search size={12} className="text-text-muted shrink-0" />
+            <input
+              autoFocus
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="Search variables…"
+              className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {list.length === 0 && (
+              <div className="px-3 py-4 text-center text-[10px] text-text-muted">No variables match.</div>
+            )}
+            {list.map(v => (
+              <button
+                key={v.name}
+                type="button"
+                onClick={() => { onInsert('${' + v.name + '}'); setOpen(false); setQ(''); }}
+                className="w-full text-left px-2.5 py-2 border-b border-surface-border/50 hover:bg-brand/10 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-text-primary">{v.label}</span>
+                  <code className="text-[9px] text-brand">{'${' + v.name + '}'}</code>
+                  <span className="ml-auto text-[8px] uppercase tracking-wide text-text-muted">{v.category}</span>
+                </div>
+                <div className="text-[9px] text-text-muted mt-0.5 leading-relaxed">{v.description}</div>
+                <div className="text-[9px] text-text-muted mt-0.5 opacity-70">Example: {v.example}</div>
+                <div className="text-[9px] text-amber-500/80 mt-0.5">Availability: {v.availability}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Textarea + variable picker, with cursor-aware ${var} insertion. Used for all
+// interpolation-capable (textarea) fields so personalization is available
+// everywhere, not just on one node.
+function InterpolableTextarea({ value, onChange, placeholder, rows = 3 }) {
+  const ref = useRef(null);
+  const insert = token => {
+    const el = ref.current;
+    const start = el && typeof el.selectionStart === 'number' ? el.selectionStart : null;
+    const end   = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : null;
+    const { text, caret } = insertAtCursor(value || '', start, end, token);
+    onChange(text);
+    if (el) requestAnimationFrame(() => { try { el.focus(); el.selectionStart = el.selectionEnd = caret; } catch { /* noop */ } });
+  };
+  return (
+    <div className="space-y-1.5">
+      <textarea
+        ref={ref}
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                   text-xs text-text-primary placeholder:text-text-muted focus:outline-none
+                   focus:border-brand transition-colors resize-none"
+      />
+      <VariableInserter onInsert={insert} />
+    </div>
   );
 }
 
@@ -384,7 +480,10 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
   let control;
   switch (fieldDef.fieldType) {
     case 'textarea':
-      control = <Textarea value={value} onChange={set} placeholder={placeholder} />;
+      // Textarea fields are the interpolation-capable prompt fields (say text,
+      // fallback_text, gather/hold prompts, goodbye, webhook body). Render the
+      // variable picker alongside them, generically.
+      control = <InterpolableTextarea value={value} onChange={set} placeholder={placeholder} />;
       break;
     case 'number':
       control = <NumberInput value={value} onChange={set} min={fieldDef.min} max={fieldDef.max} />;

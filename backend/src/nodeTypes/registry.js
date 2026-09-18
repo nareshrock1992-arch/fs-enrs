@@ -110,6 +110,11 @@ end`,
     summaryTemplate: '"${text}"',
     configSchema: [
       { key: 'text', label: 'Text to speak', fieldType: 'textarea', required: true, placeholder: 'Please press 1 for emergency…' },
+      {
+        key: 'fallback_text', label: 'Fallback text (when a variable is missing)', fieldType: 'textarea',
+        placeholder: 'Welcome to Yasref IT Helpdesk.',
+        hint: 'Spoken instead of the main text when a ${variable} it references has no usable value (empty, or a carrier token like "anonymous", "unknown", "private number", "caller id blocked"). Leave blank to always speak the main text.',
+      },
       { key: 'language', label: 'Language', fieldType: 'select', options: ['en-US','en-AU','en-GB','es-ES','fr-FR','de-DE'].map(l => ({ value: l, label: l })) },
       { key: 'voice', label: 'Voice (optional)', fieldType: 'text', placeholder: 'Joanna' },
       {
@@ -120,7 +125,17 @@ end`,
     ],
     luaHandler: `
 local function exec_say(s, node)
-  speak(s, interp(s, node.text), node.sentence_silence_ms)
+  -- Legacy path: unchanged behavior when no fallback_text is configured.
+  if node.fallback_text == nil or node.fallback_text == "" then
+    speak(s, interp(s, node.text), node.sentence_silence_ms)
+    return node.next
+  end
+  -- New path: personalize with graceful fallback when a referenced variable
+  -- (e.g. caller_id_name) has no usable value. Logs referenced var NAMES and a
+  -- fallback-used flag only — never the resolved value (governance O-7).
+  local text, used_fallback = render_with_fallback(s, node.text, node.fallback_text)
+  freeswitch.consoleLog("INFO", "[ivr_executor] say: vars=" .. vars_referenced(node.text) .. " fallback_used=" .. tostring(used_fallback) .. "\\n")
+  speak(s, text, node.sentence_silence_ms)
   return node.next
 end`,
     apiEndpoint: null,

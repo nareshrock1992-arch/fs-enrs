@@ -31,6 +31,9 @@ const PlayNodeSchema = z.object({
 const SayNodeSchema = z.object({
   type:     z.literal('say'),
   text:     z.string().min(1).max(1000),
+  // Optional spoken fallback used when a ${variable} in `text` has no usable
+  // value at runtime (empty/garbage). Cosmetic personalization only.
+  fallback_text: z.string().max(1000).optional(),
   next:     nodeId,
   language: z.string().max(10).optional().default('en-US'),
   voice:    z.string().max(64).optional(),
