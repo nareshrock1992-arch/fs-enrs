@@ -100,9 +100,9 @@ export async function applyAuth({ auth_type, credential_name, auth_param_name, u
       return { ok: true, url };
     }
     case 'oauth2_client_credentials': {
-      const token = await getOAuth2Token(credential_name, doFetch);
-      if (!token) return { ok: false, error: 'credential_unresolved' };
-      headers['Authorization'] = 'Bearer ' + token;
+      const r = await getOAuth2Token(credential_name, doFetch);
+      if (!r.token) return { ok: false, error: r.error || 'credential_unresolved' };
+      headers['Authorization'] = 'Bearer ' + r.token;
       return { ok: true, url };
     }
     default:
@@ -110,22 +110,36 @@ export async function applyAuth({ auth_type, credential_name, auth_param_name, u
   }
 }
 
+// OAuth2 token endpoints get a short, dedicated timeout — a token exchange
+// should be quick and does not need the full external-call budget. Overridable
+// via env for ops/testing. Default 5s.
+function oauthTokenTimeoutMs() {
+  return Number(process.env.IVR_OAUTH_TOKEN_TIMEOUT_MS) || 5000;
+}
+
 // OAuth2 client-credentials token, cached per credential_name until ~expiry.
+// Returns { token } on success or { error } on failure so the caller can
+// distinguish a token-endpoint timeout ("oauth2_token_timeout") from a missing/
+// misconfigured credential ("credential_unresolved").
 export async function getOAuth2Token(credential_name, fetchImpl) {
   const now = Date.now();
   const cached = _oauthTokenCache.get(credential_name);
-  if (cached && cached.expiresAt > now + 5000) return cached.token;
+  if (cached && cached.expiresAt > now + 5000) return { token: cached.token };
 
   const clientId     = credEnv(credential_name, 'CLIENT_ID');
   const clientSecret = credEnv(credential_name, 'CLIENT_SECRET');
   const tokenUrl     = credEnv(credential_name, 'TOKEN_URL');
   const scope        = credEnv(credential_name, 'SCOPE');
-  if (!clientId || !clientSecret || !tokenUrl) return null;
+  if (!clientId || !clientSecret || !tokenUrl) return { error: 'credential_unresolved' };
 
   const form = new URLSearchParams({ grant_type: 'client_credentials' });
   if (scope) form.set('scope', scope);
 
   const doFetch = fetchImpl || fetch;
+  // Bound the token fetch with its own AbortController (same pattern as the main
+  // external call) so a hung token endpoint can never block indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), oauthTokenTimeoutMs());
   let res;
   try {
     res = await doFetch(tokenUrl, {
@@ -135,18 +149,24 @@ export async function getOAuth2Token(credential_name, fetchImpl) {
         'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
       },
       body: form.toString(),
+      signal: controller.signal,
     });
-  } catch {
-    return null;
+  } catch (err) {
+    clearTimeout(timer);
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+      return { error: 'oauth2_token_timeout' };
+    }
+    return { error: 'credential_unresolved' };
   }
-  if (!res || !res.ok) return null;
+  clearTimeout(timer);
+  if (!res || !res.ok) return { error: 'credential_unresolved' };
   let json;
-  try { json = await res.json(); } catch { return null; }
+  try { json = await res.json(); } catch { return { error: 'credential_unresolved' }; }
   const token = json && json.access_token;
-  if (!token) return null;
+  if (!token) return { error: 'credential_unresolved' };
   const ttlMs = ((json.expires_in && Number(json.expires_in)) || 3600) * 1000;
   _oauthTokenCache.set(credential_name, { token, expiresAt: now + ttlMs });
-  return token;
+  return { token };
 }
 
 // Core logic, separated from the Express wrapper for unit testing.
@@ -249,10 +269,11 @@ export const restCall = asyncHandler(async (req, res) => {
   // failure — but it must be DISTINGUISHABLE in logs. Log those at WARN with an
   // explicit message + reason; genuine external outcomes stay at INFO.
   const isConfigError = result.error === 'credential_unresolved'
+    || result.error === 'oauth2_token_timeout'
     || result.error === 'unsupported_auth_type'
     || result.error === 'bad_request';
   if (isConfigError) {
-    logger?.warn?.(fields, `IVR rest_api call — credential/config error: ${result.error} (branch=${result.outcome})`);
+    logger?.warn?.(fields, `IVR rest_api call — auth/config error: ${result.error} (branch=${result.outcome})`);
   } else {
     logger?.info?.(fields, 'IVR rest_api proxy call');
   }

@@ -27,8 +27,19 @@ const CRED_KEYS = [
 ];
 beforeEach(() => {
   for (const k of CRED_KEYS) delete process.env[k];
+  delete process.env.IVR_OAUTH_TOKEN_TIMEOUT_MS;
   _oauthTokenCache.clear();
   vi.clearAllMocks();
+});
+
+// A token endpoint that never responds but honors AbortController.
+const hangingFetch = (url, opts) => new Promise((_, reject) => {
+  const sig = opts && opts.signal;
+  const fail = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); };
+  if (sig) {
+    if (sig.aborted) return fail();
+    sig.addEventListener('abort', fail);
+  }
 });
 
 describe('getByPath', () => {
@@ -97,15 +108,63 @@ describe('OAuth2 client-credentials + token caching', () => {
     const fetchImpl = vi.fn(async () => mockRes(200, undefined, { access_token: 'abc', expires_in: 3600 }));
     const t1 = await getOAuth2Token('acme', fetchImpl);
     const t2 = await getOAuth2Token('acme', fetchImpl);
-    expect(t1).toBe('abc');
-    expect(t2).toBe('abc');
+    expect(t1.token).toBe('abc');
+    expect(t2.token).toBe('abc');
     expect(fetchImpl).toHaveBeenCalledTimes(1);   // cached on the second call
   });
 
-  it('returns null when OAuth2 env is incomplete', async () => {
+  it('returns credential_unresolved when OAuth2 env is incomplete', async () => {
     process.env.IVR_CRED_ACME_CLIENT_ID = 'cid';  // missing secret + token_url
-    const t = await getOAuth2Token('acme', vi.fn());
-    expect(t).toBeNull();
+    const r = await getOAuth2Token('acme', vi.fn());
+    expect(r.error).toBe('credential_unresolved');
+  });
+});
+
+describe('OAuth2 token-fetch timeout hardening', () => {
+  const setOAuthEnv = () => {
+    process.env.IVR_CRED_ACME_CLIENT_ID = 'cid';
+    process.env.IVR_CRED_ACME_CLIENT_SECRET = 'csec';
+    process.env.IVR_CRED_ACME_TOKEN_URL = 'https://auth/token';
+    process.env.IVR_OAUTH_TOKEN_TIMEOUT_MS = '20';   // tiny bound so the test is fast
+  };
+
+  it('getOAuth2Token aborts a hung token endpoint (bounded, does not hang)', async () => {
+    setOAuthEnv();
+    const r = await getOAuth2Token('acme', hangingFetch);
+    expect(r.error).toBe('oauth2_token_timeout');
+    expect(r.token).toBeUndefined();
+  });
+
+  it('performRestCall surfaces oauth2_token_timeout → http_error (never conflated with credential_unresolved)', async () => {
+    setOAuthEnv();
+    const r = await performRestCall(
+      { method: 'GET', url: 'https://api.x', auth_type: 'oauth2_client_credentials', credential_name: 'acme' },
+      hangingFetch,
+    );
+    expect(r.outcome).toBe('http_error');
+    expect(r.error).toBe('oauth2_token_timeout');
+    expect(r.error).not.toBe('credential_unresolved');
+    expect(r.error).not.toBe('network_error');
+  });
+
+  it('restCall logs a token timeout at WARN with reason "oauth2_token_timeout", distinct from other failures', async () => {
+    setOAuthEnv();
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = hangingFetch;   // restCall uses global fetch (no injection)
+    try {
+      const req = { body: { method: 'GET', url: 'https://api.x/acct', auth_type: 'oauth2_client_credentials', credential_name: 'acme' } };
+      const res = { json: vi.fn() };
+      await restCall(req, res, vi.fn());
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'http_error' }));
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.info).not.toHaveBeenCalled();
+      const [fields, msg] = logger.warn.mock.calls[0];
+      expect(fields.error).toBe('oauth2_token_timeout');
+      expect(fields.error).not.toBe('credential_unresolved');   // distinguishable
+      expect(msg).toContain('oauth2_token_timeout');
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });
 
