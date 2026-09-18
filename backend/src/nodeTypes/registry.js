@@ -1021,14 +1021,23 @@ end`,
     // these are the exact keys exec_rest_api routes on, so the UI must offer
     // them by name rather than generating numeric keys.
     branchKeys: ['success', 'http_error', 'timeout', 'invalid_response'],
+    // Worked end-to-end example shown at the top of the panel (Parts 2/3 UX).
+    panelIntro:
+      'Example: GET https://api.example.com/users/${caller_id_number}\n'
+      + '→ map response "name" to acct_name\n'
+      + '→ wire the "success" branch to a Say node: "Welcome ${acct_name}".\n'
+      + 'The secret never goes here — set Credential Name + backend env vars.',
     summaryTemplate: '${method} ${url}',
     configSchema: [
       {
         key: 'method', label: 'HTTP Method', fieldType: 'select',
         options: ['GET','POST','PUT','PATCH','DELETE'].map(m => ({ value: m, label: m })),
         hint: 'Request method.',
+        example: 'GET for lookups (balance, ticket status); POST/PUT/PATCH when you send a body (create ticket, reset PIN).',
       },
-      { key: 'url', label: 'URL', fieldType: 'mono_text', required: true, placeholder: 'https://api.example.com/accounts/${caller_id_number}', hint: 'Supports ${variables}.' },
+      { key: 'url', label: 'URL', fieldType: 'mono_text', required: true, placeholder: 'https://api.example.com/accounts/${caller_id_number}',
+        hint: 'Supports ${variables}.',
+        example: 'https://api.example.com/accounts/${caller_id_number}\n→ at call time becomes .../accounts/447700900123' },
       {
         key: 'auth_type', label: 'Authentication', fieldType: 'select',
         options: [
@@ -1040,16 +1049,30 @@ end`,
           { value: 'oauth2_client_credentials', label: 'OAuth2 client credentials' },
         ],
         hint: 'The secret itself lives in a backend env var — never here. See Credential Name.',
+        example: 'api_key_header → sends a header like X-API-Key: <secret>\napi_key_query → adds ?apikey=<secret>\nbasic → Authorization: Basic <user:pass>\nbearer_static → Authorization: Bearer <token>\noauth2_client_credentials → backend fetches + caches a token, then Bearer <token>',
       },
-      { key: 'credential_name', label: 'Credential Name', fieldType: 'mono_text', placeholder: 'acme', hint: 'References backend env vars IVR_CRED_<NAME>_* (e.g. IVR_CRED_ACME_KEY). Required unless Authentication is None. The raw secret is NEVER stored in the flow.' },
-      { key: 'auth_param_name', label: 'Auth header / query name', fieldType: 'mono_text', placeholder: 'X-API-Key', hint: 'For API-key auth: the header name (api_key_header) or query-param name (api_key_query).' },
-      { key: 'headers_template', label: 'Headers (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"X-Trace-Id": "${uuid}"}', hint: 'Optional JSON object of extra request headers. Values support ${variables}.' },
-      { key: 'body_template', label: 'Request body (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"account": "${caller_id_number}"}', hint: 'Optional. Sent for POST/PUT/PATCH. Supports ${variables}.' },
-      { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 15, hint: 'Hard cap so a slow external system never blocks the call. Max 15s → routes the "timeout" branch.' },
-      { key: 'response_mappings', label: 'Response mappings (JSON)', fieldType: 'textarea', placeholder: '[{"json_path":"data.balance","variable_name":"acct_balance"}]', hint: 'JSON array mapping a dot-path in the JSON response to a flow variable, usable downstream via ${variable_name} and in Condition nodes.' },
+      { key: 'credential_name', label: 'Credential Name', fieldType: 'mono_text', placeholder: 'acme',
+        hint: 'References backend env vars IVR_CRED_<NAME>_* (e.g. IVR_CRED_ACME_KEY). Required unless Authentication is None. The raw secret is NEVER stored in the flow.',
+        example: 'acme → the backend reads, by auth type:\n  api_key_*    IVR_CRED_ACME_KEY\n  basic        IVR_CRED_ACME_USER / IVR_CRED_ACME_PASS\n  bearer_static IVR_CRED_ACME_TOKEN\n  oauth2       IVR_CRED_ACME_CLIENT_ID / _CLIENT_SECRET / _TOKEN_URL (/_SCOPE)\nNever put the actual secret here.' },
+      { key: 'auth_param_name', label: 'Auth header / query name', fieldType: 'mono_text', placeholder: 'X-API-Key',
+        hint: 'For API-key auth: the header name (api_key_header) or query-param name (api_key_query).',
+        example: 'api_key_header → "X-API-Key" (sent as a request header)\napi_key_query → "apikey" (added as ?apikey=<secret>)' },
+      { key: 'headers_template', label: 'Headers (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"X-Trace-Id": "${uuid}"}',
+        hint: 'Optional JSON object of extra request headers. Values support ${variables}.',
+        example: '{\n  "X-Trace-Id": "${uuid}",\n  "Accept": "application/json"\n}' },
+      { key: 'body_template', label: 'Request body (JSON, supports ${var})', fieldType: 'textarea', placeholder: '{"account": "${caller_id_number}"}',
+        hint: 'Optional. Sent for POST/PUT/PATCH. Supports ${variables}.',
+        example: '{\n  "account": "${caller_id_number}",\n  "channel": "ivr"\n}' },
+      { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 15,
+        hint: 'Hard cap so a slow external system never blocks the call. Max 15s → routes the "timeout" branch.',
+        example: '5 is a good default. If the API takes longer than this, the node routes the "timeout" branch instead of hanging the call.' },
+      { key: 'response_mappings', label: 'Response mappings (JSON)', fieldType: 'textarea', placeholder: '[{"json_path":"data.balance","variable_name":"acct_balance"}]',
+        hint: 'JSON array mapping a dot-path in the JSON response to a flow variable, usable downstream via ${variable_name} and in Condition nodes.',
+        example: 'Response: {"data":{"balance":42,"name":"Sam"}}\nMappings:\n[\n  {"json_path":"data.balance","variable_name":"acct_balance"},\n  {"json_path":"data.name","variable_name":"acct_name"}\n]\n→ later use ${acct_balance}, ${acct_name}' },
       {
         key: 'branches', label: 'Branches (outcome → target node)', fieldType: 'branches_map', required: true,
         hint: 'Reserved outcome keys: success (2xx + parseable), http_error (non-2xx / config error), timeout, invalid_response (2xx but unparseable). Use _default to catch any outcome not listed.',
+        example: 'success → Say "Welcome ${acct_name}"\nhttp_error → Say "Sorry, we could not reach your account"\ntimeout → same as http_error, or a retry\ninvalid_response → fallback\n_default → catch-all if you don\'t wire them individually',
       },
     ],
     luaHandler: `
@@ -1542,6 +1565,6 @@ export function getNodeType(type) {
 
 // Public shape for the frontend — never leak Lua handler source over the API.
 export function publicNodeTypes() {
-  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate }) =>
-    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate }));
+  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate, panelIntro }) =>
+    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate, panelIntro }));
 }

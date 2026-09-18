@@ -15,14 +15,34 @@ import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 
 // ── Field components (presentational, type-agnostic) ─────────────────────────
 
-function Field({ label, hint, children }) {
+function Field({ label, hint, example, children }) {
+  const [showExample, setShowExample] = useState(false);
   return (
     <div className="mb-3">
-      <label className="block text-[10px] font-medium text-text-muted mb-1 uppercase tracking-wide">
-        {label}
-      </label>
+      <div className="flex items-center gap-1 mb-1">
+        <label className="block text-[10px] font-medium text-text-muted uppercase tracking-wide">
+          {label}
+        </label>
+        {example && (
+          <button
+            type="button"
+            onClick={() => setShowExample(s => !s)}
+            title="Show example"
+            aria-label="Show example"
+            className={`shrink-0 w-3.5 h-3.5 flex items-center justify-center rounded-full border text-[8px] leading-none transition-colors
+                        ${showExample ? 'border-brand text-brand' : 'border-surface-border text-text-muted hover:text-brand hover:border-brand'}`}
+          >
+            ?
+          </button>
+        )}
+      </div>
       {children}
       {hint && <p className="text-[9px] text-text-muted mt-1 opacity-70">{hint}</p>}
+      {example && showExample && (
+        <pre className="mt-1 px-2 py-1.5 rounded bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed whitespace-pre-wrap break-words font-mono">
+{example}
+        </pre>
+      )}
     </div>
   );
 }
@@ -502,6 +522,7 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
   const active = cond && node[cond.field] === cond.value;
   const label = active ? cond.label : fieldDef.label;
   const hint = active ? cond.hint : fieldDef.hint;
+  const example = active ? (cond.example ?? fieldDef.example) : fieldDef.example;
   const placeholder = active ? cond.placeholder : fieldDef.placeholder;
 
   const value = node[fieldDef.key];
@@ -552,7 +573,7 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
 
   return (
     <>
-      <Field label={label} hint={hint}>{control}</Field>
+      <Field label={label} hint={hint} example={example}>{control}</Field>
       {active && cond.infoBox && (
         <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed">
           {cond.infoBox}
@@ -618,6 +639,14 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
 
       {/* Fields — generated from configSchema */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
+        {/* Optional worked example shown at the top of the panel for field-heavy
+            node types (registry `panelIntro`) — a realistic end-to-end example
+            so a first-time author understands the whole pattern up front. */}
+        {cfg.panelIntro && (
+          <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed whitespace-pre-wrap">
+            {cfg.panelIntro}
+          </div>
+        )}
         {/* Generic base field: Description — cosmetic authoring note shown as the
             node's canvas subtitle (beneath its summary). Available on every node
             type; never read by the Lua/XML generator. */}

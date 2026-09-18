@@ -14,7 +14,14 @@ import BindNumbersModal  from '../../components/ivr/panels/BindNumbersModal.jsx'
 import ValidationErrorPanel from '../../components/ivr/panels/ValidationErrorPanel.jsx';
 
 const PALETTE_WIDTH  = 188;
-const PROPERTY_WIDTH = 220;
+// Property panel width. Default is sized for the most field-heavy node type
+// (rest_api: long labels like "invalid_response", auth fields, JSON textareas)
+// so it never starts truncated; simpler nodes (gather/say/hangup) just get a
+// little more whitespace. User-resizable within [MIN, MAX], persisted per-viewer.
+const PROPERTY_WIDTH_DEFAULT = 320;
+const PROPERTY_WIDTH_MIN     = 240;
+const PROPERTY_WIDTH_MAX     = 600;
+const PROPERTY_WIDTH_KEY     = 'ivr.propertyPanelWidth';
 
 export default function IvrBuilder() {
   const { uuid }   = useParams();
@@ -32,6 +39,36 @@ export default function IvrBuilder() {
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [graph.dirty]);
+
+  // Resizable property-panel width (persisted per-viewer; safe defaults).
+  const [propWidth, setPropWidth] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem(PROPERTY_WIDTH_KEY));
+      if (Number.isFinite(v) && v >= PROPERTY_WIDTH_MIN && v <= PROPERTY_WIDTH_MAX) return v;
+    } catch { /* ignore */ }
+    return PROPERTY_WIDTH_DEFAULT;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(PROPERTY_WIDTH_KEY, String(propWidth)); } catch { /* ignore */ }
+  }, [propWidth]);
+  const startPropResize = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = propWidth;
+    const onMove = (ev) => {
+      // Panel is right-anchored: dragging LEFT (smaller clientX) widens it.
+      const next = Math.min(PROPERTY_WIDTH_MAX, Math.max(PROPERTY_WIDTH_MIN, startW + (startX - ev.clientX)));
+      setPropWidth(next);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.userSelect = '';
+    };
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, [propWidth]);
 
   const [showHistory,   setShowHistory]   = useState(false);
   const [showBind,      setShowBind]      = useState(false);
@@ -215,9 +252,15 @@ export default function IvrBuilder() {
           {/* Zoom controls and stats are rendered by FlowCanvas */}
         </div>
 
-        {/* Right — Property Panel */}
-        <div style={{ width: PROPERTY_WIDTH, minWidth: PROPERTY_WIDTH }}
-             className="flex flex-col border-l border-surface-border bg-surface-panel overflow-hidden">
+        {/* Right — Property Panel (user-resizable) */}
+        <div style={{ width: propWidth, minWidth: propWidth }}
+             className="relative flex flex-col border-l border-surface-border bg-surface-panel overflow-hidden">
+          {/* Drag handle on the left edge — drag left to widen */}
+          <div
+            onPointerDown={startPropResize}
+            title="Drag to resize"
+            className="absolute left-0 top-0 h-full w-1.5 z-10 cursor-col-resize hover:bg-brand/40 active:bg-brand/60"
+          />
           <PropertyPanel
             node={selectedNode}
             errors={graph.errors}

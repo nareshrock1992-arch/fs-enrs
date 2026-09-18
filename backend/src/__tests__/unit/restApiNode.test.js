@@ -99,6 +99,32 @@ describe('branchKeys — declared fixed outcome ports exposed to the frontend', 
   });
 });
 
+describe('panel guidance — panelIntro + per-field example (Parts 2/3)', () => {
+  it('rest_api declares a panelIntro worked example, exposed by publicNodeTypes', () => {
+    expect(getNodeType('rest_api').panelIntro).toMatch(/Example/);
+    const pub = publicNodeTypes().find(n => n.type === 'rest_api');
+    expect(pub.panelIntro).toMatch(/Example/);
+  });
+  it('every rest_api field carries a concrete example', () => {
+    const fields = getNodeType('rest_api').configSchema;
+    for (const key of ['method', 'url', 'auth_type', 'credential_name', 'auth_param_name',
+                       'headers_template', 'body_template', 'timeout_seconds', 'response_mappings', 'branches']) {
+      const f = fields.find(x => x.key === key);
+      expect(f, `field ${key} exists`).toBeTruthy();
+      expect(typeof f.example, `field ${key} has an example`).toBe('string');
+      expect(f.example.length).toBeGreaterThan(0);
+    }
+  });
+  it('credential_name example makes the env-var convention + no-secret rule concrete', () => {
+    const f = getNodeType('rest_api').configSchema.find(x => x.key === 'credential_name');
+    expect(f.example).toMatch(/IVR_CRED_ACME_KEY/);
+    expect(f.example.toLowerCase()).toMatch(/never put the actual secret/);
+  });
+  it('simple nodes (hangup) do NOT force a panelIntro', () => {
+    expect(getNodeType('hangup').panelIntro).toBeUndefined();
+  });
+});
+
 describe('catch-all warning — real fallback chain (outcome → _default)', () => {
   const H = { type: 'hangup' };
   const gw = r => r.warnings.filter(w => w.includes('(REST API)'));
