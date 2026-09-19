@@ -149,7 +149,8 @@ end`,
     category: 'Input',
     description: 'Collect DTMF digits',
     ports: 'branches',
-    summaryTemplate: 'max ${max_digits} digit · ${timeout_seconds}s',
+    summaryTemplate: 'Collect ${max_digits} digit(s) · ${timeout_seconds}s',
+    portLabels: { timeout: 'No input', invalid: 'No match', _default: 'Any other' },
     configSchema: [
       {
         key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text',
@@ -429,6 +430,8 @@ end`,
     description: 'Branch on variable value',
     ports: 'true_false',
     summaryTemplate: '${variable} ${operator} ${expected_value}',
+    summaryResolve: { operator: 'operator' },
+    portLabels: { true: 'If true', false: 'If false' },
     configSchema: [
       { key: 'variable', label: 'Variable to check', fieldType: 'mono_text', required: true, placeholder: 'gather_result', hint: 'Session variable name (e.g. gather_result)' },
       {
@@ -565,6 +568,8 @@ end`,
     description: 'Jump to another node',
     ports: 'goto_target',
     summaryTemplate: '→ ${target_node_id}',
+    summaryResolve: { target_node_id: 'node' },
+    portLabels: { goto: 'Goes to' },
     configSchema: [
       { key: 'target_node_id', label: 'Jump to Node', fieldType: 'node_ref', required: true, hint: 'The node this Go To routes to' },
     ],
@@ -584,7 +589,8 @@ local function exec_goto(s, node)  return node.target_node_id end`,
     category: 'Emergency',
     description: 'Trigger ENS blast',
     ports: 'next_optional',
-    summaryTemplate: 'Config ${ens_configuration_id}',
+    summaryTemplate: 'ENS: ${ens_configuration_id}',
+    summaryResolve: { ens_configuration_id: 'ens_config' },
     configSchema: [
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank if using ens_config_var' },
       { key: 'ens_config_var', label: 'ENS Config Variable', fieldType: 'mono_text', placeholder: 'ens_configuration_id', hint: 'Session var holding config ID (set by condition ens_pin_valid)' },
@@ -639,7 +645,8 @@ end`,
     category: 'Emergency',
     description: 'Start ERS conference',
     ports: 'none',
-    summaryTemplate: 'Config ${ers_configuration_id}',
+    summaryTemplate: 'ERS: ${ers_configuration_id}',
+    summaryResolve: { ers_configuration_id: 'ers_config' },
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'group_type', label: 'Responder Tier', fieldType: 'select', options: [{ value: 'primary', label: 'Primary' }, { value: 'secondary', label: 'Secondary' }] },
@@ -1028,6 +1035,7 @@ end`,
       + '→ wire the "success" branch to a Say node: "Welcome ${acct_name}".\n'
       + 'The secret never goes here — set Credential Name + backend env vars.',
     summaryTemplate: '${method} ${url}',
+    portLabels: { success: 'Success', http_error: 'HTTP error', timeout: 'Timeout', invalid_response: 'Bad response' },
     configSchema: [
       {
         key: 'method', label: 'HTTP Method', fieldType: 'select',
@@ -1132,7 +1140,8 @@ end`,
     description: 'Ring every tier responder simultaneously into one conference',
     ports: 'none',
     footnote: 'Rings all tier responders in parallel (continuous re-ring until any leg answers, recording on first join, caller identity shown on every phone). If the tier already has a live-occupied room, the caller bridges straight into it instead (rejoin). Call control ends here.',
-    summaryTemplate: 'Config ${ers_configuration_id} · ${tier}',
+    summaryTemplate: 'ERS: ${ers_configuration_id} · ${tier}',
+    summaryResolve: { ers_configuration_id: 'ers_config' },
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'tier', label: 'Responder Tier', fieldType: 'select', required: true, options: [{ value: 'primary', label: 'Level 1 (Primary)' }, { value: 'secondary', label: 'Level 2 (Secondary)' }] },
@@ -1197,7 +1206,9 @@ end`,
     description: 'Route by LIVE tier occupancy: Level 1 → Level 2 → queue',
     ports: 'branches',
     footnote: 'Occupancy is judged by the LIVE conference member count via FreeSWITCH, never the incident status column — a room with members is occupied even if its DB row was marked completed, and vice versa. Branch keys: primary (Level 1 free), secondary (Level 2 free), full (both occupied).',
-    summaryTemplate: 'Config ${ers_configuration_id}',
+    summaryTemplate: 'ERS: ${ers_configuration_id}',
+    summaryResolve: { ers_configuration_id: 'ers_config' },
+    portLabels: { primary: 'Level 1 free', secondary: 'Level 2 free', full: 'Both busy' },
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       { key: 'branches', label: 'Routes (primary / secondary / full)', fieldType: 'branches_map', required: true, hint: 'primary: Level 1 free · secondary: Level 2 free · full: both occupied' },
@@ -1229,7 +1240,8 @@ end`,
     description: 'Hold in queue until a tier frees up (Level 1 priority)',
     ports: 'next',
     footnote: 'Plays the hold announcement, enqueues the caller, and polls tier occupancy (live member count). When a tier frees, the caller auto-connects with Level 1 priority. The Next Node is the FALLBACK when the wait cap is hit or the queue entry is cancelled.',
-    summaryTemplate: 'Wait ${max_wait_seconds}s · Config ${ers_configuration_id}',
+    summaryTemplate: 'Wait ${max_wait_seconds}s · ERS: ${ers_configuration_id}',
+    summaryResolve: { ers_configuration_id: 'ers_config' },
     configSchema: [
       { key: 'ers_configuration_id', label: 'ERS Configuration', fieldType: 'ers_config_ref', required: true, hint: 'Pick from your ERS configurations — the internal ID is stored automatically' },
       {
@@ -1302,7 +1314,8 @@ end`,
     description: 'PIN-gate, record a message, broadcast to all contacts',
     ports: 'next',
     footnote: 'Full blast trigger in one node: collects and verifies the PIN (3 attempts), records the initiator\'s message, and broadcasts to every contact\'s extension AND mobile number. Next Node runs after the blast is confirmed started.',
-    summaryTemplate: 'Config ${ens_configuration_id}',
+    summaryTemplate: 'ENS: ${ens_configuration_id}',
+    summaryResolve: { ens_configuration_id: 'ens_config' },
     configSchema: [
       { key: 'ens_configuration_id', label: 'ENS Configuration', fieldType: 'ens_config_ref', hint: 'Leave blank to resolve from the dialed number' },
       {
@@ -1436,7 +1449,8 @@ end`,
     description: 'Resolve ENS config from inbound number, authorize caller, play latest campaign recording',
     ports: 'branches',
     footnote: 'Routes by authorization state: active (authorized + playable campaign found — audio plays before routing), unauthorized (caller not in any campaign destination for this number), no_campaign (authorized but no campaign exists yet), expired (authorized but retention window passed). ENS configuration is resolved automatically from the dialled number via emergency_numbers — no manual config selection.',
-    summaryTemplate: 'ENS Playback',
+    summaryTemplate: 'Play latest ENS message',
+    portLabels: { active: 'Played', unauthorized: 'Not authorized', no_campaign: 'No message', expired: 'Expired' },
     configSchema: [
       { key: 'branches', label: 'Routes (active / unauthorized / no_campaign / expired)', fieldType: 'branches_map', required: true, hint: 'active: caller heard audio · unauthorized: not in campaign list · no_campaign: no blast sent yet · expired: retention window passed' },
     ],
@@ -1565,6 +1579,6 @@ export function getNodeType(type) {
 
 // Public shape for the frontend — never leak Lua handler source over the API.
 export function publicNodeTypes() {
-  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate, panelIntro }) =>
-    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, configSchema, footnote, summaryTemplate, panelIntro }));
+  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }) =>
+    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }));
 }

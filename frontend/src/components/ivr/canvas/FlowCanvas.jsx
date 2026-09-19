@@ -1,10 +1,21 @@
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { ZoomIn, ZoomOut, Maximize2, Grid, Copy, Star, Trash2 } from 'lucide-react';
 import { useZoomPan } from '../../../hooks/useZoomPan.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
-import { getPortKeysForNode } from './nodePorts.js';
+import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
+import { getPortKeysForNode, labelFor } from './nodePorts.js';
 import FlowNode, { NODE_WIDTH, NODE_HEIGHT } from './FlowNode.jsx';
 import FlowEdge, { DraftEdge } from './FlowEdge.jsx';
+
+// Human-readable Condition operators for the canvas summary (display only —
+// the stored operator token is unchanged).
+const OPERATOR_LABELS = {
+  '==': '=', '!=': '≠', gt: '>', gte: '≥', lt: '<', lte: '≤',
+  contains: 'contains', starts_with: 'starts with', ends_with: 'ends with',
+  exists: 'is set', not_exists: 'is empty',
+  ens_pin_valid: 'PIN valid', ens_callback_valid: 'callback valid',
+  time_of_day: 'time in range', day_of_week: 'day is',
+};
 
 // ── Port position relative to node top-left (canvas coords) ──────────────────
 
@@ -146,6 +157,30 @@ export default function FlowCanvas({
     (node) => getPortKeysForNode(node, byType[node.type]?.ports, byType[node.type]?.branchKeys),
     [byType]
   );
+
+  // Name resolvers for the canvas summary: config ids → config names, target
+  // node id → its nickname/label, operator token → readable text. Data already
+  // in memory; falls back to the raw value if a name isn't loaded.
+  const { options: ensOptions } = useConfigOptions('ens');
+  const { options: ersOptions } = useConfigOptions('ers');
+  const summaryResolvers = useMemo(() => {
+    const nameOf = (opts, id) => {
+      const o = (opts || []).find(x => String(x.id) === String(id));
+      return o?.name;
+    };
+    return {
+      ens_config: id => nameOf(ensOptions, id),
+      ers_config: id => nameOf(ersOptions, id),
+      node: id => nodes[id]?.nickname || byType[nodes[id]?.type]?.label || undefined,
+      operator: op => OPERATOR_LABELS[op],
+    };
+  }, [ensOptions, ersOptions, nodes, byType]);
+
+  // Friendly wire label for an edge, mirroring the port-dot labels.
+  const edgeLabelFor = useCallback((edge) => {
+    if (edge.fromPort === 'next' || edge.fromPort === 'goto') return undefined;
+    return labelFor(edge.fromPort, byType[nodes[edge.from]?.type]?.portLabels);
+  }, [byType, nodes]);
 
   const [draft,          setDraft]          = useState(null);
   const [guides,         setGuides]         = useState([]);
@@ -591,7 +626,7 @@ export default function FlowCanvas({
                 key={edge.id}
                 fromX={from.x} fromY={from.y}
                 toX={to.x}    toY={to.y}
-                label={edge.fromPort !== 'next' && edge.fromPort !== 'goto' ? edge.fromPort : undefined}
+                label={edgeLabelFor(edge)}
                 color={edgeColor(edge.fromPort)}
                 onDoubleClick={() => onDisconnect(edge.from, edge.fromPort)}
               />
@@ -634,6 +669,7 @@ export default function FlowCanvas({
             onDragStart={handleNodeDragStart}
             onDragEnd={handleNodeDragEnd}
             onContextMenu={handleContextMenu}
+            summaryResolvers={summaryResolvers}
             onPortClick={(targetId) => {
               if (draft) {
                 onConnect(draft.fromNode, draft.fromPort, targetId);

@@ -14,21 +14,35 @@
 
 // Render a node type's summaryTemplate against the node's config values.
 // Missing/empty referenced fields render as "?" (unchanged legacy behavior).
-export function renderSummaryTemplate(node, cfg) {
+//
+// `resolvers` optionally maps a field to a human-readable name. cfg.summaryResolve
+// declares which resolver a field uses, e.g. { ens_configuration_id: 'ens_config',
+// target_node_id: 'node', operator: 'operator' }. When a resolver returns a value
+// it replaces the raw id/token; otherwise the raw value is shown (graceful
+// fallback if names aren't loaded yet). This never affects the stored config.
+export function renderSummaryTemplate(node, cfg, resolvers = {}) {
   const tmpl = cfg?.summaryTemplate;
   if (!tmpl) return null;
+  const resolveMap = cfg?.summaryResolve || {};
   return tmpl.replace(/\$\{(\w+)\}/g, (_, key) => {
     const v = node?.[key];
     if (v === undefined || v === null || v === '') return '?';
+    const resolverName = resolveMap[key];
+    if (resolverName && typeof resolvers[resolverName] === 'function') {
+      const resolved = resolvers[resolverName](v);
+      if (resolved !== undefined && resolved !== null && resolved !== '') {
+        return String(resolved).slice(0, 30);
+      }
+    }
     return String(v).slice(0, 24);
   });
 }
 
 // Compute the two canvas subtitle lines for a node.
 // Returns { primary: string|null, secondary: string|null }.
-export function nodeSubtitleLines(node, cfg) {
+export function nodeSubtitleLines(node, cfg, resolvers = {}) {
   const desc = typeof node?.description === 'string' ? node.description.trim() : '';
-  const summary = renderSummaryTemplate(node, cfg);
+  const summary = renderSummaryTemplate(node, cfg, resolvers);
 
   // Go To Node: the summary is a raw target node id; a description replaces it.
   if (node?.type === 'goto' && desc) {

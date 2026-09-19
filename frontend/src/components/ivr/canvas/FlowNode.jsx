@@ -11,8 +11,8 @@ const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555
 // Canvas subtitle: the node's summary (primary) plus its optional description
 // (secondary line beneath). See nodeSubtitle.js for the exact composition rules
 // (incl. the Go To Node case where a description replaces the raw-id summary).
-function nodeSummary(node, cfg) {
-  const { primary, secondary } = nodeSubtitleLines(node, cfg);
+function nodeSummary(node, cfg, summaryResolvers) {
+  const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
   if (!primary && !secondary) return null;
   return (
     <>
@@ -43,10 +43,11 @@ export default function FlowNode({
   onDragStart,
   onDragEnd,
   onContextMenu,
+  summaryResolvers,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
-  const ports = getPortsForNode(node, cfg.ports, cfg.branchKeys);
+  const ports = getPortsForNode(node, cfg.ports, cfg.branchKeys, cfg.portLabels);
   const nodeRef   = useRef(null);
   const startPos  = useRef({ x: node.x, y: node.y });
   const [isDragging, setIsDragging] = useState(false);
@@ -165,7 +166,7 @@ export default function FlowNode({
           className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5 cursor-pointer"
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}
         >
-          {nodeSummary(node, cfg)}
+          {nodeSummary(node, cfg, summaryResolvers)}
         </div>
 
         {/* Output ports */}

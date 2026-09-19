@@ -12,7 +12,7 @@
 export default function ConnectionDot({ portKey, label, color = '#4f46e5', connected, onDragStart }) {
   return (
     <div className="flex items-center gap-1.5 mt-1" data-port={portKey}>
-      <span className="text-[9px] text-text-muted shrink-0 w-12 text-right truncate">{label}</span>
+      <span className="text-[9px] text-text-muted shrink-0 w-[88px] text-right leading-tight break-words">{label}</span>
       <div
         className="w-3 h-3 rounded-full border-2 cursor-crosshair shrink-0 transition-all hover:scale-125"
         style={{
