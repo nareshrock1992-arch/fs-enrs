@@ -426,6 +426,38 @@ function MediaPickerField({ value, onChange }) {
   );
 }
 
+// One branch/outcome row: a labeled key + a target-node <select>. Defined at
+// MODULE SCOPE (not inside BranchesMapField) so React reconciles the native
+// <select> in place across renders. When this was declared inside the parent's
+// render body its function identity changed every render, so React remounted
+// the <select> on each render — which, combined with the autosave re-renders,
+// tore down the control mid-selection and made branch/route target dropdowns
+// snap back to the placeholder (the "can't select a route" regression).
+function BranchRow({ branchKey, removable, value, nodes, excludeId, byType, onChange, onRemove }) {
+  return (
+    <div className="flex gap-1.5 items-center">
+      <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-28 text-center shrink-0 truncate" title={branchKey}>
+        {branchKey}
+      </span>
+      <div className="flex-1">
+        <NodePicker
+          value={value}
+          onChange={onChange}
+          nodes={nodes}
+          excludeId={excludeId}
+          placeholder="Select target node…"
+          byType={byType}
+        />
+      </div>
+      {removable && (
+        <button onClick={onRemove} className="text-text-muted hover:text-red-400 p-0.5">
+          <Trash2 size={11} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Gather's branch key→target editor — the one genuinely bespoke widget
 // (dynamic add/remove keys, not a fixed field), driven by fieldType
 // 'branches_map' rather than a per-type component.
@@ -441,28 +473,20 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
     const { [k]: _removed, ...rest } = branches;
     onUpdate(node.id, { branches: rest });
   };
-
-  const Row = ({ k, removable }) => (
-    <div key={k} className="flex gap-1.5 items-center">
-      <span className="text-[10px] font-mono bg-surface-hover px-1.5 py-1 rounded border border-surface-border text-text-muted w-28 text-center shrink-0 truncate" title={k}>
-        {k}
-      </span>
-      <div className="flex-1">
-        <NodePicker
-          value={branches[k] || ''}
-          onChange={v => updateBranch(k, v)}
-          nodes={nodes}
-          excludeId={node.id}
-          placeholder="Select target node…"
-          byType={byType}
-        />
-      </div>
-      {removable && (
-        <button onClick={() => removeBranch(k)} className="text-text-muted hover:text-red-400 p-0.5">
-          <Trash2 size={11} />
-        </button>
-      )}
-    </div>
+  // BranchRow is a stable, module-scope component (see below) so its native
+  // <select> reconciles in place instead of remounting every render.
+  const row = (k, removable) => (
+    <BranchRow
+      key={k}
+      branchKey={k}
+      removable={removable}
+      value={branches[k] || ''}
+      nodes={nodes}
+      excludeId={node.id}
+      byType={byType}
+      onChange={v => updateBranch(k, v)}
+      onRemove={() => removeBranch(k)}
+    />
   );
 
   if (fixedMode) {
@@ -472,9 +496,9 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
     const extraKeys = Object.keys(branches).filter(k => !declared.includes(k) && k !== '_default');
     return (
       <div className="space-y-1.5">
-        {declared.map(k => <Row key={k} k={k} removable={false} />)}
-        {extraKeys.map(k => <Row key={k} k={k} removable={true} />)}
-        <Row key="_default" k="_default" removable={false} />
+        {declared.map(k => row(k, false))}
+        {extraKeys.map(k => row(k, true))}
+        {row('_default', false)}
         <p className="text-[9px] text-text-muted opacity-70 mt-1">
           Wire each outcome to the node it should route to. Unwired outcomes fall back to
           <span className="font-mono"> _default</span>; if that is also unwired the call ends.
@@ -491,7 +515,7 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
   };
   return (
     <div className="space-y-1.5">
-      {branchKeys.map(k => <Row key={k} k={k} removable={!['timeout','invalid','_default'].includes(k)} />)}
+      {branchKeys.map(k => row(k, !['timeout','invalid','_default'].includes(k)))}
       <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
         + Add digit branch
       </button>
