@@ -149,8 +149,15 @@ end`,
     category: 'Input',
     description: 'Collect DTMF digits',
     ports: 'branches',
+    // Digit branch keys are author-defined (dynamic). These are RESERVED outcome
+    // ports shown by name so the exhaustion route can be wired without leaving the
+    // node. `digitBranches: true` tells the branch editor to KEEP the
+    // "+ Add digit branch" affordance in addition to these reserved keys — unlike
+    // rest_api, whose branchKeys are a fixed, complete set.
+    branchKeys: ['max_attempts_exceeded'],
+    digitBranches: true,
     summaryTemplate: 'Collect ${max_digits} digit(s) · ${timeout_seconds}s',
-    portLabels: { timeout: 'No input', invalid: 'No match', _default: 'Any other' },
+    portLabels: { timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts' },
     configSchema: [
       {
         key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text',
@@ -1579,6 +1586,6 @@ export function getNodeType(type) {
 
 // Public shape for the frontend — never leak Lua handler source over the API.
 export function publicNodeTypes() {
-  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }) =>
-    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }));
+  return NODE_TYPE_REGISTRY.map(({ type, label, icon, bg, border, color, category, description, ports, branchKeys, digitBranches, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }) =>
+    ({ type, label, icon, bg, border, color, category, description, ports, branchKeys, digitBranches, portLabels, summaryResolve, configSchema, footnote, summaryTemplate, panelIntro }));
 }

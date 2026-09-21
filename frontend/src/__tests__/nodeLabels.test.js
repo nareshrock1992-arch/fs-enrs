@@ -47,6 +47,17 @@ describe('getPortsForNode applies portLabels', () => {
     const ports = getPortsForNode({}, 'true_false', undefined, { true: 'If true', false: 'If false' });
     expect(ports).toEqual([{ key: 'true', label: 'If true' }, { key: 'false', label: 'If false' }]);
   });
+  it('gather HYBRID: shows author digit branches AND the reserved max_attempts_exceeded outcome', () => {
+    const ports = getPortsForNode(
+      { branches: { '1': 'a', '2': 'b', _default: 'c' } },
+      'branches',
+      ['max_attempts_exceeded'],
+      { _default: 'Any other', max_attempts_exceeded: 'Max attempts' },
+    );
+    // Declared reserved key first, then the author-defined digit/_default keys.
+    expect(ports.map(p => p.key)).toEqual(['max_attempts_exceeded', '1', '2', '_default']);
+    expect(ports[0]).toEqual({ key: 'max_attempts_exceeded', label: 'Max attempts' });
+  });
 });
 
 describe('renderSummaryTemplate — id/token resolution with graceful fallback', () => {

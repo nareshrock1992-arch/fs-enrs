@@ -45,7 +45,9 @@ const SayNodeSchema = z.object({
 // and optional variable_name so downstream condition nodes can read digits
 const GatherNodeSchema = z.object({
   type:                  z.literal('gather'),
-  branches:              z.record(z.string().max(16), nodeId).refine(
+  // Key length must admit the longest reserved outcome key
+  // ('max_attempts_exceeded' = 21 chars) alongside digit keys and _default.
+  branches:              z.record(z.string().max(24), nodeId).refine(
     b => Object.keys(b).length >= 1,
     'gather node requires at least one branch'
   ),

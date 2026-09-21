@@ -39,7 +39,9 @@ describe('summaryResolve maps (id/token → name)', () => {
 
 describe('portLabels (display only — branch keys unchanged)', () => {
   it('gather reserved keys get friendly labels', () => {
-    expect(getNodeType('gather').portLabels).toEqual({ timeout: 'No input', invalid: 'No match', _default: 'Any other' });
+    expect(getNodeType('gather').portLabels).toEqual({
+      timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts',
+    });
   });
   it('rest_api outcomes get friendly labels', () => {
     expect(getNodeType('rest_api').portLabels).toMatchObject({ http_error: 'HTTP error', invalid_response: 'Bad response' });
@@ -59,5 +61,23 @@ describe('publicNodeTypes exposes the new display fields to the frontend', () =>
     const cond   = publicNodeTypes().find(n => n.type === 'condition');
     expect(gather.portLabels).toBeTruthy();
     expect(cond.summaryResolve).toEqual({ operator: 'operator' });
+  });
+});
+
+describe('gather exposes a wireable max_attempts_exceeded outcome (in-node retry exit)', () => {
+  it('declares the reserved branch key alongside dynamic digit branches', () => {
+    const gather = getNodeType('gather');
+    expect(gather.branchKeys).toEqual(['max_attempts_exceeded']);
+    expect(gather.digitBranches).toBe(true);
+  });
+  it('publicNodeTypes surfaces branchKeys + digitBranches so the editor can render the hybrid port', () => {
+    const gather = publicNodeTypes().find(n => n.type === 'gather');
+    expect(gather.branchKeys).toEqual(['max_attempts_exceeded']);
+    expect(gather.digitBranches).toBe(true);
+  });
+  it('rest_api stays fixed-only (no dynamic digit branches)', () => {
+    const rest = publicNodeTypes().find(n => n.type === 'rest_api');
+    expect(rest.branchKeys.length).toBeGreaterThan(0);
+    expect(rest.digitBranches).toBeFalsy();
   });
 });

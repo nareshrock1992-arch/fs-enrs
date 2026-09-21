@@ -367,3 +367,30 @@ describe('J — legacy compatibility and routing invariants', () => {
     expect(gatherBlock).not.toMatch(/if\s+lang/i);
   });
 });
+
+// ── In-node retry exit: max_attempts_exceeded is publishable + read at runtime ─
+describe('max_attempts_exceeded — wireable in-node exhaustion exit', () => {
+  it('a gather wiring max_attempts_exceeded validates (branch-key length fix: 16 -> 24)', () => {
+    const node = {
+      type: 'gather',
+      max_attempts: 2,
+      variable_name: 'menu_choice',
+      branches: { '1': 'n_sales', '2': 'n_support', max_attempts_exceeded: 'n_hangup' },
+    };
+    const parsed = AnyNodeSchema.safeParse(node);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("exec_gather routes to br['max_attempts_exceeded'] once attempts are exhausted", () => {
+    expect(newHalf).toContain('br["max_attempts_exceeded"]');
+    // The exhaustion return sits AFTER the retry loop closes, not on a per-attempt route.
+    const loopEnd = newHalf.indexOf('attempts exhausted');
+    expect(loopEnd).toBeGreaterThan(-1);
+    expect(newHalf.indexOf('br["max_attempts_exceeded"]', loopEnd - 300)).toBeGreaterThan(-1);
+  });
+
+  it('retry lifecycle stays inside one invocation (single getDigits + single counter increment)', () => {
+    expect(newHalf.match(/s:getDigits\(/g)).toHaveLength(1);
+    expect(newHalf.match(/attempt = attempt \+ 1/g)).toHaveLength(1);
+  });
+});

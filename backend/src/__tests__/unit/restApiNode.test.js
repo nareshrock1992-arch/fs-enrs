@@ -94,8 +94,12 @@ describe('branchKeys — declared fixed outcome ports exposed to the frontend', 
     expect(pub).toBeTruthy();
     expect(pub.branchKeys).toEqual(['success', 'http_error', 'timeout', 'invalid_response']);
   });
-  it('gather declares NO fixed branchKeys (keeps free-form digit behavior)', () => {
-    expect(getNodeType('gather').branchKeys).toBeUndefined();
+  it('gather is HYBRID: reserved max_attempts_exceeded outcome + dynamic digit branches', () => {
+    // Unlike rest_api (fixed-only), gather keeps author-defined digit keys AND
+    // declares reserved outcome ports. digitBranches:true is what the branch
+    // editor uses to keep the "+ Add digit branch" affordance.
+    expect(getNodeType('gather').branchKeys).toEqual(['max_attempts_exceeded']);
+    expect(getNodeType('gather').digitBranches).toBe(true);
   });
 });
 

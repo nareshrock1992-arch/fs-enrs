@@ -466,7 +466,12 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
   // Node types can declare fixed outcome keys (e.g. rest_api). When present, the
   // editor offers those keys BY NAME instead of gather's numeric digit keys.
   const declared = Array.isArray(byType?.[node.type]?.branchKeys) ? byType[node.type].branchKeys : [];
-  const fixedMode = declared.length > 0;
+  // digitBranches (gather) → author-defined digit keys PLUS the declared reserved
+  // outcome ports (e.g. max_attempts_exceeded). Without it (rest_api) the declared
+  // keys are the complete, fixed set.
+  const dynamic = !!byType?.[node.type]?.digitBranches;
+  const fixedMode = declared.length > 0 && !dynamic;
+  const hybridMode = declared.length > 0 && dynamic;
 
   const updateBranch = (k, v) => onUpdate(node.id, { branches: { ...branches, [k]: v } });
   const removeBranch = (k) => {
@@ -507,15 +512,23 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
     );
   }
 
-  // Free-form (gather) mode — numeric digit keys + gather's reserved keys.
+  // Free-form / hybrid (gather) mode — author-defined digit keys, an optional
+  // _default catch-all, plus (hybrid) always-visible reserved outcome ports so
+  // the exhaustion route (max_attempts_exceeded) is wireable IN-NODE. The retry
+  // lifecycle stays inside exec_gather; this branch is only the exit taken once
+  // attempts are exhausted — it is NOT a graph re-entry loop.
+  const NON_REMOVABLE = ['timeout', 'invalid', '_default'];
   const branchKeys = Object.keys(branches);
+  // Rows already present in the data, excluding declared reserved keys (those are
+  // rendered separately below so they always appear even before being wired).
+  const authorKeys = branchKeys.filter(k => !declared.includes(k));
   const addBranch = () => {
-    const next = String(branchKeys.filter(k => !['timeout','invalid','_default'].includes(k)).length + 1);
+    const next = String(branchKeys.filter(k => !NON_REMOVABLE.includes(k) && !declared.includes(k)).length + 1);
     onUpdate(node.id, { branches: { ...branches, [next]: '' } });
   };
   return (
     <div className="space-y-1.5">
-      {branchKeys.map(k => row(k, !['timeout','invalid','_default'].includes(k)))}
+      {authorKeys.map(k => row(k, !NON_REMOVABLE.includes(k)))}
       <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
         + Add digit branch
       </button>
@@ -526,6 +539,14 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
         >
           + Add _default (catch-all)
         </button>
+      )}
+      {hybridMode && declared.map(k => row(k, false))}
+      {hybridMode && (
+        <p className="text-[9px] text-text-muted opacity-70 mt-1">
+          Retries happen inside this node (per the retry settings). Wire
+          <span className="font-mono"> max_attempts_exceeded</span> to where the call should go
+          once all attempts are used up — e.g. Hangup, an operator, or the main menu.
+        </p>
       )}
     </div>
   );
