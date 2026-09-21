@@ -49,7 +49,7 @@ describe('getPortsForNode applies portLabels', () => {
   });
   it('gather HYBRID: shows author digit branches AND the reserved max_attempts_exceeded outcome', () => {
     const ports = getPortsForNode(
-      { branches: { '1': 'a', '2': 'b', _default: 'c' } },
+      { type: 'gather', branches: { '1': 'a', '2': 'b', _default: 'c' } },
       'branches',
       ['max_attempts_exceeded'],
       { _default: 'Any other', max_attempts_exceeded: 'Max attempts' },
@@ -57,6 +57,60 @@ describe('getPortsForNode applies portLabels', () => {
     // Declared reserved key first, then the author-defined digit/_default keys.
     expect(ports.map(p => p.key)).toEqual(['max_attempts_exceeded', '1', '2', '_default']);
     expect(ports[0]).toEqual({ key: 'max_attempts_exceeded', label: 'Max attempts' });
+  });
+
+  it('gather: internal retry events are HIDDEN when their retry is enabled (default)', () => {
+    // Defaults: no_input=on, invalid_length=on, invalid_option=off → only invalid_option shows.
+    const ports = getPortsForNode(
+      { type: 'gather', max_attempts: 2, branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'],
+      { max_attempts_exceeded: 'Max attempts', invalid_option: 'Invalid option' },
+    );
+    const keys = ports.map(p => p.key);
+    expect(keys).toContain('max_attempts_exceeded');
+    expect(keys).toContain('1');
+    expect(keys).toContain('invalid_option');          // retry off by default → optional exit
+    expect(keys).not.toContain('no_input');            // retry on → hidden
+    expect(keys).not.toContain('invalid_length');      // retry on → hidden
+  });
+
+  it('gather: an internal event becomes an optional exit when its retry is disabled', () => {
+    const ports = getPortsForNode(
+      { type: 'gather', max_attempts: 2, retry_on_no_input: 'no', retry_on_invalid_option: 'yes', branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'],
+      { max_attempts_exceeded: 'Max attempts', no_input: 'No input' },
+    );
+    const keys = ports.map(p => p.key);
+    expect(keys).toContain('no_input');                // retry off → shown
+    expect(keys).not.toContain('invalid_option');      // retry on → hidden
+  });
+
+  it('gather: a saved internal-event target is NOT rendered while retry is on (data preserved, port hidden)', () => {
+    const ports = getPortsForNode(
+      { type: 'gather', max_attempts: 2, branches: { '1': 'a', no_input: 'someNode' } }, // retry_ni default on
+      'branches', ['max_attempts_exceeded'], {},
+    );
+    expect(ports.map(p => p.key)).not.toContain('no_input');
+  });
+
+  it('gather: legacy timeout/invalid keys still render regardless of retry gating', () => {
+    const ports = getPortsForNode(
+      { type: 'gather', max_attempts: 2, branches: { '1': 'a', timeout: 't', invalid: 'i' } },
+      'branches', ['max_attempts_exceeded'],
+      { timeout: 'No input', invalid: 'No match', max_attempts_exceeded: 'Max attempts' },
+    );
+    const keys = ports.map(p => p.key);
+    expect(keys).toContain('timeout');
+    expect(keys).toContain('invalid');
+  });
+
+  it('rest_api ports are unaffected by gather internal-event gating', () => {
+    const ports = getPortsForNode(
+      { type: 'rest_api', branches: {} },
+      'branches', ['success', 'http_error', 'timeout', 'invalid_response'],
+      {},
+    );
+    expect(ports.map(p => p.key)).toEqual(['success', 'http_error', 'timeout', 'invalid_response']);
   });
 });
 

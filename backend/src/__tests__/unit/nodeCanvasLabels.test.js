@@ -41,6 +41,7 @@ describe('portLabels (display only — branch keys unchanged)', () => {
   it('gather reserved keys get friendly labels', () => {
     expect(getNodeType('gather').portLabels).toEqual({
       timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts',
+      no_input: 'No input', invalid_length: 'Invalid length', invalid_option: 'Invalid option',
     });
   });
   it('rest_api outcomes get friendly labels', () => {

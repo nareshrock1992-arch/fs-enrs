@@ -4,6 +4,7 @@ import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { api } from '../../../api/client.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
+import { GATHER_INTERNAL_EVENTS, gatherRetryEnabled } from '../canvas/nodePorts.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -519,11 +520,19 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
   // attempts are exhausted — it is NOT a graph re-entry loop.
   const NON_REMOVABLE = ['timeout', 'invalid', '_default'];
   const branchKeys = Object.keys(branches);
-  // Rows already present in the data, excluding declared reserved keys (those are
-  // rendered separately below so they always appear even before being wired).
-  const authorKeys = branchKeys.filter(k => !declared.includes(k));
+  // Gather internal retry events (no_input/invalid_length/invalid_option) are
+  // graph exits ONLY when their retry is disabled; when enabled they are handled
+  // inside exec_gather so their row is hidden (saved target preserved, not shown).
+  const isGather = node.type === 'gather';
+  const internalKeys = new Set(isGather ? GATHER_INTERNAL_EVENTS.map(e => e.key) : []);
+  const internalExits = isGather
+    ? GATHER_INTERNAL_EVENTS.filter(e => !gatherRetryEnabled(node, e)).map(e => e.key)
+    : [];
+  // Rows already present in the data, excluding declared reserved keys (rendered
+  // separately) and internal-event keys (retry-gated, rendered separately).
+  const authorKeys = branchKeys.filter(k => !declared.includes(k) && !internalKeys.has(k));
   const addBranch = () => {
-    const next = String(branchKeys.filter(k => !NON_REMOVABLE.includes(k) && !declared.includes(k)).length + 1);
+    const next = String(branchKeys.filter(k => !NON_REMOVABLE.includes(k) && !declared.includes(k) && !internalKeys.has(k)).length + 1);
     onUpdate(node.id, { branches: { ...branches, [next]: '' } });
   };
   return (
@@ -540,12 +549,15 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
           + Add _default (catch-all)
         </button>
       )}
+      {/* Internal events surface as optional exits only when their retry is OFF. */}
+      {internalExits.map(k => row(k, false))}
       {hybridMode && declared.map(k => row(k, false))}
       {hybridMode && (
         <p className="text-[9px] text-text-muted opacity-70 mt-1">
           Retries happen inside this node (per the retry settings). Wire
           <span className="font-mono"> max_attempts_exceeded</span> to where the call should go
-          once all attempts are used up — e.g. Hangup, an operator, or the main menu.
+          once all attempts are used up. An exception event (e.g. <span className="font-mono">invalid_option</span>)
+          appears here as its own exit only when you set its Retry to No.
         </p>
       )}
     </div>

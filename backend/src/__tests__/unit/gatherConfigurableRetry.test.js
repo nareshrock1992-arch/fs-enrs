@@ -119,7 +119,9 @@ describe('C — configurable retry policy', () => {
 
 describe('D — no hardcoded user-facing text in the new path', () => {
   it('plays every prompt via play_prompt from node configuration', () => {
-    expect(newHalf).toContain('play_prompt(s, psrc, purl, ptext)');
+    // attempt 1 = menu prompt; retries = exception prompt (+ optional menu replay)
+    expect(newHalf).toContain('play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)');
+    expect(newHalf).toContain('play_prompt(s, retry_src, retry_url, retry_text)');
     expect(newHalf).toContain('retry_src  = node[reason .. "_source_type"]');
     expect(newHalf).toContain('node.max_attempts_exceeded_source_type');
   });
@@ -135,11 +137,15 @@ describe('D — no hardcoded user-facing text in the new path', () => {
 describe('E — TTS/audio prompt failure ≠ caller no_input', () => {
   it('logs a prompt failure but still collects input and does not count it as no_input', () => {
     expect(newHalf).toContain('NOT counted as no_input');
-    // collection (getDigits) happens regardless of play_prompt result
-    const playedIdx  = newHalf.indexOf('local played = play_prompt');
+    // collection (getDigits) happens regardless of play_prompt result: the WARN
+    // is logged then getDigits still runs. Prove ordering: prompt playback →
+    // WARN-on-failure → getDigits, all before any reason classification.
+    const playedIdx  = newHalf.indexOf('local played');
+    const warnIdx    = newHalf.indexOf('NOT counted as no_input');
     const collectIdx = newHalf.indexOf('local d = s:getDigits');
     expect(playedIdx).toBeGreaterThan(-1);
-    expect(collectIdx).toBeGreaterThan(playedIdx);
+    expect(warnIdx).toBeGreaterThan(playedIdx);
+    expect(collectIdx).toBeGreaterThan(warnIdx);
   });
 });
 
@@ -392,5 +398,46 @@ describe('max_attempts_exceeded — wireable in-node exhaustion exit', () => {
   it('retry lifecycle stays inside one invocation (single getDigits + single counter increment)', () => {
     expect(newHalf.match(/s:getDigits\(/g)).toHaveLength(1);
     expect(newHalf.match(/attempt = attempt \+ 1/g)).toHaveLength(1);
+  });
+});
+
+// ── Menu replay on retry: exception prompt → optional menu replay → getDigits ──
+describe('menu replay — exception prompt then optional replay of the single menu', () => {
+  it('attempt 1 plays the menu prompt (node.prompt_*)', () => {
+    expect(newHalf).toContain('play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)');
+  });
+  it('on retry it plays the EXCEPTION prompt, then REPLAYS the same menu when retry_replay is set', () => {
+    // exception prompt uses the staged retry_* values
+    expect(newHalf).toContain('play_prompt(s, retry_src, retry_url, retry_text)');
+    // replay reuses the ORIGINAL menu prompt (no second slot) guarded by retry_replay
+    expect(newHalf).toMatch(/if retry_replay then[\s\S]*play_prompt\(s, node\.prompt_source_type, node\.prompt_audio_url, node\.prompt_text\)/);
+  });
+  it('replay_menu defaults ON (nil → true) and accepts boolean true / "yes"', () => {
+    expect(newHalf).toContain('retry_replay = (rm == nil or rm == true or rm == "yes")');
+    expect(newHalf).toContain('local rm   = node[reason .. "_replay_menu"]');
+  });
+  it('menu replay does NOT add a second getDigits (still exactly one per attempt)', () => {
+    expect(newHalf.match(/s:getDigits\(/g)).toHaveLength(1);
+  });
+  it('does NOT introduce a second menu-prompt configuration field (reuses node.prompt_*)', () => {
+    // The only menu source read is node.prompt_source_type — no node.menu_* / replay_prompt_* slot.
+    expect(newHalf).not.toMatch(/node\.menu_prompt|node\.replay_prompt|node\.menu_source_type/);
+  });
+
+  it('replay_menu booleans validate (boolean or yes/no) and are optional', () => {
+    const base = {
+      type: 'gather', max_attempts: 2,
+      branches: { '1': 'a', max_attempts_exceeded: 'x' },
+    };
+    // present as strings
+    expect(AnyNodeSchema.safeParse({
+      ...base, no_input_replay_menu: 'yes', invalid_length_replay_menu: 'no', invalid_option_replay_menu: 'yes',
+    }).success).toBe(true);
+    // present as booleans
+    expect(AnyNodeSchema.safeParse({ ...base, no_input_replay_menu: false }).success).toBe(true);
+    // omitted entirely (defaults ON in executor)
+    expect(AnyNodeSchema.safeParse(base).success).toBe(true);
+    // invalid value rejected
+    expect(AnyNodeSchema.safeParse({ ...base, no_input_replay_menu: 'maybe' }).success).toBe(false);
   });
 });

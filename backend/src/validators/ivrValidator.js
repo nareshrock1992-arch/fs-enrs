@@ -75,6 +75,14 @@ const GatherNodeSchema = z.object({
   retry_on_invalid_length: z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
   retry_on_invalid_option: z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
 
+  // Replay the (single) menu prompt after the exception prompt before the next
+  // collection. Default ON in the executor (nil → true). Accepts boolean or
+  // 'yes'/'no'. Distinct from the exception prompt; reuses node.prompt_* — there
+  // is no second menu-prompt slot.
+  no_input_replay_menu:        z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+  invalid_length_replay_menu:  z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+  invalid_option_replay_menu:  z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
+
   // Per-reason retry prompt slots — each an independent TTS / Audio / None
   // source. Language-neutral: the engine only reads source_type and plays.
   // NOTE (R2): audio mode is satisfied ONLY by <slot>_audio_url. There is no

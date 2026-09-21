@@ -15,6 +15,27 @@
 const DTMF_KEY = /^[0-9#*]+$/;
 
 /**
+ * Gather internal retry events. Each is handled INSIDE exec_gather when its
+ * retry is enabled (so it is NOT a graph output), and becomes an optional graph
+ * exit only when its retry is explicitly disabled. Retry defaults mirror the Lua
+ * executor (registry.js): no_input=on, invalid_length=on, invalid_option=off.
+ * Legacy keys `timeout`/`invalid` are NOT in this set — they always render when
+ * present in saved data.
+ */
+export const GATHER_INTERNAL_EVENTS = [
+  { key: 'no_input',       retryField: 'retry_on_no_input',       retryDefault: true  },
+  { key: 'invalid_length', retryField: 'retry_on_invalid_length', retryDefault: true  },
+  { key: 'invalid_option', retryField: 'retry_on_invalid_option', retryDefault: false },
+];
+
+/** Whether a gather internal event's retry is enabled (nil-safe, boolean or 'yes'/'no'). */
+export function gatherRetryEnabled(node, ev) {
+  const v = node?.[ev.retryField];
+  if (v === undefined || v === null || v === '') return ev.retryDefault;
+  return v === true || v === 'yes';
+}
+
+/**
  * Friendly DISPLAY label for a port/branch key. The underlying branch key is
  * never changed — this only affects what the canvas shows. Precedence:
  *   1. an explicit portLabels[key] from the node-type registry
@@ -44,7 +65,18 @@ export function getPortsForNode(node, portsStrategy, branchKeys, portLabels) {
       // Free-form nodes (gather digit menus) declare none and keep the existing
       // data-driven behavior. Declared keys first, then any extra author keys.
       const declared = Array.isArray(branchKeys) ? branchKeys : [];
-      const keys = [...declared, ...existing.filter(k => !declared.includes(k))];
+      let keys = [...declared, ...existing.filter(k => !declared.includes(k))];
+      // Gather: an internal retry event is a graph OUTPUT only when its retry is
+      // disabled. When retry is enabled the event is owned by exec_gather, so its
+      // port is hidden (any saved target stays in the graph JSON — never deleted —
+      // it just isn't rendered). timeout/invalid/_default/digits are untouched.
+      if (node && node.type === 'gather') {
+        const internal = new Set(GATHER_INTERNAL_EVENTS.map(e => e.key));
+        keys = keys.filter(k => !internal.has(k));
+        for (const ev of GATHER_INTERNAL_EVENTS) {
+          if (!gatherRetryEnabled(node, ev)) keys.push(ev.key);
+        }
+      }
       return keys.map(k => ({ key: k, label: lbl(k) }));
     }
     case 'goto_target':

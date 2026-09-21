@@ -157,7 +157,11 @@ end`,
     branchKeys: ['max_attempts_exceeded'],
     digitBranches: true,
     summaryTemplate: 'Collect ${max_digits} digit(s) · ${timeout_seconds}s',
-    portLabels: { timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts' },
+    portLabels: {
+      timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts',
+      // Shown as graph exits only when the matching retry is disabled.
+      no_input: 'No input', invalid_length: 'Invalid length', invalid_option: 'Invalid option',
+    },
     configSchema: [
       {
         key: 'variable_name', label: 'Variable Name', fieldType: 'mono_text',
@@ -242,6 +246,11 @@ end`,
       { key: 'no_input_text', label: 'No-input prompt text', fieldType: 'text', showWhen: { field: 'no_input_source_type', value: 'tts' } },
       { key: 'no_input_audio_url', label: 'No-input prompt audio', fieldType: 'audio_url', showWhen: { field: 'no_input_source_type', value: 'audio' } },
       {
+        key: 'no_input_replay_menu', label: 'Replay menu on no-input retry', fieldType: 'select',
+        options: [ { value: 'yes', label: 'Yes (default) — replay the menu prompt' }, { value: 'no', label: 'No — exception prompt only' } ],
+        hint: 'After the no-input prompt, replay the original Menu prompt before collecting again. Reuses the same menu prompt above (no separate slot).',
+      },
+      {
         key: 'invalid_length_source_type', label: 'Invalid-length prompt source', fieldType: 'select',
         options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
         hint: 'Prompt replayed before an invalid-length retry.',
@@ -249,12 +258,22 @@ end`,
       { key: 'invalid_length_text', label: 'Invalid-length prompt text', fieldType: 'text', showWhen: { field: 'invalid_length_source_type', value: 'tts' } },
       { key: 'invalid_length_audio_url', label: 'Invalid-length prompt audio', fieldType: 'audio_url', showWhen: { field: 'invalid_length_source_type', value: 'audio' } },
       {
+        key: 'invalid_length_replay_menu', label: 'Replay menu on invalid-length retry', fieldType: 'select',
+        options: [ { value: 'yes', label: 'Yes (default) — replay the menu prompt' }, { value: 'no', label: 'No — exception prompt only' } ],
+        hint: 'After the invalid-length prompt, replay the original Menu prompt before collecting again. Reuses the same menu prompt above (no separate slot).',
+      },
+      {
         key: 'invalid_option_source_type', label: 'Invalid-option prompt source', fieldType: 'select',
         options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
         hint: 'Prompt replayed before an invalid-option retry (only when Retry on invalid option = Yes).',
       },
       { key: 'invalid_option_text', label: 'Invalid-option prompt text', fieldType: 'text', showWhen: { field: 'invalid_option_source_type', value: 'tts' } },
       { key: 'invalid_option_audio_url', label: 'Invalid-option prompt audio', fieldType: 'audio_url', showWhen: { field: 'invalid_option_source_type', value: 'audio' } },
+      {
+        key: 'invalid_option_replay_menu', label: 'Replay menu on invalid-option retry', fieldType: 'select',
+        options: [ { value: 'yes', label: 'Yes (default) — replay the menu prompt' }, { value: 'no', label: 'No — exception prompt only' } ],
+        hint: 'After the invalid-option prompt, replay the original Menu prompt before collecting again (only when Retry on invalid option = Yes). Reuses the same menu prompt above (no separate slot).',
+      },
       {
         key: 'max_attempts_exceeded_source_type', label: 'Attempts-exhausted prompt source', fieldType: 'select',
         options: [ { value: 'none', label: 'None' }, { value: 'tts', label: 'Text to Speech' }, { value: 'audio', label: 'Audio File' } ],
@@ -357,24 +376,33 @@ local function exec_gather(s, node)
   local retry_io = node.retry_on_invalid_option
   if retry_io == nil then retry_io = false else retry_io = (retry_io == true or retry_io == "yes") end
 
-  local retry_src, retry_url, retry_text
+  local retry_src, retry_url, retry_text, retry_replay
   local attempt = 0
 
   while attempt < max_att and s:ready() do
     attempt = attempt + 1
 
-    -- Attempt 1 plays the initial prompt; later attempts play the retry prompt
-    -- chosen (by failure reason) at the end of the previous attempt.
-    local psrc, purl, ptext
+    -- Attempt 1 plays the initial MENU prompt. Later attempts play the
+    -- reason-specific EXCEPTION prompt (chosen at the end of the previous attempt)
+    -- and then — when that reason's replay_menu is enabled (default ON) — REPLAY
+    -- the same single menu prompt (node.prompt_*) before collecting again. Menu
+    -- prompt and exception prompt are distinct concepts; the menu is defined once
+    -- and reused (no second menu-prompt slot).
+    local played
     if attempt == 1 then
-      psrc, purl, ptext = node.prompt_source_type, node.prompt_audio_url, node.prompt_text
+      played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
     else
-      psrc, purl, ptext = retry_src, retry_url, retry_text
+      -- Exception prompt first (may be 'none'/nil → play_prompt is a no-op).
+      played = play_prompt(s, retry_src, retry_url, retry_text)
+      if retry_replay then
+        -- Reuse the ORIGINAL menu prompt — never a separate menu slot.
+        local menu_played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
+        played = played or menu_played
+      end
     end
 
     -- A prompt (playback) failure is NOT a caller-input failure: log it and
     -- still collect input. It must not consume the input attempt on its own.
-    local played = play_prompt(s, psrc, purl, ptext)
     if not played then
       freeswitch.consoleLog("WARN", "[ivr_executor] gather: prompt playback failed on attempt " .. attempt .. "/" .. max_att .. " (var=" .. var .. ") — collecting input anyway; NOT counted as no_input\\n")
     end
@@ -412,10 +440,14 @@ local function exec_gather(s, node)
       return br[reason] or br["_default"] or br["timeout"] or br["invalid"]
     end
 
-    -- Prepare the reason-specific retry prompt for the NEXT attempt.
+    -- Prepare the reason-specific EXCEPTION prompt for the NEXT attempt, plus
+    -- whether to replay the menu after it. replay_menu defaults ON (nil → true);
+    -- accepts boolean true / string "yes". Set false / "no" for exception-only.
     retry_src  = node[reason .. "_source_type"]
     retry_url  = node[reason .. "_audio_url"]
     retry_text = node[reason .. "_text"]
+    local rm   = node[reason .. "_replay_menu"]
+    retry_replay = (rm == nil or rm == true or rm == "yes")
   end
 
   -- Attempts exhausted — optional configured terminal prompt, then terminal branch.
