@@ -224,17 +224,17 @@ end`,
       {
         key: 'retry_on_no_input', label: 'Retry on no-input', fieldType: 'select',
         options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to no_input branch' } ],
-        hint: 'Only used when Max attempts is set. Whether an empty (no digits) attempt is retried. Retry = Yes handles this internally and hides its no_input branch; set No to expose no_input as a flow branch.',
+        hint: 'Only used when Max attempts is set. Whether an empty (no digits) attempt is retried. Set No to expose a no_input branch.',
       },
       {
         key: 'retry_on_invalid_length', label: 'Retry on invalid length', fieldType: 'select',
         options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to invalid_length branch' } ],
-        hint: 'Only used when Max attempts is set. Whether an entry shorter than Minimum Digits is retried. Retry = Yes handles this internally and hides its invalid_length branch; set No to expose invalid_length as a flow branch.',
+        hint: 'Only used when Max attempts is set. Whether an entry shorter than Minimum Digits is retried. Set No to expose an invalid_length branch.',
       },
       {
         key: 'retry_on_invalid_option', label: 'Retry on invalid option', fieldType: 'select',
         options: [ { value: 'no', label: 'No (default) — route to invalid_option branch' }, { value: 'yes', label: 'Yes — re-prompt' } ],
-        hint: 'Only used when Max attempts is set. A complete entry that matches no branch and no _default. Default is No (route immediately). Retry = Yes handles this internally and hides its invalid_option branch; set No (default) to expose invalid_option as a flow branch.',
+        hint: 'Only used when Max attempts is set. A complete entry that matches no branch and no _default. Default is No — exposes an invalid_option branch (route immediately); set Yes to re-prompt instead.',
       },
 
       // ── Per-reason retry prompts (each TTS / Audio / None, language-neutral) ─

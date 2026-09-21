@@ -35,6 +35,58 @@ export function gatherRetryEnabled(node, ev) {
   return v === true || v === 'yes';
 }
 
+/** Legacy gather fallback keys (pre-configurable model). Still consulted by
+ *  exec_gather as last-resort fallbacks, but not part of the configurable model. */
+export const GATHER_LEGACY_KEYS = ['timeout', 'invalid'];
+
+/** True when this gather node uses the configurable-retry model (max_attempts set). */
+export function gatherIsConfigurable(node) {
+  const v = node?.max_attempts;
+  return v !== undefined && v !== null && v !== '';
+}
+
+/**
+ * The ordered branch keys a Gather editor/canvas should SHOW for this node —
+ * mode-aware (legacy vs configurable), retry-aware, and compatibility-safe:
+ *
+ *  • Configurable (max_attempts set): digit keys, reason keys (shown when their
+ *    retry is OFF, or already wired), max_attempts_exceeded, _default (if present),
+ *    and legacy timeout/invalid ONLY if already wired (preserve active fallbacks;
+ *    never offered new). Unwired legacy keys are hidden → no legacy/config mix.
+ *  • Legacy (max_attempts unset): digit keys, timeout, invalid, _default (if present),
+ *    plus any config-model key that is already wired (preserve; never offered new).
+ *
+ * Pure: never mutates node.branches. Hidden keys keep their saved targets in JSON.
+ */
+export function gatherBranchKeysFor(node) {
+  const branches = node?.branches || {};
+  const wired = k => branches[k] !== undefined && branches[k] !== '';
+  const existing = Object.keys(branches);
+  const reason = GATHER_INTERNAL_EVENTS.map(e => e.key);
+  const reserved = new Set([...reason, ...GATHER_LEGACY_KEYS, '_default', 'max_attempts_exceeded']);
+  const digits = existing.filter(k => !reserved.has(k));
+  const out = [...digits];
+  if (gatherIsConfigurable(node)) {
+    // Reason keys are governed SOLELY by their retry toggle: retry ON → hidden
+    // (target, if any, is preserved in JSON and reappears when retry is set to No);
+    // retry OFF → shown as an optional graph exit.
+    for (const ev of GATHER_INTERNAL_EVENTS) {
+      if (!gatherRetryEnabled(node, ev)) out.push(ev.key);
+    }
+    out.push('max_attempts_exceeded');
+    // Legacy timeout/invalid have no toggle, so the only way to keep an ACTIVE
+    // fallback visible/editable is show-if-wired. Unwired ones stay hidden → no
+    // legacy/config key mixing on a clean node.
+    for (const k of GATHER_LEGACY_KEYS) if (wired(k)) out.push(k);
+  } else {
+    for (const k of GATHER_LEGACY_KEYS) out.push(k);                 // legacy mode: timeout + invalid
+    if (wired('max_attempts_exceeded')) out.push('max_attempts_exceeded');
+    for (const ev of GATHER_INTERNAL_EVENTS) if (wired(ev.key)) out.push(ev.key); // preserve stray wired config keys
+  }
+  if (wired('_default')) out.push('_default');
+  return out;
+}
+
 /**
  * Friendly DISPLAY label for a port/branch key. The underlying branch key is
  * never changed — this only affects what the canvas shows. Precedence:
@@ -65,18 +117,15 @@ export function getPortsForNode(node, portsStrategy, branchKeys, portLabels) {
       // Free-form nodes (gather digit menus) declare none and keep the existing
       // data-driven behavior. Declared keys first, then any extra author keys.
       const declared = Array.isArray(branchKeys) ? branchKeys : [];
-      let keys = [...declared, ...existing.filter(k => !declared.includes(k))];
-      // Gather: an internal retry event is a graph OUTPUT only when its retry is
-      // disabled. When retry is enabled the event is owned by exec_gather, so its
-      // port is hidden (any saved target stays in the graph JSON — never deleted —
-      // it just isn't rendered). timeout/invalid/_default/digits are untouched.
-      if (node && node.type === 'gather') {
-        const internal = new Set(GATHER_INTERNAL_EVENTS.map(e => e.key));
-        keys = keys.filter(k => !internal.has(k));
-        for (const ev of GATHER_INTERNAL_EVENTS) {
-          if (!gatherRetryEnabled(node, ev)) keys.push(ev.key);
-        }
-      }
+      // Gather is mode-aware (legacy vs configurable) + retry-aware and preserves
+      // wired keys — see gatherBranchKeysFor. It never shows the legacy and
+      // configurable key sets simultaneously (the source of the duplicate-key
+      // confusion), while keeping any already-wired target visible so no active
+      // fallback silently disappears. Non-gather branch nodes keep the plain
+      // declared+existing union (e.g. rest_api's fixed outcomes).
+      const keys = (node && node.type === 'gather')
+        ? gatherBranchKeysFor(node)
+        : [...declared, ...existing.filter(k => !declared.includes(k))];
       return keys.map(k => ({ key: k, label: lbl(k) }));
     }
     case 'goto_target':

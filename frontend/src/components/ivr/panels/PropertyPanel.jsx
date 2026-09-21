@@ -4,7 +4,7 @@ import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { api } from '../../../api/client.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
-import { GATHER_INTERNAL_EVENTS, gatherRetryEnabled } from '../canvas/nodePorts.js';
+import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -513,35 +513,32 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
     );
   }
 
-  // Free-form / hybrid (gather) mode — author-defined digit keys, an optional
-  // _default catch-all, plus (hybrid) always-visible reserved outcome ports so
-  // the exhaustion route (max_attempts_exceeded) is wireable IN-NODE. The retry
-  // lifecycle stays inside exec_gather; this branch is only the exit taken once
-  // attempts are exhausted — it is NOT a graph re-entry loop.
-  const NON_REMOVABLE = ['timeout', 'invalid', '_default'];
-  const branchKeys = Object.keys(branches);
-  // Gather internal retry events (no_input/invalid_length/invalid_option) are
-  // graph exits ONLY when their retry is disabled; when enabled they are handled
-  // inside exec_gather so their row is hidden (saved target preserved, not shown).
+  // Free-form / hybrid (gather) mode. The visible key set is computed by the
+  // SHARED, mode-aware gatherBranchKeysFor (same function the canvas uses) so the
+  // panel and canvas never disagree. It never mixes the legacy (timeout/invalid)
+  // and configurable (no_input/…/max_attempts_exceeded) key sets, and preserves
+  // any already-wired key so no saved target is silently dropped.
+  const RESERVED = new Set(['timeout', 'invalid', '_default', 'max_attempts_exceeded',
+    ...GATHER_INTERNAL_EVENTS.map(e => e.key)]);
   const isGather = node.type === 'gather';
-  const internalKeys = new Set(isGather ? GATHER_INTERNAL_EVENTS.map(e => e.key) : []);
-  const internalExits = isGather
-    ? GATHER_INTERNAL_EVENTS.filter(e => !gatherRetryEnabled(node, e)).map(e => e.key)
-    : [];
-  // Rows already present in the data, excluding declared reserved keys (rendered
-  // separately) and internal-event keys (retry-gated, rendered separately).
-  const authorKeys = branchKeys.filter(k => !declared.includes(k) && !internalKeys.has(k));
+  const visibleKeys = isGather
+    ? gatherBranchKeysFor(node)
+    : Object.keys(branches);
+  const digitKeys    = visibleKeys.filter(k => !RESERVED.has(k));
+  const reservedKeys = visibleKeys.filter(k => RESERVED.has(k) && k !== '_default');
+  const hasDefault   = visibleKeys.includes('_default');
+  const configurable = isGather && gatherIsConfigurable(node);
   const addBranch = () => {
-    const next = String(branchKeys.filter(k => !NON_REMOVABLE.includes(k) && !declared.includes(k) && !internalKeys.has(k)).length + 1);
+    const next = String(digitKeys.length + 1);
     onUpdate(node.id, { branches: { ...branches, [next]: '' } });
   };
   return (
     <div className="space-y-1.5">
-      {authorKeys.map(k => row(k, !NON_REMOVABLE.includes(k)))}
+      {digitKeys.map(k => row(k, true))}
       <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
         + Add digit branch
       </button>
-      {!branches['_default'] && (
+      {!hasDefault && (
         <button
           onClick={() => onUpdate(node.id, { branches: { ...branches, _default: '' } })}
           className="text-[10px] text-text-muted hover:text-brand ml-3"
@@ -549,15 +546,14 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
           + Add _default (catch-all)
         </button>
       )}
-      {/* Internal events surface as optional exits only when their retry is OFF. */}
-      {internalExits.map(k => row(k, false))}
-      {hybridMode && declared.map(k => row(k, false))}
-      {hybridMode && (
+      {/* Reserved outcome rows for the ACTIVE model only (never both sets). */}
+      {reservedKeys.map(k => row(k, false))}
+      {hasDefault && row('_default', false)}
+      {isGather && (
         <p className="text-[9px] text-text-muted opacity-70 mt-1">
-          Retries happen inside this node (per the retry settings). Wire
-          <span className="font-mono"> max_attempts_exceeded</span> to where the call should go
-          once all attempts are used up. An exception event (e.g. <span className="font-mono">invalid_option</span>)
-          appears here as its own exit only when you set its Retry to No.
+          {configurable
+            ? 'Configurable-retry mode (Max attempts set): retries run inside this node; wire max_attempts_exceeded for the exhaustion exit. A reason branch (e.g. invalid_option) appears only when you set its Retry to No. Legacy timeout/invalid are hidden unless already wired.'
+            : 'Legacy mode (no Max attempts): timeout = no input, invalid = fell through, _default = catch-all. Set Max attempts to switch to the configurable-retry model.'}
         </p>
       )}
     </div>
