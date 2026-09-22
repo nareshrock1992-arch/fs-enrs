@@ -134,6 +134,43 @@ describe('getPortsForNode applies portLabels', () => {
     expect(keys).not.toContain('invalid');
   });
 
+  it('Continue (_default) is ALWAYS a connectable success output, even unwired', () => {
+    // A. Internal, new/unwired
+    const internal = getPortsForNode(
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+    ).map(p => p.key);
+    expect(internal).toContain('_default');
+    expect(internal).toContain('max_attempts_exceeded');   // E: unaffected
+    // B. External, new/unwired
+    const external = getPortsForNode(
+      { type: 'gather', retry_mode: 'external', branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+    ).map(p => p.key);
+    expect(external).toContain('_default');
+    expect(external).toContain('timeout');                 // E: unaffected
+    expect(external).toContain('invalid');                 // E: unaffected
+    expect(external).not.toContain('max_attempts_exceeded');
+    // C. Legacy (no retry_mode / no max_attempts), unwired _default
+    const legacy = getPortsForNode(
+      { type: 'gather', branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+    ).map(p => p.key);
+    expect(legacy).toContain('_default');
+    expect(legacy).toContain('timeout');
+    expect(legacy).toContain('invalid');
+  });
+
+  it('D: wired branches (digits + wired _default) remain present and unchanged', () => {
+    const keys = getPortsForNode(
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a', '2': 'b', _default: 'cont' } },
+      'branches', ['max_attempts_exceeded'], {},
+    ).map(p => p.key);
+    expect(keys).toEqual(expect.arrayContaining(['1', '2', '_default', 'max_attempts_exceeded']));
+    // _default appears exactly once (not duplicated by the always-push)
+    expect(keys.filter(k => k === '_default')).toHaveLength(1);
+  });
+
   it('rest_api ports are unaffected by gather internal-event gating', () => {
     const ports = getPortsForNode(
       { type: 'rest_api', branches: {} },

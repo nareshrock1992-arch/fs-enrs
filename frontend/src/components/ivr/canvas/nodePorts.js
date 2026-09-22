@@ -75,7 +75,7 @@ export function gatherBranchKeysFor(node) {
     for (const k of [...GATHER_INTERNAL_EVENTS.map(e => e.key), 'max_attempts_exceeded']) {
       if (wired(k)) out.push(k);
     }
-    if (wired('_default')) out.push('_default');
+    out.push('_default');   // Continue — always a connectable success output
     return out;
   }
   // INTERNAL mode (explicit) or legacy configurable (max_attempts present).
@@ -96,7 +96,12 @@ export function gatherBranchKeysFor(node) {
     if (wired('max_attempts_exceeded')) out.push('max_attempts_exceeded');
     for (const ev of GATHER_INTERNAL_EVENTS) if (wired(ev.key)) out.push(ev.key); // preserve stray wired config keys
   }
-  if (wired('_default')) out.push('_default');
+  // Continue / _default is ALWAYS a connectable success output (menu catch-all or
+  // completed multi-digit collection). It is pushed even when unwired so the port
+  // can be connected; an unwired _default is still pruned by serialiseGraph, so no
+  // empty branch is persisted. Runtime success routing (br[d] or br["_default"])
+  // is unchanged.
+  out.push('_default');
   return out;
 }
 

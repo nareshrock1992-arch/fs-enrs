@@ -539,15 +539,9 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
       <button onClick={addBranch} className="text-[10px] text-brand hover:text-brand/80 mt-1">
         + Add digit branch
       </button>
-      {!hasDefault && (
-        <button
-          onClick={() => onUpdate(node.id, { branches: { ...branches, _default: '' } })}
-          className="text-[10px] text-text-muted hover:text-brand ml-3"
-        >
-          + Add Continue / valid-input catch-all
-        </button>
-      )}
-      {/* Reserved outcome rows for the ACTIVE model only (never both sets). */}
+      {/* Reserved outcome rows for the ACTIVE model only (never both sets).
+          Continue (_default) is always present in visibleKeys now, so its row
+          renders below unconditionally — no "+ Add Continue" button needed. */}
       {reservedKeys.map(k => row(k, false))}
       {hasDefault && row('_default', false)}
       {isGather && (
