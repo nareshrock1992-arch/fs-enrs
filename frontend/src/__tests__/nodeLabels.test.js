@@ -109,6 +109,31 @@ describe('getPortsForNode applies portLabels', () => {
     expect(keys).toContain('invalid');   // wired → preserved
   });
 
+  it('gather EXTERNAL mode: shows timeout + invalid, NOT max_attempts_exceeded or reason ports', () => {
+    const keys = getPortsForNode(
+      { type: 'gather', retry_mode: 'external', branches: { '1': 'a', _default: 'c' } },
+      'branches', ['max_attempts_exceeded'],
+      { timeout: 'No input', invalid: 'Invalid', _default: 'Continue' },
+    ).map(p => p.key);
+    expect(keys).toEqual(expect.arrayContaining(['1', 'timeout', 'invalid', '_default']));
+    expect(keys).not.toContain('max_attempts_exceeded');
+    expect(keys).not.toContain('no_input');
+    expect(keys).not.toContain('invalid_length');
+    expect(keys).not.toContain('invalid_option');
+  });
+
+  it('gather INTERNAL mode: shows max_attempts_exceeded, NOT timeout/invalid (unwired)', () => {
+    const keys = getPortsForNode(
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a' } },
+      'branches', ['max_attempts_exceeded'],
+      { max_attempts_exceeded: 'Max attempts', invalid_option: 'Invalid option' },
+    ).map(p => p.key);
+    expect(keys).toContain('max_attempts_exceeded');
+    expect(keys).toContain('invalid_option');   // retry off by default → optional exit
+    expect(keys).not.toContain('timeout');
+    expect(keys).not.toContain('invalid');
+  });
+
   it('rest_api ports are unaffected by gather internal-event gating', () => {
     const ports = getPortsForNode(
       { type: 'rest_api', branches: {} },

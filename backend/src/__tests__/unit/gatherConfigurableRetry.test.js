@@ -35,6 +35,10 @@ const gatherBlock = lua.slice(
 const newPathIdx  = gatherBlock.indexOf('NEW CONFIGURABLE PATH');
 const legacyHalf  = gatherBlock.slice(0, newPathIdx);
 const newHalf     = gatherBlock.slice(newPathIdx);
+// The new path now contains BOTH the External single-attempt block and the
+// Internal retry loop; slice them so per-region invariants stay precise.
+const externalHalf = newHalf.slice(newHalf.indexOf('EXTERNAL mode'), newHalf.indexOf('while attempt < max_att'));
+const loopHalf     = newHalf.slice(newHalf.indexOf('while attempt < max_att'));
 
 // ── play_prompt helper (shared, additive) ───────────────────────────────────
 
@@ -61,7 +65,7 @@ describe('play_prompt — additive language-neutral dispatcher', () => {
 
 describe('A — legacy Gather behavior preserved verbatim', () => {
   it('gates the legacy path on absence of max_attempts', () => {
-    expect(gatherBlock).toContain('if node.max_attempts == nil then');
+    expect(gatherBlock).toContain('if node.max_attempts == nil and node.retry_mode == nil then');
   });
   it('keeps the native 3-try playAndGetDigits audio path', () => {
     expect(legacyHalf).toContain('s:playAndGetDigits(min_d, max_d, 3, timeout, terms, pf, "", "[0-9#*]+", "", idt)');
@@ -140,9 +144,10 @@ describe('E — TTS/audio prompt failure ≠ caller no_input', () => {
     // collection (getDigits) happens regardless of play_prompt result: the WARN
     // is logged then getDigits still runs. Prove ordering: prompt playback →
     // WARN-on-failure → getDigits, all before any reason classification.
-    const playedIdx  = newHalf.indexOf('local played');
-    const warnIdx    = newHalf.indexOf('NOT counted as no_input');
-    const collectIdx = newHalf.indexOf('local d = s:getDigits');
+    // Scope to the internal retry loop (the External block also has a getDigits).
+    const playedIdx  = loopHalf.indexOf('local played');
+    const warnIdx    = loopHalf.indexOf('NOT counted as no_input');
+    const collectIdx = loopHalf.indexOf('local d = s:getDigits');
     expect(playedIdx).toBeGreaterThan(-1);
     expect(warnIdx).toBeGreaterThan(playedIdx);
     expect(collectIdx).toBeGreaterThan(warnIdx);
@@ -305,7 +310,7 @@ describe('H — R5 max_attempts normalization in generated Lua (defensive, not a
     expect(newHalf).toContain('if max_att < 1 then max_att = 1 end');
   });
   it('the legacy gate is on ABSENCE of max_attempts, not its numeric value', () => {
-    expect(gatherBlock).toContain('if node.max_attempts == nil then');
+    expect(gatherBlock).toContain('if node.max_attempts == nil and node.retry_mode == nil then');
     // Must not gate on a numeric comparison like `> 0` / `>= 1`.
     expect(gatherBlock).not.toMatch(/node\.max_attempts\s*[<>]=?\s*\d/);
   });
@@ -396,8 +401,8 @@ describe('max_attempts_exceeded — wireable in-node exhaustion exit', () => {
   });
 
   it('retry lifecycle stays inside one invocation (single getDigits + single counter increment)', () => {
-    expect(newHalf.match(/s:getDigits\(/g)).toHaveLength(1);
-    expect(newHalf.match(/attempt = attempt \+ 1/g)).toHaveLength(1);
+    expect(loopHalf.match(/s:getDigits\(/g)).toHaveLength(1);
+    expect(loopHalf.match(/attempt = attempt \+ 1/g)).toHaveLength(1);
   });
 });
 
@@ -431,7 +436,7 @@ describe('menu replay — exception prompt then optional replay of the single me
     expect(newHalf).toContain('local rm   = node[reason .. "_replay_menu"]');
   });
   it('menu replay does NOT add a second getDigits (still exactly one per attempt)', () => {
-    expect(newHalf.match(/s:getDigits\(/g)).toHaveLength(1);
+    expect(loopHalf.match(/s:getDigits\(/g)).toHaveLength(1);
   });
   it('does NOT introduce a second menu-prompt configuration field (reuses node.prompt_*)', () => {
     // The only menu source read is node.prompt_source_type — no node.menu_* / replay_prompt_* slot.
@@ -453,5 +458,44 @@ describe('menu replay — exception prompt then optional replay of the single me
     expect(AnyNodeSchema.safeParse(base).success).toBe(true);
     // invalid value rejected
     expect(AnyNodeSchema.safeParse({ ...base, no_input_replay_menu: 'maybe' }).success).toBe(false);
+  });
+});
+
+// ── retry_mode: Internal vs External ─────────────────────────────────────────
+describe('retry_mode — Internal vs External', () => {
+  it('legacy gate now excludes retry_mode nodes (legacy only when no max_attempts AND no retry_mode)', () => {
+    expect(gatherBlock).toContain('if node.max_attempts == nil and node.retry_mode == nil then');
+  });
+
+  it('EXTERNAL block: exactly one getDigits, routes success/timeout/invalid, no loop, no max_attempts_exceeded', () => {
+    expect(externalHalf).toContain('if node.retry_mode == "external" then');
+    expect(externalHalf.match(/s:getDigits\(/g)).toHaveLength(1);          // one attempt only
+    expect(externalHalf).toContain('return br["timeout"]');                // no input → timeout
+    expect(externalHalf).toContain('return br["invalid"]');                // invalid → invalid
+    expect(externalHalf).toContain('local target = br[d] or br["_default"]'); // success (digit / Continue)
+    expect(externalHalf).not.toContain('br["max_attempts_exceeded"]');     // never routes exhaustion (code, not comment)
+    expect(externalHalf).not.toContain('while attempt');                   // no retry loop
+    expect(externalHalf).not.toContain('attempt = attempt + 1');           // no attempt counter
+  });
+
+  it('INTERNAL loop still owns retry and exits to max_attempts_exceeded', () => {
+    expect(loopHalf).toContain('while attempt < max_att');
+    expect(loopHalf).toContain('br["max_attempts_exceeded"]');
+    expect(loopHalf.match(/s:getDigits\(/g)).toHaveLength(1);              // one per attempt
+  });
+
+  it('successful multi-digit collection routes via Continue (_default), not a failure branch (both modes)', () => {
+    // External success uses br[d] or br["_default"]; internal VALID does the same.
+    expect(externalHalf).toContain('br[d] or br["_default"]');
+    expect(loopHalf).toContain('local target = br[d] or br["_default"]');
+  });
+
+  it('validator accepts retry_mode internal/external and rejects other values', () => {
+    const base = { type: 'gather', branches: { '1': 'a' } };
+    expect(AnyNodeSchema.safeParse({ ...base, retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a', max_attempts_exceeded: 'x' } }).success).toBe(true);
+    expect(AnyNodeSchema.safeParse({ ...base, retry_mode: 'external', branches: { '1': 'a', timeout: 't', invalid: 'i' } }).success).toBe(true);
+    expect(AnyNodeSchema.safeParse({ ...base, retry_mode: 'sometimes' }).success).toBe(false);
+    // legacy node (no retry_mode) still valid
+    expect(AnyNodeSchema.safeParse({ type: 'gather', branches: { '1': 'a', _default: 'b' } }).success).toBe(true);
   });
 });

@@ -216,11 +216,20 @@ end`,
         hint: 'Spoken before digit collection starts.',
         showWhen: { field: 'prompt_source_type', value: 'tts' },
       },
-      // ── Configurable retry model (OPT-IN) ────────────────────────────────
+      // ── Retry handling mode (explicit) ───────────────────────────────────
+      {
+        key: 'retry_mode', label: 'Retry handling', fieldType: 'select',
+        options: [
+          { value: 'internal', label: 'Internal — node owns the retry loop' },
+          { value: 'external', label: 'External — one attempt; route timeout/invalid in the graph' },
+        ],
+        hint: 'Internal: the node retries inside itself (per the settings below) and exits to Max attempts exceeded when exhausted. External: exactly one collection attempt; wire the Timeout and Invalid graph outputs yourself. Leave blank on legacy nodes to preserve their existing behavior.',
+      },
+      // ── Configurable retry model (Internal mode) ─────────────────────────
       // Setting "Max attempts" activates the new failure-reason-aware retry
       // path. Leaving it blank preserves the exact legacy Gather behavior.
       {
-        key: 'max_attempts', label: 'Max attempts (enables configurable retry)', fieldType: 'number', min: 1, max: 10,
+        key: 'max_attempts', label: 'Max attempts (Internal retry)', fieldType: 'number', min: 1, max: 10,
         hint: 'Leave BLANK for legacy behavior (native 3-try retry). Set a value (e.g. 3) to enable the configurable retry model below, where each failure reason has its own retry toggle and its own prompt.',
       },
       {
@@ -300,7 +309,9 @@ local function exec_gather(s, node)
   -- native 3-try retry, and routing are IDENTICAL to the pre-existing node.
   -- Do not reinterpret legacy flows.
   -- ─────────────────────────────────────────────────────────────────────
-  if node.max_attempts == nil then
+  -- Legacy applies ONLY to nodes with neither max_attempts nor an explicit
+  -- retry_mode. New retry_mode nodes (internal/external) skip legacy entirely.
+  if node.max_attempts == nil and node.retry_mode == nil then
     local min_d   = node.min_digits          or 1
     local max_d   = node.max_digits          or 1
     local timeout = (node.timeout_seconds    or 10) * 1000
@@ -358,6 +369,33 @@ local function exec_gather(s, node)
   local idt     = (node.inter_digit_timeout or 2) * 1000
   local terms   = node.terminators or ""
   local var     = node.variable_name or "gather_result"
+
+  -- ─────────────────────────────────────────────────────────────────────
+  -- EXTERNAL mode — exactly ONE collection attempt; failure handling is the
+  -- graph's responsibility. Valid input → success (digit branch, or _default
+  -- for a completed multi-digit collection = Continue). No input → "timeout"
+  -- branch. Invalid (short, or complete-but-unmapped) → "invalid" branch.
+  -- No retry loop, no max_attempts_exceeded. _default keeps its success meaning.
+  -- ─────────────────────────────────────────────────────────────────────
+  if node.retry_mode == "external" then
+    play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
+    local d = s:getDigits(max_d, terms, timeout, idt) or ""
+    s:setVariable(var, d)
+    if d == "" then
+      freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=no_input → timeout\\n")
+      return br["timeout"]
+    elseif #d < min_d then
+      freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=invalid_length → invalid\\n")
+      return br["invalid"]
+    end
+    local target = br[d] or br["_default"]
+    if target then
+      freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=VALID\\n")
+      return target
+    end
+    freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=invalid_option → invalid\\n")
+    return br["invalid"]
+  end
 
   -- R5: normalize a value read from RAW JSONB to a whole number >= 1. This is
   -- DEFENSIVE handling for malformed graph JSON only (fractions floored, <1 and

@@ -13,7 +13,7 @@ function genId() {
 export const NODE_DEFAULTS = {
   play:              { audio_url: '/media/', next: '' },
   say:               { text: '', language: 'en-US', next: '' },
-  gather:            { config_version: 2, min_digits: 1, max_digits: 1, timeout_seconds: 5, inter_digit_timeout: 2, terminators: '', variable_name: 'gather_result', prompt_source_type: 'tts', prompt_text: '', branches: {} },
+  gather:            { config_version: 2, retry_mode: 'internal', max_attempts: 3, min_digits: 1, max_digits: 1, timeout_seconds: 5, inter_digit_timeout: 2, terminators: '', variable_name: 'gather_result', prompt_source_type: 'tts', prompt_text: '', branches: {} },
   goto:              { target_node_id: '' },
   ens:               { ens_config_var: 'ens_configuration_id', recording_file_var: 'recorded_file_path', next: '' },
   ers:               { ers_configuration_id: '' },

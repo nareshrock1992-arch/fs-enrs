@@ -528,6 +528,7 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
   const reservedKeys = visibleKeys.filter(k => RESERVED.has(k) && k !== '_default');
   const hasDefault   = visibleKeys.includes('_default');
   const configurable = isGather && gatherIsConfigurable(node);
+  const external = isGather && node.retry_mode === 'external';
   const addBranch = () => {
     const next = String(digitKeys.length + 1);
     onUpdate(node.id, { branches: { ...branches, [next]: '' } });
@@ -551,9 +552,11 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
       {hasDefault && row('_default', false)}
       {isGather && (
         <p className="text-[9px] text-text-muted opacity-70 mt-1">
-          {configurable
-            ? 'Retries run inside this node; wire Max attempts exceeded for the exhaustion exit. Continue routes any valid input (menu selection or a completed multi-digit collection, e.g. a PIN). A reason branch (e.g. invalid_option) appears only when you set its Retry to No.'
-            : 'Continue routes any valid input; Timeout = no input; Invalid = fell through. Set Max attempts to enable configurable retry handling.'}
+          {external
+            ? 'External mode: one collection attempt. Continue routes any valid input (menu digit or a completed multi-digit collection). Wire Timeout (no input) and Invalid yourself — the node does not retry.'
+            : configurable
+            ? 'Internal mode: retries run inside this node; wire Max attempts exceeded for the exhaustion exit. Continue routes any valid input (menu selection or a completed multi-digit collection, e.g. a PIN). A reason branch (e.g. invalid_option) appears only when you set its Retry to No.'
+            : 'Continue routes any valid input; Timeout = no input; Invalid = fell through. Choose a Retry handling mode to switch to the v2 model.'}
         </p>
       )}
     </div>

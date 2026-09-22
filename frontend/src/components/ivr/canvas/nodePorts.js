@@ -66,7 +66,20 @@ export function gatherBranchKeysFor(node) {
   const reserved = new Set([...reason, ...GATHER_LEGACY_KEYS, '_default', 'max_attempts_exceeded']);
   const digits = existing.filter(k => !reserved.has(k));
   const out = [...digits];
-  if (gatherIsConfigurable(node)) {
+  // EXTERNAL mode — one attempt; failures are explicit graph exits. Show the
+  // success (digits/_default) plus timeout + invalid. No max_attempts_exceeded,
+  // no internal reason ports. Any already-wired reason/max key is preserved.
+  if (node?.retry_mode === 'external') {
+    out.push('timeout');
+    out.push('invalid');
+    for (const k of [...GATHER_INTERNAL_EVENTS.map(e => e.key), 'max_attempts_exceeded']) {
+      if (wired(k)) out.push(k);
+    }
+    if (wired('_default')) out.push('_default');
+    return out;
+  }
+  // INTERNAL mode (explicit) or legacy configurable (max_attempts present).
+  if (node?.retry_mode === 'internal' || gatherIsConfigurable(node)) {
     // Reason keys are governed SOLELY by their retry toggle: retry ON → hidden
     // (target, if any, is preserved in JSON and reappears when retry is set to No);
     // retry OFF → shown as an optional graph exit.

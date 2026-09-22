@@ -48,6 +48,10 @@ const GatherNodeSchema = z.object({
   // v2 marker. New Menu/DTMF nodes carry config_version:2; nodes without it are
   // treated as legacy (runtime legacy gate + legacy branch semantics preserved).
   config_version:        z.literal(2).optional(),
+  // Explicit retry-handling mode. 'internal' = node owns the retry loop (exits to
+  // max_attempts_exceeded); 'external' = one attempt, failures route to the
+  // timeout/invalid graph branches. Absent = legacy behavior (gated by max_attempts).
+  retry_mode:            z.enum(['internal', 'external']).optional(),
   // Key length must admit the longest reserved outcome key
   // ('max_attempts_exceeded' = 21 chars) alongside digit keys and _default.
   branches:              z.record(z.string().max(24), nodeId).refine(
