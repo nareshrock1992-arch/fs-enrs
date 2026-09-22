@@ -45,6 +45,9 @@ const SayNodeSchema = z.object({
 // and optional variable_name so downstream condition nodes can read digits
 const GatherNodeSchema = z.object({
   type:                  z.literal('gather'),
+  // v2 marker. New Menu/DTMF nodes carry config_version:2; nodes without it are
+  // treated as legacy (runtime legacy gate + legacy branch semantics preserved).
+  config_version:        z.literal(2).optional(),
   // Key length must admit the longest reserved outcome key
   // ('max_attempts_exceeded' = 21 chars) alongside digit keys and _default.
   branches:              z.record(z.string().max(24), nodeId).refine(

@@ -543,7 +543,7 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
           onClick={() => onUpdate(node.id, { branches: { ...branches, _default: '' } })}
           className="text-[10px] text-text-muted hover:text-brand ml-3"
         >
-          + Add _default (catch-all)
+          + Add Continue / valid-input catch-all
         </button>
       )}
       {/* Reserved outcome rows for the ACTIVE model only (never both sets). */}
@@ -552,8 +552,8 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
       {isGather && (
         <p className="text-[9px] text-text-muted opacity-70 mt-1">
           {configurable
-            ? 'Configurable-retry mode (Max attempts set): retries run inside this node; wire max_attempts_exceeded for the exhaustion exit. A reason branch (e.g. invalid_option) appears only when you set its Retry to No. Legacy timeout/invalid are hidden unless already wired.'
-            : 'Legacy mode (no Max attempts): timeout = no input, invalid = fell through, _default = catch-all. Set Max attempts to switch to the configurable-retry model.'}
+            ? 'Retries run inside this node; wire Max attempts exceeded for the exhaustion exit. Continue routes any valid input (menu selection or a completed multi-digit collection, e.g. a PIN). A reason branch (e.g. invalid_option) appears only when you set its Retry to No.'
+            : 'Continue routes any valid input; Timeout = no input; Invalid = fell through. Set Max attempts to enable configurable retry handling.'}
         </p>
       )}
     </div>

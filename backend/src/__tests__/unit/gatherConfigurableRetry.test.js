@@ -401,6 +401,20 @@ describe('max_attempts_exceeded — wireable in-node exhaustion exit', () => {
   });
 });
 
+// ── v2 marker: config_version accepted; legacy nodes (no marker) still valid ───
+describe('gather v2 config_version marker', () => {
+  const base = { type: 'gather', max_attempts: 2, branches: { '1': 'a', max_attempts_exceeded: 'x' } };
+  it('accepts config_version: 2', () => {
+    expect(AnyNodeSchema.safeParse({ ...base, config_version: 2 }).success).toBe(true);
+  });
+  it('accepts a legacy node with no config_version', () => {
+    expect(AnyNodeSchema.safeParse({ type: 'gather', branches: { '1': 'a', _default: 'b' } }).success).toBe(true);
+  });
+  it('rejects a wrong config_version value', () => {
+    expect(AnyNodeSchema.safeParse({ ...base, config_version: 1 }).success).toBe(false);
+  });
+});
+
 // ── Menu replay on retry: exception prompt → optional menu replay → getDigits ──
 describe('menu replay — exception prompt then optional replay of the single menu', () => {
   it('attempt 1 plays the menu prompt (node.prompt_*)', () => {

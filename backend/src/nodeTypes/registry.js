@@ -158,7 +158,9 @@ end`,
     digitBranches: true,
     summaryTemplate: 'Collect ${max_digits} digit(s) · ${timeout_seconds}s',
     portLabels: {
-      timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts',
+      // v2 user-facing labels — "_default" is surfaced as the Continue / valid-input
+      // output; the raw "_default" key is never shown to the designer.
+      timeout: 'No input', invalid: 'Invalid', _default: 'Continue', max_attempts_exceeded: 'Max attempts',
       // Shown as graph exits only when the matching retry is disabled.
       no_input: 'No input', invalid_length: 'Invalid length', invalid_option: 'Invalid option',
     },

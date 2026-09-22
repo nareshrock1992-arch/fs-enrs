@@ -38,9 +38,9 @@ describe('summaryResolve maps (id/token → name)', () => {
 });
 
 describe('portLabels (display only — branch keys unchanged)', () => {
-  it('gather reserved keys get friendly labels', () => {
+  it('gather reserved keys get friendly labels (v2: _default surfaced as Continue)', () => {
     expect(getNodeType('gather').portLabels).toEqual({
-      timeout: 'No input', invalid: 'No match', _default: 'Any other', max_attempts_exceeded: 'Max attempts',
+      timeout: 'No input', invalid: 'Invalid', _default: 'Continue', max_attempts_exceeded: 'Max attempts',
       no_input: 'No input', invalid_length: 'Invalid length', invalid_option: 'Invalid option',
     });
   });
