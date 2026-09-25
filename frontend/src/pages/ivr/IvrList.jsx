@@ -39,6 +39,10 @@ export default function IvrList() {
   const [createName,  setCreateName]  = useState('');
   const [createError, setCreateError] = useState('');
   const [creating,    setCreating]    = useState(false);
+  const [orgs,        setOrgs]        = useState([]);
+  // Resolved dynamically from the loaded organizations (the system org), never a
+  // hardcoded id — the system/default org id differs per deployment. See load effect.
+  const [createOrgId, setCreateOrgId] = useState('');
 
   // ── Template creation modal ──────────────────────────────────────────────────
   const [tplModal, setTplModal] = useState(null); // null | template object
@@ -76,11 +80,29 @@ export default function IvrList() {
       .catch(() => {});
   }, [canEdit]);
 
+  // Organizations for the Create modal selector (create-path only). The default
+  // selection is the system/default organization (is_system === true), resolved
+  // dynamically from the data — never a hardcoded id (it differs per deployment).
+  useEffect(() => {
+    if (!canEdit) return;
+    api.orgs.list()
+      .then(r => {
+        const list = r.organizations || [];
+        setOrgs(list);
+        const sys = list.find(o => o.is_system);
+        setCreateOrgId(sys ? sys.id : (list[0]?.id ?? ''));
+      })
+      .catch(() => {});
+  }, [canEdit]);
+
   // ── Create flow ──────────────────────────────────────────────────────────────
 
   function openCreateModal() {
     setCreateName('');
     setCreateError('');
+    // Reset to the system/default organization resolved from the loaded list.
+    const sys = orgs.find(o => o.is_system);
+    setCreateOrgId(sys ? sys.id : (orgs[0]?.id ?? ''));
     setShowCreate(true);
   }
 
@@ -91,7 +113,8 @@ export default function IvrList() {
     setCreating(true);
     setCreateError('');
     try {
-      const { flow } = await api.ivr.create({ name });
+      const orgId = Number(createOrgId) || undefined;
+      const { flow } = await api.ivr.create(orgId ? { name, organization_id: orgId } : { name });
       setShowCreate(false);
       navigate(`/ivr/${flow.flow_uuid}`);
     } catch (err) {
@@ -351,6 +374,21 @@ export default function IvrList() {
               {createError && (
                 <p className="text-xs text-red-400 mt-1.5">{createError}</p>
               )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-muted mb-1.5 uppercase tracking-wide">
+                Organization
+              </label>
+              <select
+                value={createOrgId}
+                onChange={e => setCreateOrgId(Number(e.target.value))}
+                className="w-full bg-surface border border-surface-border rounded-lg px-3 py-2
+                           text-sm text-text-primary focus:outline-none focus:border-brand transition-colors"
+              >
+                {orgs.map(o => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
             </div>
             <div className="flex gap-2 justify-end pt-1">
               <button

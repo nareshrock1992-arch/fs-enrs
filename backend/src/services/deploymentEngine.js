@@ -17,6 +17,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fsPathService } from './freeSwitchPathService.js';
+import { fsConfig } from '../config/fsConfig.js';
 import { generateIvrExecutorLua } from '../utils/luaGenerator.js';
 import { generateDialplanXml }    from '../utils/xmlGenerator.js';
 import { eslCommand, verifyExtensionLoaded } from './eslService.js';
@@ -134,6 +135,33 @@ async function ensureDirs() {
 
 // ── Deploy Lua executor ───────────────────────────────────────────────────────
 
+// Narrow, file-level group ownership for a single generated artifact.
+//
+// When FS_GID is configured (non-root FreeSWITCH), set ONLY this file's group
+// to FS_GID — preserving its owner — so the FreeSWITCH process (a member of
+// that group) can read the 0640 executor. This is deliberately file-scoped:
+// it never touches scriptDir or any other file, and never recurses.
+//
+// FS_GID unset → no-op (ownership enforcement not configured). A failure
+// (e.g. the backend is not permitted to change the group, as when the Docker
+// supplementary group is missing) is non-fatal but surfaced as an actionable
+// warning — we never silently claim the group was applied when it was not.
+async function applyFsGroup(filePath) {
+  const gid = fsConfig.fsGid;
+  if (gid == null) return; // FS_GID not configured
+  try {
+    const st = await fs.stat(filePath);
+    await fs.chown(filePath, st.uid, gid); // keep owner, change group only
+  } catch (err) {
+    console.warn(
+      `[deploymentEngine] FS_GID group ownership NOT applied to ${filePath} ` +
+      `(FS_GID=${gid}): ${err.message}. FreeSWITCH may be unable to read this ` +
+      `file until its group is corrected — ensure the backend process is a ` +
+      `member of gid ${gid} (Docker: add it as a supplementary group).`
+    );
+  }
+}
+
 async function deployLuaExecutor() {
   const luaContent = generateIvrExecutorLua({
     apiBase:   config.freeswitch?.apiUrl || `http://127.0.0.1:${config.port}`,
@@ -150,6 +178,10 @@ async function deployLuaExecutor() {
   // the embedded API key.  Requires the freeswitch process to run as a user that
   // owns or is in the group for this file (the default on Debian FreeSWITCH packages).
   await fs.chmod(luaPath, 0o640).catch(() => {});
+
+  // File-level group ownership (no-op unless FS_GID is configured). Target is
+  // exactly this generated Lua file — never scriptDir, never recursive.
+  await applyFsGroup(luaPath);
 
   return luaPath;
 }

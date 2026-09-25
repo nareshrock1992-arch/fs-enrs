@@ -30,6 +30,26 @@ function env(key, fallback) {
   return process.env[key] || fallback;
 }
 
+// FS_GID — numeric GID of the host FreeSWITCH group.
+//
+// OPTIONAL and identity-only (never a path). It is meaningful only when
+// FreeSWITCH runs as a NON-ROOT user whose group must be able to read the
+// generated Lua executor and write recordings. When set, deployment applies
+// this group (file-level) to the generated Lua, and host-side provisioning
+// sets it on the ENRS-managed directories.
+//
+// Unset / empty / non-numeric  → null. A null value means "ownership
+// enforcement is not configured" — it is NOT an assertion that FreeSWITCH is
+// root. There is deliberately NO default GID (never 1000, never a guess).
+function parseFsGid(raw) {
+  if (raw === undefined || raw === null) return null;
+  const s = String(raw).trim();
+  if (s === '') return null;
+  if (!/^\d+$/.test(s)) return null;      // strictly a non-negative integer
+  const n = Number(s);
+  return Number.isInteger(n) ? n : null;
+}
+
 // Build the config object from env vars with sensible defaults.
 // All paths can be overridden per-variable or via FS_BASE_DIR.
 function buildConfig() {
@@ -40,6 +60,8 @@ function buildConfig() {
 
   return {
     baseDir:      base,
+    // Optional host FreeSWITCH group id (identity, not a path). null when unset.
+    fsGid:        parseFsGid(process.env.FS_GID),
     confDir:      env('FS_CONF_DIR',      '/etc/freeswitch'),
     dialplanDir:  env('FS_DIALPLAN_DIR',  '/etc/freeswitch/dialplan'),
     directoryDir: env('FS_DIRECTORY_DIR', '/etc/freeswitch/directory'),
