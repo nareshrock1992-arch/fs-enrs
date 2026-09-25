@@ -9,9 +9,8 @@ export default function ConnectionDot({ portKey, label, color = '#2563EB', conne
     <div className="relative h-full select-none">
       {/* Branch label */}
       <span
-        className="absolute top-1/2 -translate-y-1/2 text-[11px] text-text-secondary
-                   text-right truncate leading-tight"
-        style={{ right: PORT_INSET + 12, left: 10 }}
+        className="absolute top-1/2 -translate-y-1/2 text-[11px] text-right truncate leading-tight"
+        style={{ right: PORT_INSET + 12, left: 10, color: '#475569' }}
         title={label}
       >
         {label}
@@ -30,7 +29,7 @@ export default function ConnectionDot({ portKey, label, color = '#2563EB', conne
           className="rounded-full transition-transform group-hover:scale-125"
           style={{
             width: 11, height: 11,
-            background: connected ? color : 'rgb(var(--surface-panel))',
+            background: connected ? color : '#FFFFFF',
             border: `2px solid ${color}`,
             boxShadow: connected ? `0 0 0 3px ${color}22` : 'none',
           }}
