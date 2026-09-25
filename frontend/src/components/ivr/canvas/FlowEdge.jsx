@@ -38,21 +38,25 @@ export default function FlowEdge({
         markerEnd={`url(#arrow-${color.replace('#', '')})`}
         opacity={0.8}
       />
-      {label && (
-        <>
-          <circle cx={midX} cy={midY} r={9} fill="#1e2130" stroke={color} strokeWidth={1} />
-          <text
-            x={midX} y={midY + 4}
-            textAnchor="middle"
-            fontSize={9}
-            fontWeight={600}
-            fill={color}
-            style={{ pointerEvents: 'none', userSelect: 'none' }}
-          >
-            {label}
-          </text>
-        </>
-      )}
+      {label && (() => {
+        const w = Math.max(20, String(label).length * 6.4 + 14);
+        return (
+          <g style={{ pointerEvents: 'none' }}>
+            {/* Neutral pill — sits on the edge midpoint, not raw text on the line */}
+            <rect
+              x={midX - w / 2} y={midY - 9} width={w} height={18} rx={9}
+              stroke={color} strokeWidth={1}
+              style={{ fill: 'rgb(var(--surface-panel))' }}
+            />
+            <text
+              x={midX} y={midY + 3.5} textAnchor="middle" fontSize={10} fontWeight={600}
+              style={{ fill: 'rgb(var(--text-secondary))', userSelect: 'none' }}
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })()}
     </g>
   );
 }

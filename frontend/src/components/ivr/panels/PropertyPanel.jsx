@@ -1,10 +1,11 @@
-import { Trash2, Star, Search, X, Play, Check } from 'lucide-react';
+import { Trash2, Star, Search, X, Play, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { api } from '../../../api/client.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
+import { nodeStyle } from '../canvas/nodeStyle.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -639,7 +640,43 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
 
 // ── PropertyPanel ─────────────────────────────────────────────────────────────
 
-export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry, nodes = {} }) {
+// ── Presentation-only field sectioning ────────────────────────────────────────
+// Groups configSchema fields into collapsible sections purely for readability.
+// It NEVER changes field keys, values, order-within-section, showWhen, or
+// validation — it only decides which collapsible header a field is drawn under.
+const FIELD_SECTIONS = [
+  { title: 'Input',   match: k => /^(min_digits|max_digits|timeout_seconds|inter_digit_timeout|terminators|variable_name)$/.test(k) },
+  { title: 'Prompt',  match: k => /prompt/.test(k) },
+  { title: 'Retries', match: k => /(retry|max_attempts|no_input|invalid_length|invalid_option)/.test(k) },
+  { title: 'Outputs', match: k => /^(next|branches|goto|target_node_id|true_node|false_node)$/.test(k) },
+];
+const SECTION_ORDER = ['General', 'Input', 'Prompt', 'Retries', 'Outputs', 'Settings'];
+function sectionForField(fieldDef) {
+  const k = fieldDef.key || '';
+  for (const s of FIELD_SECTIONS) if (s.match(k)) return s.title;
+  return 'General';
+}
+
+function CollapsibleSection({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="mb-2 border-b border-surface-border/60 last:border-0 pb-1">
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-1.5 py-1.5 text-[11px] font-semibold uppercase
+                   tracking-wide text-text-secondary hover:text-text-primary transition-colors
+                   focus:outline-none focus:ring-2 focus:ring-primary/20 rounded"
+      >
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {title}
+      </button>
+      {open && <div className="pt-1">{children}</div>}
+    </div>
+  );
+}
+
+export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry, onClose, nodes = {} }) {
   const { byType } = useNodeTypes();
 
   if (!node) {
@@ -651,30 +688,38 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
     );
   }
 
-  const cfg        = byType[node.type] || { label: node.type, icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc', configSchema: [] };
+  const cfg        = byType[node.type] || { label: node.type, icon: '?', category: '', configSchema: [] };
+  const { accent, Icon } = nodeStyle(cfg);
   const nodeErrors = errors[node.id] || [];
   const onChange   = patch => onUpdate(node.id, patch);
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-surface-border shrink-0"
-           style={{ background: cfg.bg, borderBottomColor: cfg.border + '40' }}>
+      {/* Header — neutral surface with category accent */}
+      <div className="px-3 py-2.5 border-b border-surface-border shrink-0 bg-surface-panel">
         <div className="flex items-center gap-2">
-          <span className="text-lg">{cfg.icon}</span>
+          <span className="flex items-center justify-center w-7 h-7 rounded-md shrink-0"
+                style={{ background: `${accent}1a`, color: accent }}>
+            <Icon size={15} strokeWidth={2} />
+          </span>
           <div className="flex-1 min-w-0">
-            <p className="text-[9px]" style={{ color: cfg.color + '99' }}>{cfg.label}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide truncate" style={{ color: accent }}>{cfg.label}</p>
             {/* Editable nickname — shown as the node title on the canvas card */}
             <input
               value={node.nickname || ''}
               onChange={e => onChange({ nickname: e.target.value || undefined })}
               placeholder={cfg.label}
-              className="w-full bg-transparent text-xs font-bold outline-none border-b border-transparent
-                         focus:border-current placeholder:opacity-40 truncate"
-              style={{ color: cfg.color }}
+              className="w-full bg-transparent text-[13px] font-semibold text-text-primary outline-none
+                         border-b border-transparent focus:border-primary placeholder:text-text-muted truncate"
             />
-            <p className="text-[9px] text-text-muted font-mono truncate mt-0.5">{node.id}</p>
+            <p className="text-[10px] text-text-muted font-mono truncate mt-0.5">{node.id}</p>
           </div>
+          {onClose && (
+            <button onClick={onClose} title="Close inspector" aria-label="Close inspector"
+                    className="text-text-muted hover:text-text-primary transition-colors shrink-0 self-start">
+              <X size={15} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -713,17 +758,31 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
                        focus:border-brand transition-colors resize-none"
           />
         </label>
-        {(cfg.configSchema || []).map(fieldDef => (
-          <GenericField
-            key={fieldDef.key}
-            fieldDef={fieldDef}
-            node={node}
-            nodes={nodes}
-            byType={byType}
-            onChange={onChange}
-            onUpdate={onUpdate}
-          />
-        ))}
+        {(() => {
+          const schema = cfg.configSchema || [];
+          const renderField = fieldDef => (
+            <GenericField
+              key={fieldDef.key}
+              fieldDef={fieldDef}
+              node={node}
+              nodes={nodes}
+              byType={byType}
+              onChange={onChange}
+              onUpdate={onUpdate}
+            />
+          );
+          // Group fields into sections (order within a section preserved).
+          const grouped = {};
+          for (const f of schema) { const s = sectionForField(f); (grouped[s] ||= []).push(f); }
+          const sections = SECTION_ORDER.filter(s => grouped[s]?.length);
+          // Simple nodes (a single section) render flat — no pointless headers.
+          if (sections.length <= 1) return schema.map(renderField);
+          return sections.map(s => (
+            <CollapsibleSection key={s} title={s} defaultOpen={s === 'General' || s === 'Input'}>
+              {grouped[s].map(renderField)}
+            </CollapsibleSection>
+          ));
+        })()}
         {cfg.footnote && (
           <div className="mb-3 px-2.5 py-2 rounded-lg bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed">
             {cfg.footnote}

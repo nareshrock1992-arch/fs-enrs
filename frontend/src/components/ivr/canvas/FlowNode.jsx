@@ -4,65 +4,35 @@ import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import { nodeSubtitleLines } from './nodeSubtitle.js';
+import { nodeStyle } from './nodeStyle.js';
+import {
+  NODE_WIDTH, HEADER_H, SUMMARY_H, PORT_ROW_H, PORT_TOP, nodeHeight,
+} from './nodeGeometry.js';
 import ConnectionDot from './ConnectionDot.jsx';
 
-const FALLBACK_CFG = { label: 'Unknown', icon: '?', bg: '#2a2a2a', border: '#555', color: '#ccc' };
+// Re-export geometry so existing importers (FlowCanvas) keep working.
+export { NODE_WIDTH } from './nodeGeometry.js';
+export { NODE_HEIGHT } from './nodeGeometry.js';
 
-// Canvas subtitle: the node's summary (primary) plus its optional description
-// (secondary line beneath). See nodeSubtitle.js for the exact composition rules
-// (incl. the Go To Node case where a description replaces the raw-id summary).
-function nodeSummary(node, cfg, summaryResolvers) {
-  const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
-  if (!primary && !secondary) return null;
-  return (
-    <>
-      {primary && <span className="truncate block">{primary}</span>}
-      {secondary && (
-        <span className="truncate block italic opacity-80" title={secondary}>{secondary}</span>
-      )}
-    </>
-  );
-}
-
-export const NODE_WIDTH  = 148;
-export const NODE_HEIGHT = 80;
+const FALLBACK_CFG = { label: 'Unknown', type: '', category: '', ports: [] };
 
 export default function FlowNode({
-  node,
-  isSelected,
-  isEntry,
-  hasErrors,
-  hasWarnings,
-  edges,
-  scale,
-  onSelect,
-  onMove,
-  onDelete,
-  onPortDragStart,
-  onPortClick,
-  onDragStart,
-  onDragEnd,
-  onContextMenu,
-  summaryResolvers,
+  node, isSelected, isEntry, hasErrors, hasWarnings, edges, scale,
+  onSelect, onMove, onDelete, onPortDragStart, onPortClick,
+  onDragStart, onDragEnd, onContextMenu, summaryResolvers,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
   const ports = getPortsForNode(node, cfg.ports, cfg.branchKeys, cfg.portLabels);
-  const nodeRef   = useRef(null);
-  const startPos  = useRef({ x: node.x, y: node.y });
+  const { accent, Icon } = nodeStyle(cfg);
+  const startPos = useRef({ x: node.x, y: node.y });
   const [isDragging, setIsDragging] = useState(false);
 
   const { onPointerDown: headerPointerDown } = useDrag({
     threshold: 5,
-    onStart: (e) => {
-      startPos.current = { x: node.x, y: node.y };
-      setIsDragging(true);
-      onDragStart?.(node.id, e);
-    },
-    onMove: (dx, dy) => {
-      onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
-    },
-    onEnd: (dx, dy, e, moved) => {
+    onStart: (e) => { startPos.current = { x: node.x, y: node.y }; setIsDragging(true); onDragStart?.(node.id, e); },
+    onMove:  (dx, dy) => onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale),
+    onEnd:   (dx, dy, e, moved) => {
       setIsDragging(false);
       if (moved) onMove(node.id, startPos.current.x + dx / scale, startPos.current.y + dy / scale);
       onDragEnd?.(node.id, e);
@@ -70,120 +40,103 @@ export default function FlowNode({
   });
 
   const connectedPorts = new Set(edges.filter(e => e.from === node.id).map(e => e.fromPort));
+  const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
+  const height = nodeHeight(ports.length);
 
-  const borderColor = hasErrors
-    ? '#ef4444'
+  // Semantic state ring (token-based; never colour-only — border + ring together).
+  const ring = hasErrors
+    ? '0 0 0 2px rgb(var(--danger) / 0.9)'
     : isSelected
-    ? '#f1f5f9'
+    ? '0 0 0 2px rgb(var(--brand) / 0.9)'
     : isEntry
-    ? '#4f46e5'
+    ? '0 0 0 2px rgb(var(--brand) / 0.55)'
     : hasWarnings
-    ? '#f59e0b'
-    : cfg.border;
+    ? '0 0 0 2px rgb(var(--warning) / 0.85)'
+    : null;
+  const shadow = isDragging
+    ? '0 10px 24px rgb(0 0 0 / 0.18)'
+    : '0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04)';
 
   return (
     <div
-      ref={nodeRef}
       data-node-id={node.id}
       style={{
-        position:        'absolute',
-        left:            node.x,
-        top:             node.y,
-        width:           NODE_WIDTH,
-        zIndex:          isDragging ? 100 : isSelected ? 10 : 1,
-        // will-change lets the compositor layer this node independently
-        willChange:      isDragging ? 'transform' : undefined,
-        // No CSS transition during drag — it adds latency.
-        // Transition only when not dragging (e.g. snap-into-place on drop).
-        transition:      isDragging ? 'none' : 'box-shadow 0.1s',
+        position: 'absolute', left: node.x, top: node.y, width: NODE_WIDTH, height,
+        zIndex: isDragging ? 100 : isSelected ? 10 : 1,
+        willChange: isDragging ? 'transform' : undefined,
+        transition: isDragging ? 'none' : 'box-shadow 140ms',
       }}
-      onClick={e => { e.stopPropagation(); }}
+      onClick={e => e.stopPropagation()}
       onPointerUp={e => { e.stopPropagation(); onPortClick?.(node.id); }}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(node.id, e); }}
     >
       {isEntry && (
         <div
           title="This node executes first when a call arrives"
-          style={{ position: 'absolute', top: -22, left: 0 }}
-          className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md
-                     bg-brand text-white text-[9px] font-bold uppercase tracking-wide
-                     select-none whitespace-nowrap pointer-events-none"
+          style={{ position: 'absolute', top: -20, left: 0, background: 'rgb(var(--brand))' }}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-white text-[10px]
+                     font-semibold uppercase tracking-wide select-none whitespace-nowrap pointer-events-none"
         >
           ▶ Start
         </div>
       )}
 
       <div
-        style={{
-          background:   cfg.bg,
-          border:       `1.5px solid ${borderColor}`,
-          borderRadius: 10,
-          boxShadow: isDragging
-            ? `0 0 0 2px #f1f5f940, 0 16px 48px #00000080, 0 4px 12px #00000060`
-            : isSelected
-            ? `0 0 0 2px #f1f5f960, 0 4px 20px #00000060`
-            : hasErrors
-            ? `0 0 0 2px #ef444440`
-            : isEntry
-            ? `0 0 0 2px #4f46e560, 0 2px 12px #00000040`
-            : hasWarnings
-            ? `0 0 0 2px #f59e0b30`
-            : '0 2px 8px #00000040',
-          overflow:  'hidden',
-          userSelect: 'none',
-          // Slight scale lift while dragging — gives tactile "picked up" feel
-          transform: isDragging ? 'scale(1.025)' : undefined,
-          transformOrigin: '50% 50%',
-        }}
+        className="h-full rounded-lg bg-surface-panel border border-surface-border overflow-hidden"
+        style={{ boxShadow: [ring, shadow].filter(Boolean).join(', '), transform: isDragging ? 'scale(1.02)' : undefined }}
       >
+        {/* Category accent bar */}
+        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: accent }} />
+
         {/* Header — drag handle */}
         <div
-          style={{
-            borderBottom: `1px solid ${cfg.border}30`,
-            cursor: isDragging ? 'grabbing' : 'grab',
-          }}
-          className="px-2.5 py-1.5 flex items-center gap-1.5"
           onPointerDown={headerPointerDown}
+          style={{ height: HEADER_H, cursor: isDragging ? 'grabbing' : 'grab' }}
+          className="pl-3 pr-2 flex items-center gap-2 border-b border-surface-border"
         >
-          <span className="text-sm leading-none">{cfg.icon}</span>
-          <span style={{ color: cfg.color }} className="text-[10px] font-bold uppercase tracking-wide truncate flex-1">
+          <span className="flex items-center justify-center w-6 h-6 rounded-md shrink-0"
+                style={{ background: `${accent}1a`, color: accent }}>
+            <Icon size={14} strokeWidth={2} />
+          </span>
+          <span className="text-[13px] font-semibold text-text-primary truncate flex-1 leading-tight">
             {node.nickname || cfg.label}
           </span>
           {isSelected && (
             <button
-              className="ml-auto opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity"
-              style={{ color: cfg.color }}
+              className="text-text-muted hover:text-danger transition-colors shrink-0"
+              aria-label="Delete node"
               onPointerDown={e => e.stopPropagation()}
               onClick={e => { e.stopPropagation(); onDelete(node.id); }}
             >
-              <Trash2 size={11} />
+              <Trash2 size={13} />
             </button>
           )}
         </div>
 
-        {/* Body — click opens settings panel */}
+        {/* Summary (reserved area) — click opens inspector */}
         <div
-          className="px-2.5 py-1.5 text-[10px] text-text-muted space-y-0.5 cursor-pointer"
+          style={{ height: SUMMARY_H }}
+          className="px-3 py-1 text-[11px] text-text-secondary leading-tight cursor-pointer overflow-hidden"
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}
+          title={[primary, secondary].filter(Boolean).join(' — ')}
         >
-          {nodeSummary(node, cfg, summaryResolvers)}
+          {primary && <span className="truncate block">{primary}</span>}
+          {secondary && <span className="truncate block text-text-muted italic">{secondary}</span>}
         </div>
 
-        {/* Output ports */}
-        {ports.length > 0 && (
-          <div className="px-2 pb-2 pt-0.5">
-            {ports.map(p => (
-              <ConnectionDot
-                key={p.key}
-                portKey={p.key}
-                label={p.label}
-                color={cfg.border}
-                connected={connectedPorts.has(p.key)}
-                onDragStart={(portKey) => onPortDragStart?.(node.id, portKey)}
-              />
-            ))}
+        {/* Output ports — absolutely positioned to match FlowCanvas anchor math */}
+        {ports.map((p, i) => (
+          <div key={p.key}
+               style={{ position: 'absolute', left: 0, right: 0, top: PORT_TOP + i * PORT_ROW_H, height: PORT_ROW_H }}>
+            <ConnectionDot
+              portKey={p.key}
+              label={p.label}
+              color={accent}
+              connected={connectedPorts.has(p.key)}
+              onDragStart={(portKey) => onPortDragStart?.(node.id, portKey)}
+            />
           </div>
-        )}
+        ))}
       </div>
     </div>
   );

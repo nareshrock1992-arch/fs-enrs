@@ -5,6 +5,7 @@ import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { getPortKeysForNode, labelFor } from './nodePorts.js';
 import FlowNode, { NODE_WIDTH, NODE_HEIGHT } from './FlowNode.jsx';
+import { PORT_INSET, portCenterY, nodeHeight } from './nodeGeometry.js';
 import FlowEdge, { DraftEdge } from './FlowEdge.jsx';
 
 // Human-readable Condition operators for the canvas summary (display only —
@@ -20,17 +21,14 @@ const OPERATOR_LABELS = {
 // ── Port position relative to node top-left (canvas coords) ──────────────────
 
 function portPosition(node, portKey, allPorts) {
-  const portIndex = allPorts.indexOf(portKey);
-  const portCount = allPorts.length;
-  const x = node.x + NODE_WIDTH;
-  const bodyStart  = 52;
-  const portSpacing = portCount > 0 ? Math.min(22, (NODE_HEIGHT - bodyStart) / portCount) : 0;
-  const y = node.y + bodyStart + Math.max(0, portIndex) * portSpacing + 10;
+  // Anchor to the exact rendered dot centre (see nodeGeometry + ConnectionDot).
+  const x = node.x + NODE_WIDTH - PORT_INSET;
+  const y = node.y + portCenterY(allPorts.indexOf(portKey));
   return { x, y };
 }
 
-function inputPosition(node) {
-  return { x: node.x, y: node.y + NODE_HEIGHT / 2 };
+function inputPosition(node, height = NODE_HEIGHT) {
+  return { x: node.x, y: node.y + height / 2 };
 }
 
 // ── Edge colours keyed by port ────────────────────────────────────────────────
@@ -422,7 +420,7 @@ export default function FlowCanvas({
     const minX = Math.min(...xs) - 40;
     const minY = Math.min(...ys) - 40;
     const maxX = Math.max(...xs) + NODE_WIDTH  + 40;
-    const maxY = Math.max(...ys) + NODE_HEIGHT + 40;
+    const maxY = Math.max(...nodeList.map(n => n.y + nodeHeight(portKeysFor(n).length))) + 40;
     const el   = canvasRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
@@ -620,7 +618,7 @@ export default function FlowCanvas({
           {edges.map(edge => {
             if (!nodes[edge.from] || !nodes[edge.to]) return null;
             const from = getPortPos(edge.from, edge.fromPort);
-            const to   = inputPosition(nodes[edge.to]);
+            const to   = inputPosition(nodes[edge.to], nodeHeight(portKeysFor(nodes[edge.to]).length));
             return (
               <FlowEdge
                 key={edge.id}

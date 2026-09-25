@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertTriangle, Star, X } from 'lucide-react';
+import { AlertTriangle, Star, X, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
 
 import { useIvrGraph } from '../../hooks/useIvrGraph.js';
 import { api } from '../../api/client.js';
@@ -69,6 +69,28 @@ export default function IvrBuilder() {
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   }, [propWidth]);
+
+  // Collapsible panels — canvas-first layout. Persisted per-viewer.
+  const [paletteOpen, setPaletteOpen] = useState(() => {
+    try { return localStorage.getItem('ivr.paletteOpen') !== '0'; } catch { return true; }
+  });
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    try { return localStorage.getItem('ivr.inspectorOpen') !== '0'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('ivr.paletteOpen', paletteOpen ? '1' : '0'); } catch {} }, [paletteOpen]);
+  useEffect(() => { try { localStorage.setItem('ivr.inspectorOpen', inspectorOpen ? '1' : '0'); } catch {} }, [inspectorOpen]);
+  // Selecting a node re-opens the inspector (drawer behaviour).
+  useEffect(() => { if (graph.selected) setInspectorOpen(true); }, [graph.selected]);
+
+  // Responsive: auto-collapse the palette on medium/narrow viewports so the
+  // canvas stays dominant. One-way nudge — the user can always re-open it, and
+  // we never auto-reopen (avoids layout jumps / fighting the user).
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth < 1180) setPaletteOpen(false); };
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const [showHistory,   setShowHistory]   = useState(false);
   const [showBind,      setShowBind]      = useState(false);
@@ -149,17 +171,7 @@ export default function IvrBuilder() {
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
 
-      {/* Top bar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-surface-border bg-surface-panel shrink-0">
-        <button onClick={() => navigate('/ivr')}
-                className="btn-ghost p-1.5 text-text-muted hover:text-text-primary">
-          <ArrowLeft size={15} />
-        </button>
-        <span className="text-xs text-text-muted">/</span>
-        <span className="text-xs text-text-muted">IVR Flows</span>
-      </div>
-
-      {/* Toolbar */}
+      {/* Compact header + toolbar (merged into one row) */}
       <BuilderToolbar
         flow={graph.flowMeta}
         dirty={graph.dirty}
@@ -175,6 +187,7 @@ export default function IvrBuilder() {
         onSaveNow={graph.saveNow}
         onToggleErrors={() => setShowErrorPanel(v => !v)}
         showErrors={showErrorPanel}
+        onBack={() => navigate('/ivr')}
       />
 
       {/* Entry loss warning — persistent until a new Start node is assigned */}
@@ -217,14 +230,16 @@ export default function IvrBuilder() {
         />
       )}
 
-      {/* Main 3-column layout */}
-      <div className="flex flex-1 min-h-0">
+      {/* Main canvas-first layout — side panels collapse; canvas expands */}
+      <div className="flex flex-1 min-h-0 relative">
 
-        {/* Left — Node Palette */}
-        <div style={{ width: PALETTE_WIDTH, minWidth: PALETTE_WIDTH }}
-             className="flex flex-col border-r border-surface-border bg-surface-panel overflow-hidden">
-          <NodePalette onAdd={handlePaletteAdd} />
-        </div>
+        {/* Left — Node Palette (collapsible) */}
+        {paletteOpen && (
+          <div style={{ width: PALETTE_WIDTH, minWidth: PALETTE_WIDTH }}
+               className="flex flex-col border-r border-surface-border bg-surface-panel overflow-hidden">
+            <NodePalette onAdd={handlePaletteAdd} onCollapse={() => setPaletteOpen(false)} />
+          </div>
+        )}
 
         {/* Centre — Canvas */}
         <div className="flex-1 relative overflow-hidden">
@@ -249,28 +264,57 @@ export default function IvrBuilder() {
             onViewportChange={graph.moveViewport}
           />
 
-          {/* Zoom controls and stats are rendered by FlowCanvas */}
+          {/* Floating re-open toggle: palette */}
+          {!paletteOpen && (
+            <button
+              onClick={() => setPaletteOpen(true)}
+              title="Show node library"
+              aria-label="Show node library"
+              className="absolute left-2 top-2 z-20 flex items-center gap-1.5 px-2 py-1.5 rounded-md
+                         bg-surface-panel border border-surface-border shadow-sm text-text-secondary
+                         hover:text-text-primary hover:border-primary/40 transition-colors"
+            >
+              <PanelLeftOpen size={15} /> <span className="text-[11px] font-medium">Nodes</span>
+            </button>
+          )}
+
+          {/* Floating re-open toggle: inspector (only when a node is selected) */}
+          {selectedNode && !inspectorOpen && (
+            <button
+              onClick={() => setInspectorOpen(true)}
+              title="Show inspector"
+              aria-label="Show inspector"
+              className="absolute right-2 top-2 z-20 flex items-center gap-1.5 px-2 py-1.5 rounded-md
+                         bg-surface-panel border border-surface-border shadow-sm text-text-secondary
+                         hover:text-text-primary hover:border-primary/40 transition-colors"
+            >
+              <PanelRightOpen size={15} /> <span className="text-[11px] font-medium">Inspector</span>
+            </button>
+          )}
         </div>
 
-        {/* Right — Property Panel (user-resizable) */}
-        <div style={{ width: propWidth, minWidth: propWidth }}
-             className="relative flex flex-col border-l border-surface-border bg-surface-panel overflow-hidden">
-          {/* Drag handle on the left edge — drag left to widen */}
-          <div
-            onPointerDown={startPropResize}
-            title="Drag to resize"
-            className="absolute left-0 top-0 h-full w-1.5 z-10 cursor-col-resize hover:bg-brand/40 active:bg-brand/60"
-          />
-          <PropertyPanel
-            node={selectedNode}
-            errors={graph.errors}
-            isEntry={selectedNode?.id === graph.entryNodeId}
-            onUpdate={graph.updateNode}
-            onDelete={graph.deleteNode}
-            onSetEntry={graph.setEntry}
-            nodes={graph.nodes}
-          />
-        </div>
+        {/* Right — Node Inspector (drawer: only when a node is selected AND open) */}
+        {selectedNode && inspectorOpen && (
+          <div style={{ width: propWidth, minWidth: propWidth }}
+               className="relative flex flex-col border-l border-surface-border bg-surface-panel overflow-hidden">
+            {/* Drag handle on the left edge — drag left to widen */}
+            <div
+              onPointerDown={startPropResize}
+              title="Drag to resize"
+              className="absolute left-0 top-0 h-full w-1.5 z-10 cursor-col-resize hover:bg-primary/40 active:bg-primary/60"
+            />
+            <PropertyPanel
+              node={selectedNode}
+              errors={graph.errors}
+              isEntry={selectedNode?.id === graph.entryNodeId}
+              onUpdate={graph.updateNode}
+              onDelete={graph.deleteNode}
+              onSetEntry={graph.setEntry}
+              onClose={() => setInspectorOpen(false)}
+              nodes={graph.nodes}
+            />
+          </div>
+        )}
       </div>
 
       {/* Version history drawer */}

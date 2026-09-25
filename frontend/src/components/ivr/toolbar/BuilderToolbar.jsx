@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil, ListChecks } from 'lucide-react';
+import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil, ListChecks, ArrowLeft } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
 
@@ -22,6 +22,7 @@ export default function BuilderToolbar({
   onSaveNow,
   onToggleErrors,
   showErrors,
+  onBack,
 }) {
   const [showPublish, setShowPublish] = useState(false);
   const [changeNotes, setChangeNotes] = useState('');
@@ -130,15 +131,25 @@ export default function BuilderToolbar({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-surface-border
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-surface-border
                       bg-surface-panel shrink-0 min-w-0 overflow-x-auto">
+        {/* Back + breadcrumb (merged from the former separate top bar) */}
+        {onBack && (
+          <button onClick={onBack} title="Back to IVR Flows" aria-label="Back to IVR Flows"
+                  className="btn-ghost p-1.5 text-text-muted hover:text-text-primary shrink-0
+                             focus:outline-none focus:ring-2 focus:ring-primary/25 rounded-md">
+            <ArrowLeft size={15} />
+          </button>
+        )}
+        <span className="text-[11px] text-text-muted shrink-0 hidden sm:inline">IVR Flows /</span>
+
         {/* Flow name + rename */}
         <div className="flex items-center gap-1.5 flex-1 min-w-0 group">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-text-primary truncate">
+            <p className="text-[13px] font-semibold text-text-primary truncate leading-tight">
               {flow?.name || 'IVR Flow'}
             </p>
-            <p className="text-[10px] text-text-muted">
+            <p className="text-[10px] text-text-muted leading-tight">
               {flow?.organization_name || 'IVR Builder'}
             </p>
           </div>
