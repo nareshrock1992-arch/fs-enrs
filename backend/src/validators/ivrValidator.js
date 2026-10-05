@@ -332,6 +332,15 @@ const BASE_NODE_FIELDS = {
   description: z.string().max(500).optional(),
 };
 
+// Queue Eligibility decision node (Phase 2). Fixed outcome branch set; branches
+// map outcome keys → target node ids (validated like other branch nodes).
+const QueueEligibilityNodeSchema = z.object({
+  type:            z.literal('queue_eligibility'),
+  queue:           z.string().min(1).max(255),
+  timeout_seconds: z.number().int().min(1).max(15).optional(),
+  branches:        z.record(z.string(), nodeId),
+});
+
 export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   PlayNodeSchema.extend(BASE_NODE_FIELDS),          // ZodObject ✓
   SayNodeSchema.extend(BASE_NODE_FIELDS),           // ZodObject ✓
@@ -351,6 +360,7 @@ export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   ErsOverflowWaitNodeSchema.extend(BASE_NODE_FIELDS),   // ZodObject ✓
   EnsBlastRecordNodeSchema.extend(BASE_NODE_FIELDS),    // ZodObject ✓
   EnsPlaybackNodeSchema.extend(BASE_NODE_FIELDS),       // ZodObject ✓
+  QueueEligibilityNodeSchema.extend(BASE_NODE_FIELDS),  // ZodObject ✓
 ]);
 
 export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {

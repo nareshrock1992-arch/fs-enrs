@@ -2462,3 +2462,105 @@ export function startBackgroundJobs() {
     }).catch(() => {});
   }, 120_000);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Queue Eligibility (mod_callcenter) — Phase 2
+//
+// Decide whether a mod_callcenter queue can realistically answer a call, BEFORE
+// an IVR transfers into it. Uses ONLY the three validated read-only global
+// commands (per Phase 1B runtime evidence — the per-queue `queue count` /
+// `queue list members|agents|tiers` subcommands are NOT usable on this FS):
+//     callcenter_config queue list
+//     callcenter_config agent list
+//     callcenter_config tier list
+// Membership comes from `tier list` (NOT the global agent count); routability is
+// derived by joining tier membership with `agent list` status/state.
+//
+// This is a POINT-IN-TIME SNAPSHOT: it does NOT reserve an agent or guarantee a
+// subsequent transfer is accepted. On any ESL/parse/data inconsistency the
+// callers FAIL CLOSED (never report eligible).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Pipe-delimited `callcenter_config *_list` table parser. Returns
+// { rows:[{header→value}], header } or { err } for -ERR / unusable output.
+// Does NOT depend on any specific Phase-1B sample values.
+export function parseCcTable(raw) {
+  const text = String(raw ?? '').trim();
+  if (text === '') return { err: 'empty response' };
+  if (text.startsWith('-ERR')) return { err: text.slice(0, 200) };
+  const lines = text.split('\n').map(l => l.replace(/\r$/, ''));
+  // Drop FreeSWITCH's trailing "+OK" terminator line(s).
+  const data = lines.filter(l => l.trim() !== '' && l.trim() !== '+OK' && !l.startsWith('+OK '));
+  if (data.length === 0) return { rows: [], header: [] }; // valid empty set (no header emitted)
+  if (!data[0].includes('|')) return { err: 'no header row' };
+  const header = data[0].split('|').map(h => h.trim());
+  const rows = data.slice(1).map(line => {
+    const cols = line.split('|');
+    const o = {};
+    header.forEach((h, i) => { o[h] = (cols[i] ?? '').trim(); });
+    return o;
+  });
+  return { rows, header };
+}
+
+// Pure eligibility evaluator over already-parsed row arrays. No ESL, no I/O —
+// unit-testable with the real table shapes. Throws on untrustworthy data
+// (a tier member with no matching agent record) so callers fail closed.
+export function evaluateQueueEligibility(queueName, { queues, agents, tiers }) {
+  const q = String(queueName || '').trim();
+  const zero = { queue: q, queue_exists: false, members: 0, logged_in: 0, available: 0, busy: 0, paused: 0, eligible: false };
+
+  const queueExists = (queues || []).some(r => r.name === q);
+  if (!queueExists) return { ...zero, reason: 'QUEUE_NOT_FOUND' };
+
+  const agentByName = new Map((agents || []).map(a => [a.name, a]));
+  const memberTiers = (tiers || []).filter(t => t.queue === q);
+  const members = memberTiers.length;
+  if (members === 0) return { ...zero, queue_exists: true, reason: 'NO_MEMBERS' };
+
+  let logged_in = 0, paused = 0, available = 0, busy = 0;
+  for (const t of memberTiers) {
+    const a = agentByName.get(t.agent);
+    if (!a) {
+      // Listed tier member with no agent record → inconsistent snapshot.
+      // Do NOT count as available; fail the whole check closed.
+      throw new Error(`queue-eligibility: tier member "${t.agent}" has no agent record (inconsistent)`);
+    }
+    if (a.status === 'Logged Out') continue;       // not logged in
+    logged_in++;
+    if (a.status === 'On Break') { paused++; continue; }  // paused
+    const routable = a.status === 'Available'
+      && (a.state === 'Waiting' || a.state === 'Idle')
+      && t.state === 'Ready';
+    if (routable) available++;
+    else busy++;                                    // logged-in, not paused, not routable
+  }
+
+  // Deterministic reason order (see Phase 1B §12).
+  let reason;
+  if (available >= 1)            reason = 'ELIGIBLE';
+  else if (logged_in === 0)      reason = 'NO_AGENTS_LOGGED_IN';
+  else if (paused === logged_in) reason = 'ALL_AGENTS_PAUSED';
+  else                           reason = 'NO_AVAILABLE_AGENTS';
+
+  return { queue: q, queue_exists: true, members, logged_in, available, busy, paused, eligible: available >= 1, reason };
+}
+
+// Fetch + parse + evaluate. Reuses the single shared ESL connection via
+// eslCommandTimeout. Throws on ESL/parse failure → caller returns CHECK_ERROR.
+export async function getQueueEligibility(queueName, { timeoutMs = 5000 } = {}) {
+  const q = String(queueName || '').trim();
+  if (q === '') throw new Error('queue-eligibility: queue is required');
+  const [qRaw, aRaw, tRaw] = await Promise.all([
+    eslCommandTimeout('callcenter_config queue list', timeoutMs),
+    eslCommandTimeout('callcenter_config agent list', timeoutMs),
+    eslCommandTimeout('callcenter_config tier list', timeoutMs),
+  ]);
+  const queues = parseCcTable(qRaw);
+  const agents = parseCcTable(aRaw);
+  const tiers  = parseCcTable(tRaw);
+  if (queues.err) throw new Error(`queue-eligibility: queue list parse error (${queues.err})`);
+  if (agents.err) throw new Error(`queue-eligibility: agent list parse error (${agents.err})`);
+  if (tiers.err)  throw new Error(`queue-eligibility: tier list parse error (${tiers.err})`);
+  return evaluateQueueEligibility(q, { queues: queues.rows, agents: agents.rows, tiers: tiers.rows });
+}

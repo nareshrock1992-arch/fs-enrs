@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { ivrLookup, registerIvrRecording } from '../../controllers/internal/ivrInternalController.js';
+import { ivrLookup, registerIvrRecording, queueEligibility } from '../../controllers/internal/ivrInternalController.js';
 import { restCall } from '../../controllers/internal/ivrRestController.js';
 
 const router = Router();
@@ -19,5 +19,11 @@ router.post('/recording/register', registerIvrRecording);
 // auth (incl. OAuth2 client-credentials), performs the external call under a
 // hard timeout, parses + maps the response. Secrets never reach Lua/flow JSON.
 router.post('/rest-call', restCall);
+
+// POST /api/v1/internal/ivr/queue-eligibility   { queue }
+// Called by the queue_eligibility IVR node. Reuses the shared ESL connection,
+// runs only the 3 validated read-only callcenter lists, and returns a
+// deterministic eligibility snapshot. Fails closed (reason CHECK_ERROR).
+router.post('/queue-eligibility', queueEligibility);
 
 export default router;

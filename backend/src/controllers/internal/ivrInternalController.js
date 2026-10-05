@@ -1,6 +1,7 @@
 import { query } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { upsertRecordingStart, closeRecording } from '../recordingController.js';
+import { getQueueEligibility } from '../../services/eslService.js';
 
 /**
  * GET /api/v1/internal/ivr/lookup?number=<e164_number>
@@ -117,4 +118,36 @@ export const registerIvrRecording = asyncHandler(async (req, res) => {
   }
 
   res.json({ ok: true, tenant_id: tenantId, recording_id: record?.id ?? null });
+});
+
+/**
+ * POST /api/v1/internal/ivr/queue-eligibility   { "queue": "SAPAPPS@YASREF" }
+ *
+ * Decide whether a mod_callcenter queue can realistically answer BEFORE the IVR
+ * transfers into it. Reuses the shared ESL connection (eslService) and ONLY the
+ * three validated read-only global callcenter lists; membership derives from the
+ * tier list joined to agent status/state.
+ *
+ * FAIL CLOSED: any ESL/parse/data error returns reason 'CHECK_ERROR' with
+ * eligible=false (HTTP 200 so the Lua node can branch on the reason). The node
+ * never performs a transfer itself — it is a decision node only, and the result
+ * is a point-in-time snapshot (no agent is reserved).
+ */
+export const queueEligibility = asyncHandler(async (req, res) => {
+  const queue = String(req.body?.queue ?? req.query?.queue ?? '').trim();
+  if (!queue) return res.status(400).json({ error: 'queue is required' });
+
+  try {
+    const result = await getQueueEligibility(queue);
+    // Observability (no secrets): queue + reason + counts only.
+    console.log(`[internal] queue-eligibility queue="${queue}" reason=${result.reason} ` +
+      `members=${result.members} logged_in=${result.logged_in} available=${result.available}`);
+    return res.json(result);
+  } catch (err) {
+    console.error(`[internal] queue-eligibility FAILED queue="${queue}" — fail closed: ${err.message}`);
+    return res.json({
+      queue, queue_exists: false, members: 0, logged_in: 0,
+      available: 0, busy: 0, paused: 0, eligible: false, reason: 'CHECK_ERROR',
+    });
+  }
 });

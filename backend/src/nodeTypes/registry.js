@@ -1204,6 +1204,74 @@ end`,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Queue Eligibility — decision node (Phase 2).
+  // Checks whether a FreeSWITCH mod_callcenter queue can realistically answer
+  // BEFORE the IVR transfers into it, so callers are not blindly dumped into a
+  // queue with no routable agent. DECISION ONLY — it never transfers; wire the
+  // ELIGIBLE branch to the existing Transfer node. Backend reuses the shared ESL
+  // connection and only the 3 validated read-only callcenter lists. The result
+  // is a POINT-IN-TIME SNAPSHOT (no agent is reserved) and FAILS CLOSED
+  // (CHECK_ERROR) on any ESL/parse error — it never reports ELIGIBLE on failure.
+  // ═══════════════════════════════════════════════════════════════════════════
+  {
+    type: 'queue_eligibility',
+    label: 'Queue Eligibility',
+    icon: '✅',
+    bg: '#14241e', border: '#2a6a4a', color: '#a7f3d0',
+    category: 'Flow',
+    description: 'Check if a queue can answer before transferring',
+    footnote: 'Decision node only — it does NOT transfer. Wire ELIGIBLE to a Transfer node. Eligibility is a point-in-time snapshot (no agent is reserved) and fails closed to CHECK_ERROR on any check failure.',
+    ports: 'branches',
+    // Fixed, complete outcome set — exec routes on exactly these keys.
+    branchKeys: ['ELIGIBLE', 'NO_MEMBERS', 'NO_AGENTS_LOGGED_IN', 'ALL_AGENTS_PAUSED', 'NO_AVAILABLE_AGENTS', 'QUEUE_NOT_FOUND', 'CHECK_ERROR'],
+    summaryTemplate: 'Queue ${queue}',
+    portLabels: {
+      ELIGIBLE: 'Eligible', NO_MEMBERS: 'No members', NO_AGENTS_LOGGED_IN: 'None logged in',
+      ALL_AGENTS_PAUSED: 'All on break', NO_AVAILABLE_AGENTS: 'None available',
+      QUEUE_NOT_FOUND: 'Queue not found', CHECK_ERROR: 'Check error',
+    },
+    configSchema: [
+      { key: 'queue', label: 'Queue name', fieldType: 'mono_text', required: true, placeholder: 'SAPAPPS@YASREF',
+        hint: 'Exact FreeSWITCH mod_callcenter queue name (e.g. SAPAPPS@YASREF). Supports ${var}.' },
+      { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 15,
+        hint: 'Max wait for the eligibility check. On timeout the node routes CHECK_ERROR (fail closed). Default 5.' },
+      { key: 'branches', label: 'Branches (outcome → target node)', fieldType: 'branches_map', required: true,
+        hint: 'Reserved outcomes: ELIGIBLE, NO_MEMBERS, NO_AGENTS_LOGGED_IN, ALL_AGENTS_PAUSED, NO_AVAILABLE_AGENTS, QUEUE_NOT_FOUND, CHECK_ERROR. Use _default to catch any not wired. Wire ELIGIBLE to a Transfer node. NOTE: this is a point-in-time snapshot — it does not reserve an agent or guarantee the transfer is answered.' },
+    ],
+    luaHandler: `
+-- Queue Eligibility — point-in-time snapshot (NOT a guarantee; no agent is
+-- reserved). Calls the backend, which runs the 3 read-only callcenter lists and
+-- joins tier membership with agent status/state. FAILS CLOSED: on any backend/
+-- parse/ESL error (nil response, missing reason) the node routes CHECK_ERROR and
+-- never ELIGIBLE. This node never transfers — wire ELIGIBLE to a Transfer node.
+local function exec_queue_eligibility(s, node)
+  local br = node.branches or {}
+  local queue = interp(s, node.queue) or ""
+  if queue == "" then
+    freeswitch.consoleLog("ERR", "[ivr_executor] queue_eligibility: empty queue — fail closed\\n")
+    return br["CHECK_ERROR"] or br["_default"]
+  end
+  local tmo = tonumber(node.timeout_seconds) or 5
+  if tmo < 1 then tmo = 1 end
+  if tmo > 15 then tmo = 15 end
+  local resp = internal_post_t("/ivr/queue-eligibility", { queue = queue }, tmo + 2)
+  if resp == nil or resp.reason == nil then
+    freeswitch.consoleLog("ERR", "[ivr_executor] queue_eligibility: no/invalid response — fail closed\\n")
+    return br["CHECK_ERROR"] or br["_default"]
+  end
+  -- Expose snapshot counters for downstream Condition nodes (never secrets).
+  s:setVariable("queue_elig_reason",    tostring(resp.reason))
+  s:setVariable("queue_elig_available", tostring(resp.available or 0))
+  s:setVariable("queue_elig_members",   tostring(resp.members or 0))
+  freeswitch.consoleLog("INFO",
+    "[ivr_executor] queue_eligibility queue=" .. queue .. " reason=" .. tostring(resp.reason)
+    .. " available=" .. tostring(resp.available or 0) .. "\\n")
+  return br[resp.reason] or br["_default"]
+end`,
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ivr/queue-eligibility' },
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Phase 5 — 3-scenario emergency flow node types.
   // Connection fields deliberately reuse the existing ref names (branches /
   // next / true_node / false_node) so the graph validator's refsOf(), the
