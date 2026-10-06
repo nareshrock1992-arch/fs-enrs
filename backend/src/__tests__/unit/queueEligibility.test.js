@@ -18,6 +18,50 @@ vi.mock('../../db/pool.js', () => ({ query: vi.fn(async () => ({ rows: [] })), p
 vi.mock('../../config/index.js', () => ({ config: {}, default: {} }));
 
 const { parseCcTable, evaluateQueueEligibility } = await import('../../services/eslService.js');
+const { getNodeType, publicNodeTypes } = await import('../../nodeTypes/registry.js');
+
+// ── node registry: stable branch IDs + display-only labels ──────────────────────
+describe('queue_eligibility node — branch IDs stable, labels display-only', () => {
+  const EXPECTED_IDS = ['ELIGIBLE', 'NO_MEMBERS', 'NO_AGENTS_LOGGED_IN', 'ALL_AGENTS_PAUSED', 'NO_AVAILABLE_AGENTS', 'QUEUE_NOT_FOUND', 'CHECK_ERROR'];
+  it('keeps the 7 persisted branch keys exactly (saved-flow compatibility)', () => {
+    expect(getNodeType('queue_eligibility').branchKeys).toEqual(EXPECTED_IDS);
+  });
+  it('publicNodeTypes surfaces the same branch keys to the frontend', () => {
+    const n = publicNodeTypes().find(t => t.type === 'queue_eligibility');
+    expect(n.branchKeys).toEqual(EXPECTED_IDS);
+  });
+  it('applies the approved business-facing labels (display only)', () => {
+    expect(getNodeType('queue_eligibility').portLabels).toEqual({
+      ELIGIBLE: 'Agent available',
+      NO_MEMBERS: 'No agents assigned',
+      NO_AGENTS_LOGGED_IN: 'All agents logged out',
+      ALL_AGENTS_PAUSED: 'All agents on break',
+      NO_AVAILABLE_AGENTS: 'Agents busy / unavailable',
+      QUEUE_NOT_FOUND: 'Queue not configured',
+      CHECK_ERROR: 'Check failed (route safely)',
+    });
+  });
+  it('every label key is a real branch key (no label drift)', () => {
+    const n = getNodeType('queue_eligibility');
+    expect(Object.keys(n.portLabels).sort()).toEqual([...n.branchKeys].sort());
+  });
+});
+
+// ── Lua routing contract (string assertions on the generated handler) ───────────
+describe('queue_eligibility luaHandler — fail-safe routing', () => {
+  const lua = getNodeType('queue_eligibility').luaHandler;
+  it('routes on the reason key with _default fallthrough (unknown reason cannot select ELIGIBLE)', () => {
+    // br[resp.reason] — an unrecognized reason indexes nil → falls to _default, never ELIGIBLE.
+    expect(lua).toContain('br[resp.reason] or br["_default"]');
+  });
+  it('a nil/invalid response fails closed to CHECK_ERROR/_default (never ELIGIBLE)', () => {
+    expect(lua).toContain('br["CHECK_ERROR"] or br["_default"]');
+    expect(lua).toMatch(/resp == nil or resp\.reason == nil/);
+  });
+  it('the node never issues a transfer itself', () => {
+    expect(lua).not.toMatch(/execute\(\s*["']transfer["']/);
+  });
+});
 
 const ag = (name, status, state) => ({ name, status, state });
 const tr = (queue, agent, state = 'Ready') => ({ queue, agent, state, level: '1', position: '1' });

@@ -1225,10 +1225,12 @@ end`,
     // Fixed, complete outcome set — exec routes on exactly these keys.
     branchKeys: ['ELIGIBLE', 'NO_MEMBERS', 'NO_AGENTS_LOGGED_IN', 'ALL_AGENTS_PAUSED', 'NO_AVAILABLE_AGENTS', 'QUEUE_NOT_FOUND', 'CHECK_ERROR'],
     summaryTemplate: 'Queue ${queue}',
+    // Display-only labels (business-facing). Branch KEYS above are the stable,
+    // persisted outcome IDs and must never change — only these labels do.
     portLabels: {
-      ELIGIBLE: 'Eligible', NO_MEMBERS: 'No members', NO_AGENTS_LOGGED_IN: 'None logged in',
-      ALL_AGENTS_PAUSED: 'All on break', NO_AVAILABLE_AGENTS: 'None available',
-      QUEUE_NOT_FOUND: 'Queue not found', CHECK_ERROR: 'Check error',
+      ELIGIBLE: 'Agent available', NO_MEMBERS: 'No agents assigned', NO_AGENTS_LOGGED_IN: 'All agents logged out',
+      ALL_AGENTS_PAUSED: 'All agents on break', NO_AVAILABLE_AGENTS: 'Agents busy / unavailable',
+      QUEUE_NOT_FOUND: 'Queue not configured', CHECK_ERROR: 'Check failed (route safely)',
     },
     configSchema: [
       { key: 'queue', label: 'Queue name', fieldType: 'mono_text', required: true, placeholder: 'SAPAPPS@YASREF',
@@ -1236,7 +1238,7 @@ end`,
       { key: 'timeout_seconds', label: 'Timeout (seconds)', fieldType: 'number', min: 1, max: 15,
         hint: 'Max wait for the eligibility check. On timeout the node routes CHECK_ERROR (fail closed). Default 5.' },
       { key: 'branches', label: 'Branches (outcome → target node)', fieldType: 'branches_map', required: true,
-        hint: 'Reserved outcomes: ELIGIBLE, NO_MEMBERS, NO_AGENTS_LOGGED_IN, ALL_AGENTS_PAUSED, NO_AVAILABLE_AGENTS, QUEUE_NOT_FOUND, CHECK_ERROR. Use _default to catch any not wired. Wire ELIGIBLE to a Transfer node. NOTE: this is a point-in-time snapshot — it does not reserve an agent or guarantee the transfer is answered.' },
+        hint: 'Route each outcome to a node. "Agent available" (ELIGIBLE) should normally go to a Transfer node that enters the queue. The other outcomes — No agents assigned, All agents logged out, All agents on break, Agents busy / unavailable, Queue not configured, Check failed — can go to an announcement, overflow, voicemail, or another queue. Any outcome you leave unwired falls through to _default, so wire _default to a safe fallback (e.g. an announcement or voicemail) rather than leaving it empty. NOTE: eligibility is a point-in-time snapshot — it does not reserve an agent or guarantee the transfer is answered; a failed check routes CHECK_ERROR and never Agent available.' },
     ],
     luaHandler: `
 -- Queue Eligibility — point-in-time snapshot (NOT a guarantee; no agent is
