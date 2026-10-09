@@ -1,4 +1,6 @@
 import { X, AlertTriangle } from 'lucide-react';
+import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
+import { nodeDisplayName } from '../canvas/nodeIdentity.js';
 
 /**
  * Extract nodeId from a backend error string.
@@ -22,6 +24,7 @@ function humanise(err) {
 }
 
 export default function ValidationErrorPanel({ errors, warnings, nodes, onGoToNode, onClose }) {
+  const { byType } = useNodeTypes();
   // Build flat list of { nodeId, nodeLabel, nodeType, message, raw }
   const allErrors = [];
 
@@ -32,7 +35,10 @@ export default function ValidationErrorPanel({ errors, warnings, nodes, onGoToNo
       }
     } else {
       const node = nodes?.[nodeId];
-      const label = node?.label || node?.type || nodeId;
+      // Same human-readable identity used on the canvas/pickers, so an error
+      // names the node the way the designer sees it (nickname → label →
+      // summary → type), falling back to the raw id only if the node is absent.
+      const label = node ? nodeDisplayName(node, byType[node.type] || {}) : nodeId;
       for (const e of errs) {
         allErrors.push({ nodeId, nodeLabel: label, nodeType: node?.type, message: humanise(e), raw: e });
       }

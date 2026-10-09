@@ -6,6 +6,7 @@ import { api } from '../../../api/client.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
 import { nodeStyle } from '../canvas/nodeStyle.js';
+import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -219,10 +220,12 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
       <option value="">{placeholder}</option>
       {nodeList.map(n => {
         const cfg = byType[n.type] || {};
-        const label = n.label || (n.text?.slice(0, 24)) || (n.audio_url?.split('/').pop()) || n.type;
+        // Shared identity resolver: name (nickname → legacy label → config
+        // summary → #shortId) plus the type, so same-type nodes with different
+        // destinations/prompts are distinguishable without opening each one.
         return (
           <option key={n.id} value={n.id}>
-            {cfg.icon || ''} {cfg.label || n.type} — {String(label).slice(0, 30)}
+            {nodeOptionLabel(n, cfg)}
           </option>
         );
       })}

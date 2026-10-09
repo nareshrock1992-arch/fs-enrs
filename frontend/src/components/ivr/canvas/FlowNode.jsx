@@ -4,6 +4,7 @@ import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import { nodeSubtitleLines } from './nodeSubtitle.js';
+import { nodeDisplayName } from './nodeIdentity.js';
 import { nodeStyle, NODE_TEXT } from './nodeStyle.js';
 import {
   NODE_WIDTH, HEADER_H, SUMMARY_H, PORT_ROW_H, PORT_TOP, nodeHeight,
@@ -43,6 +44,10 @@ export default function FlowNode({
 
   const connectedPorts = new Set(edges.filter(e => e.from === node.id).map(e => e.fromPort));
   const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
+  // Card title via the shared resolver. withSummary:false preserves existing
+  // behavior exactly — nickname when set, otherwise the type label — because
+  // the config summary is already shown below as the subtitle (no duplication).
+  const cardTitle = nodeDisplayName(node, cfg, summaryResolvers, { withSummary: false });
   const height = nodeHeight(ports.length);
 
   // Category-tinted surface — subtle at rest, stronger on hover, stronger still
@@ -115,7 +120,7 @@ export default function FlowNode({
             <Icon size={14} strokeWidth={2} />
           </span>
           <span className="text-[13px] font-semibold truncate flex-1 leading-tight" style={{ color: NODE_TEXT.title }}>
-            {node.nickname || cfg.label}
+            {cardTitle}
           </span>
           {isSelected && (
             <button
