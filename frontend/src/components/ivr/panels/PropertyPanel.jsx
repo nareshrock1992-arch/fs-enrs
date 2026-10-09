@@ -656,8 +656,13 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate, field
 // unit-tested): it decides which collapsible header a field is drawn under and
 // whether that header starts open, never touching keys/values/validation.
 
-function CollapsibleSection({ title, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen);
+function CollapsibleSection({ title, defaultOpen = true, forceOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen || forceOpen);
+  // Auto-expand when a field inside this section has a validation error, so the
+  // admin never has to hunt for which collapsed section hides the problem. We
+  // only force OPEN — when the error clears we leave the section as-is rather
+  // than snapping it shut (non-disruptive; preserves the user's manual toggle).
+  useEffect(() => { if (forceOpen) setOpen(true); }, [forceOpen]);
   return (
     <div className="mb-2 border-b border-surface-border/60 last:border-0 pb-1">
       <button
@@ -779,7 +784,12 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
           // Simple nodes (a single section) render flat — no pointless headers.
           if (sections.length <= 1) return schema.map(renderField);
           return sections.map(({ title, fields }) => (
-            <CollapsibleSection key={title} title={title} defaultOpen={sectionDefaultOpen(title)}>
+            <CollapsibleSection
+              key={title}
+              title={title}
+              defaultOpen={sectionDefaultOpen(title)}
+              forceOpen={fields.some(f => fieldErrors[f.key]?.length)}
+            >
               {fields.map(renderField)}
             </CollapsibleSection>
           ));
