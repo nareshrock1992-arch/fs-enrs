@@ -7,6 +7,7 @@ import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
 import { nodeStyle } from '../canvas/nodeStyle.js';
 import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
+import { bucketNodeErrors } from './inspectorErrors.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -18,13 +19,15 @@ import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
 
 // ── Field components (presentational, type-agnostic) ─────────────────────────
 
-function Field({ label, hint, example, children }) {
+function Field({ label, hint, example, required, errors, children }) {
   const [showExample, setShowExample] = useState(false);
+  const hasErrors = Array.isArray(errors) && errors.length > 0;
   return (
     <div className="mb-3">
       <div className="flex items-center gap-1 mb-1">
         <label className="block text-[10px] font-medium text-text-muted uppercase tracking-wide">
           {label}
+          {required && <span className="text-red-400 ml-0.5" title="Required" aria-label="required">*</span>}
         </label>
         {example && (
           <button
@@ -40,6 +43,11 @@ function Field({ label, hint, example, children }) {
         )}
       </div>
       {children}
+      {hasErrors && errors.map((e, i) => (
+        <p key={i} className="text-[9px] text-red-400 mt-1 flex items-start gap-1">
+          <span aria-hidden className="mt-px">⚠</span><span>{e}</span>
+        </p>
+      ))}
       {hint && <p className="text-[9px] text-text-muted mt-1 opacity-70">{hint}</p>}
       {example && showExample && (
         <pre className="mt-1 px-2 py-1.5 rounded bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed whitespace-pre-wrap break-words font-mono">
@@ -563,7 +571,7 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
 
 // ── Generic field renderer — dispatches on fieldType, not node.type ──────────
 
-function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
+function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate, fieldErrors }) {
   // showWhen: { field, value } — hide this field when the named sibling field
   // does not equal the specified value. Used to show/hide audio_url or text fields
   // based on an explicit source_type selector on the same node.
@@ -627,7 +635,7 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate }) {
 
   return (
     <>
-      <Field label={label} hint={hint} example={example}>{control}</Field>
+      <Field label={label} hint={hint} example={example} required={fieldDef.required} errors={fieldErrors}>{control}</Field>
       {active && cond.infoBox && (
         <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed">
           {cond.infoBox}
@@ -694,6 +702,9 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
   const cfg        = byType[node.type] || { label: node.type, icon: '?', category: '', configSchema: [] };
   const { accent, Icon } = nodeStyle(cfg);
   const nodeErrors = errors[node.id] || [];
+  // Split errors so field-scoped ones render inline at their field, and only
+  // node-level (graph) errors stay in the summary block. Display-only.
+  const { byField: fieldErrors, node: nodeLevelErrors } = bucketNodeErrors(nodeErrors);
   const onChange   = patch => onUpdate(node.id, patch);
 
   return (
@@ -726,10 +737,10 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
         </div>
       </div>
 
-      {/* Errors */}
-      {nodeErrors.length > 0 && (
+      {/* Node-level (graph) errors — field-scoped errors render inline below. */}
+      {nodeLevelErrors.length > 0 && (
         <div className="mx-3 mt-3 px-2.5 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
-          {nodeErrors.map((e, i) => (
+          {nodeLevelErrors.map((e, i) => (
             <p key={i} className="text-[10px] text-red-400">{e}</p>
           ))}
         </div>
@@ -772,6 +783,7 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
               byType={byType}
               onChange={onChange}
               onUpdate={onUpdate}
+              fieldErrors={fieldErrors[fieldDef.key]}
             />
           );
           // Group fields into sections (order within a section preserved).
