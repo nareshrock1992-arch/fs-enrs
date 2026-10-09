@@ -10,6 +10,7 @@
 //   node src/db/utils/validate_existing_flows_dryrun.js
 // Exit code is always 0 (reporting tool); findings are printed to stdout.
 
+import '../../../load-env.js'; // MUST be first: loads backend/.env by path (like the server) before pool.js reads config
 import { query, pool } from '../pool.js';
 import { validateNode } from '../../validators/nodeSchemaFromRegistry.js';
 
