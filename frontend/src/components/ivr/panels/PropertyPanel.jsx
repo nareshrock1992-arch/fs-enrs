@@ -8,6 +8,7 @@ import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } fro
 import { nodeStyle } from '../canvas/nodeStyle.js';
 import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
 import { bucketNodeErrors } from './inspectorErrors.js';
+import { groupFields, sectionDefaultOpen } from './fieldSections.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -651,22 +652,9 @@ function GenericField({ fieldDef, node, nodes, byType, onChange, onUpdate, field
 
 // ── PropertyPanel ─────────────────────────────────────────────────────────────
 
-// ── Presentation-only field sectioning ────────────────────────────────────────
-// Groups configSchema fields into collapsible sections purely for readability.
-// It NEVER changes field keys, values, order-within-section, showWhen, or
-// validation — it only decides which collapsible header a field is drawn under.
-const FIELD_SECTIONS = [
-  { title: 'Input',   match: k => /^(min_digits|max_digits|timeout_seconds|inter_digit_timeout|terminators|variable_name)$/.test(k) },
-  { title: 'Prompt',  match: k => /prompt/.test(k) },
-  { title: 'Retries', match: k => /(retry|max_attempts|no_input|invalid_length|invalid_option)/.test(k) },
-  { title: 'Outputs', match: k => /^(next|branches|goto|target_node_id|true_node|false_node)$/.test(k) },
-];
-const SECTION_ORDER = ['General', 'Input', 'Prompt', 'Retries', 'Outputs', 'Settings'];
-function sectionForField(fieldDef) {
-  const k = fieldDef.key || '';
-  for (const s of FIELD_SECTIONS) if (s.match(k)) return s.title;
-  return 'General';
-}
+// Presentation-only field sectioning lives in ./fieldSections.js (pure +
+// unit-tested): it decides which collapsible header a field is drawn under and
+// whether that header starts open, never touching keys/values/validation.
 
 function CollapsibleSection({ title, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -787,14 +775,12 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
             />
           );
           // Group fields into sections (order within a section preserved).
-          const grouped = {};
-          for (const f of schema) { const s = sectionForField(f); (grouped[s] ||= []).push(f); }
-          const sections = SECTION_ORDER.filter(s => grouped[s]?.length);
+          const sections = groupFields(schema);
           // Simple nodes (a single section) render flat — no pointless headers.
           if (sections.length <= 1) return schema.map(renderField);
-          return sections.map(s => (
-            <CollapsibleSection key={s} title={s} defaultOpen={s === 'General' || s === 'Input'}>
-              {grouped[s].map(renderField)}
+          return sections.map(({ title, fields }) => (
+            <CollapsibleSection key={title} title={title} defaultOpen={sectionDefaultOpen(title)}>
+              {fields.map(renderField)}
             </CollapsibleSection>
           ));
         })()}
