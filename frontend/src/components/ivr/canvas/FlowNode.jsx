@@ -64,11 +64,13 @@ export default function FlowNode({
     : isSelected
     ? `0 0 0 1px ${v.borderSel}`
     : null;
+  // Restrained, enterprise shadows (slate, not pure black) so cards read as
+  // flat surfaces on the light canvas; kept subtle in dark mode too.
   const shadow = isDragging
-    ? '0 12px 28px rgb(0 0 0 / 0.35)'
+    ? '0 10px 24px rgb(15 23 42 / 0.18)'
     : isSelected
-    ? '0 4px 14px rgb(0 0 0 / 0.28)'
-    : '0 2px 6px rgb(0 0 0 / 0.22)';
+    ? '0 2px 8px rgb(15 23 42 / 0.12)'
+    : '0 1px 2px rgb(15 23 42 / 0.06)';
 
   return (
     <div

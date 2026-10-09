@@ -557,7 +557,7 @@ export default function FlowCanvas({
     <div
       ref={canvasRef}
       className="canvas-bg relative overflow-hidden"
-      style={{ width: '100%', height: '100%', background: '#0d1117', cursor: canvasCursor }}
+      style={{ width: '100%', height: '100%', background: 'rgb(var(--canvas-bg))', cursor: canvasCursor }}
       onPointerDown={(e) => { handleCanvasPointerDown(e); handleMiddleDown(e); }}
       onClick={handleCanvasClick}
       onDoubleClick={handleCanvasDblClick}
@@ -574,7 +574,7 @@ export default function FlowCanvas({
             width={20 * transform.scale}
             height={20 * transform.scale}
             patternUnits="userSpaceOnUse">
-            <circle cx={1} cy={1} r={0.7} fill="#1a2535" />
+            <circle cx={1} cy={1} r={0.7} fill="rgb(var(--canvas-grid-minor))" />
           </pattern>
           {/* Major grid — 100px dots (every 5 minor) */}
           <pattern id="grid-major"
@@ -583,7 +583,7 @@ export default function FlowCanvas({
             width={100 * transform.scale}
             height={100 * transform.scale}
             patternUnits="userSpaceOnUse">
-            <circle cx={1} cy={1} r={1.3} fill="#243045" />
+            <circle cx={1} cy={1} r={1.3} fill="rgb(var(--canvas-grid-major))" />
           </pattern>
         </defs>
         <rect width="100%" height="100%" fill="url(#grid-minor)" />

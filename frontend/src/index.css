@@ -21,6 +21,14 @@
   --info:             14 165 233;   /* #0EA5E9 */
   --radius-card:      12px;
   --shadow-card:      0 1px 4px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.03);
+  /* IVR designer canvas (Phase 2a) — light, neutral, theme-aware */
+  --canvas-bg:          248 250 252;   /* #F8FAFC */
+  --canvas-grid-minor:  203 213 225;   /* #CBD5E1 */
+  --canvas-grid-major:  148 163 184;   /* #94A3B8 */
+  --node-surface:       255 255 255;   /* #FFFFFF clean white card */
+  --node-surface-hover: 248 250 252;   /* #F8FAFC */
+  --node-surface-sel:   239 246 255;   /* #EFF6FF subtle brand tint */
+  --node-border:        226 232 240;   /* #E2E8F0 subtle */
 }
 
 .dark {
@@ -33,6 +41,14 @@
   --text-secondary:  139 153 184;   /* #8B99B8 */
   --text-muted:       76  90 120;   /* #4C5A78 */
   --shadow-card:      0 1px 4px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03);
+  /* IVR designer canvas (Phase 2a) — dark-theme variant */
+  --canvas-bg:          11  18  32;   /* #0B1220 */
+  --canvas-grid-minor:  28  42  66;   /* #1C2A42 */
+  --canvas-grid-major:  51  65  85;   /* #334155 */
+  --node-surface:       17  24  39;   /* #111827 raised card */
+  --node-surface-hover: 22  32  52;   /* #162034 */
+  --node-surface-sel:   23  37  84;   /* #172554 subtle brand tint */
+  --node-border:        39  51  71;   /* #273347 */
 }
 
 /* ─── Base ──────────────────────────────────────────────────── */

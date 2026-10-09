@@ -4,35 +4,49 @@
 // semantics, ports, config, or execution. One reusable mapping, consumed by
 // FlowNode, NodePalette and PropertyPanel — never duplicated per component.
 //
-// The IVR canvas is a fixed dark surface (#0d1117), so nodes are LIGHT tinted
-// cards regardless of the app light/dark theme — this keeps categories legible
-// on the canvas in both themes.
+// Phase 2a: the canvas and cards now FOLLOW the app's light/dark theme (tokens
+// in index.css: --canvas-bg, --node-surface, --node-border, --text-*). Cards are
+// clean, theme-neutral surfaces; the category identity is carried by the accent
+// (left bar + icon chip + selected border), not by tinting the whole card.
 import {
   Play, MessageSquareText, Keyboard, GitBranch, CornerUpLeft, Megaphone,
   Siren, PhoneOff, Mic, Variable, PhoneForwarded, Webhook, Plug, BellRing,
   Split, Timer, Radio, Volume2, Circle,
 } from 'lucide-react';
 
-// ── Visual categories → colours ───────────────────────────────────────────────
-// surface  : node body tint (very subtle)   surfaceHover/Sel : progressively stronger
-// border   : resting border                  borderSel        : selected border (accent)
-// accent   : icon + accent bar + ports
+// ── Visual categories → accent colour ─────────────────────────────────────────
+// Only the ACCENT is category-specific now (left bar, icon chip, selected
+// border). Card surfaces/borders are neutral, theme-aware tokens (see NEUTRAL
+// below) so cards read as one clean family rather than a tinted rainbow.
 export const CATEGORY_VISUALS = {
-  flow:        { accent: '#64748B', surface: '#F1F5F9', surfaceHover: '#E9EEF4', surfaceSel: '#E2E8F0', border: '#CBD5E1', borderSel: '#64748B' },
-  input:       { accent: '#6366F1', surface: '#EEF2FF', surfaceHover: '#E7ECFF', surfaceSel: '#E0E7FF', border: '#C7D2FE', borderSel: '#6366F1' },
-  audio:       { accent: '#8B5CF6', surface: '#F5F3FF', surfaceHover: '#EFEBFF', surfaceSel: '#EDE9FE', border: '#DDD6FE', borderSel: '#8B5CF6' },
-  logic:       { accent: '#D97706', surface: '#FFFBEB', surfaceHover: '#FEF6D9', surfaceSel: '#FEF3C7', border: '#FDE68A', borderSel: '#D97706' },
-  integration: { accent: '#0891B2', surface: '#ECFEFF', surfaceHover: '#DEFAFE', surfaceSel: '#CFFAFE', border: '#A5F3FC', borderSel: '#0891B2' },
-  callControl: { accent: '#2563EB', surface: '#EFF6FF', surfaceHover: '#E4EEFF', surfaceSel: '#DBEAFE', border: '#BFDBFE', borderSel: '#2563EB' },
-  termination: { accent: '#DC2626', surface: '#FEF2F2', surfaceHover: '#FDE8E8', surfaceSel: '#FEE2E2', border: '#FECACA', borderSel: '#DC2626' },
-  emergency:   { accent: '#0D9488', surface: '#F0FDFA', surfaceHover: '#DEFAF3', surfaceSel: '#CCFBF1', border: '#99F6E4', borderSel: '#0D9488' },
-  recording:   { accent: '#059669', surface: '#ECFDF5', surfaceHover: '#DEFBEC', surfaceSel: '#D1FAE5', border: '#A7F3D0', borderSel: '#059669' },
+  flow:        { accent: '#64748B' },
+  input:       { accent: '#6366F1' },
+  audio:       { accent: '#8B5CF6' },
+  logic:       { accent: '#D97706' },
+  integration: { accent: '#0891B2' },
+  callControl: { accent: '#2563EB' },
+  termination: { accent: '#DC2626' },
+  emergency:   { accent: '#0D9488' },
+  recording:   { accent: '#059669' },
 };
 const DEFAULT_VISUAL = CATEGORY_VISUALS.flow;
 
-// Fixed dark text for the light node cards (theme-independent — the card is
-// always light because the canvas is always dark).
-export const NODE_TEXT = { title: '#172033', summary: '#475569', muted: '#64748B' };
+// Neutral, theme-aware card surfaces/border (resolved from CSS vars at render).
+// Same for every category — the accent carries the category identity.
+const NEUTRAL = {
+  surface:      'rgb(var(--node-surface))',
+  surfaceHover: 'rgb(var(--node-surface-hover))',
+  surfaceSel:   'rgb(var(--node-surface-sel))',
+  border:       'rgb(var(--node-border))',
+};
+
+// Card text follows the theme now (readable on white in light mode, on the
+// raised dark card in dark mode).
+export const NODE_TEXT = {
+  title:   'rgb(var(--text-primary))',
+  summary: 'rgb(var(--text-secondary))',
+  muted:   'rgb(var(--text-muted))',
+};
 
 // Per-type Lucide icon (enterprise icon system, replacing emoji glyphs).
 const TYPE_ICON = {
@@ -77,7 +91,15 @@ export function accentForCategory(category) {
 }
 
 // Full presentational descriptor for a node type config (from the registry).
+// accent = category colour; borderSel = accent (selection keeps category
+// identity); surfaces/border = neutral theme tokens.
 export function nodeStyle(cfg) {
-  const v = CATEGORY_VISUALS[visualKey(cfg)] || DEFAULT_VISUAL;
-  return { ...v, Icon: iconForType(cfg?.type), category: cfg?.category || '' };
+  const accent = (CATEGORY_VISUALS[visualKey(cfg)] || DEFAULT_VISUAL).accent;
+  return {
+    ...NEUTRAL,
+    accent,
+    borderSel: accent,
+    Icon: iconForType(cfg?.type),
+    category: cfg?.category || '',
+  };
 }
