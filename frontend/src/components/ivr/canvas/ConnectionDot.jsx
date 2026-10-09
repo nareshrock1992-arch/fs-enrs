@@ -10,7 +10,7 @@ export default function ConnectionDot({ portKey, label, color = '#2563EB', conne
       {/* Branch label */}
       <span
         className="absolute top-1/2 -translate-y-1/2 text-[11px] text-right truncate leading-tight"
-        style={{ right: PORT_INSET + 12, left: 10, color: '#475569' }}
+        style={{ right: PORT_INSET + 12, left: 10, color: 'rgb(var(--text-secondary))' }}
         title={label}
       >
         {label}

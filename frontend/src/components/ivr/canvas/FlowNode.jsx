@@ -20,7 +20,7 @@ const FALLBACK_CFG = { label: 'Unknown', type: '', category: '', ports: [] };
 export default function FlowNode({
   node, isSelected, isEntry, hasErrors, hasWarnings, errorCount = 0, warningCount = 0, edges, scale,
   onSelect, onMove, onDelete, onPortDragStart, onPortClick,
-  onDragStart, onDragEnd, onContextMenu, summaryResolvers,
+  onDragStart, onDragEnd, onContextMenu, onHover, summaryResolvers,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
@@ -83,8 +83,8 @@ export default function FlowNode({
       }}
       onClick={e => e.stopPropagation()}
       onPointerUp={e => { e.stopPropagation(); onPortClick?.(node.id); }}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
+      onPointerEnter={() => { setHovered(true); onHover?.(node.id); }}
+      onPointerLeave={() => { setHovered(false); onHover?.(null); }}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(node.id, e); }}
     >
       {isEntry && (

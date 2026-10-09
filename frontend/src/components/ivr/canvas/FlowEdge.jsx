@@ -13,6 +13,8 @@ export default function FlowEdge({
   fromX, fromY, toX, toY,
   label,
   color = '#4f46e5',
+  highlighted = false,
+  dimmed = false,
   onDoubleClick,
 }) {
   const dx = Math.abs(toX - fromX);
@@ -20,6 +22,11 @@ export default function FlowEdge({
 
   // Cubic bezier: control points offset horizontally from ports
   const d = `M ${fromX} ${fromY} C ${fromX + cp} ${fromY}, ${toX - cp} ${toY}, ${toX} ${toY}`;
+
+  // Path-trace emphasis: the hovered node's edges thicken + go fully opaque,
+  // everything else dims so the caller journey stands out.
+  const strokeW  = highlighted ? 2.6 : 1.8;
+  const strokeOp = dimmed ? 0.18 : highlighted ? 1 : 0.8;
 
   const midX = (fromX + toX) / 2;
   const midY = (fromY + toY) / 2;
@@ -32,11 +39,11 @@ export default function FlowEdge({
       <path
         d={d}
         stroke={color}
-        strokeWidth={1.8}
+        strokeWidth={strokeW}
         fill="none"
         strokeDasharray={undefined}
         markerEnd={`url(#arrow-${color.replace('#', '')})`}
-        opacity={0.8}
+        opacity={strokeOp}
       />
       {label && (() => {
         const w = Math.max(20, String(label).length * 6.4 + 14);

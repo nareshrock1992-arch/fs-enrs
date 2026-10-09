@@ -223,6 +223,9 @@ export default function FlowCanvas({
   // Clipboard for copy/paste
   const clipboardRef = useRef(null);
 
+  // Hovered node → highlight its connected edges, dim the rest (trace the path).
+  const [hoveredNodeId, setHoveredNodeId] = useState(null);
+
   // Node context menu (right-click)
   const handleContextMenu = useCallback((nodeId, e) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -619,6 +622,7 @@ export default function FlowCanvas({
             if (!nodes[edge.from] || !nodes[edge.to]) return null;
             const from = getPortPos(edge.from, edge.fromPort);
             const to   = inputPosition(nodes[edge.to], nodeHeight(portKeysFor(nodes[edge.to]).length));
+            const touchesHovered = hoveredNodeId && (edge.from === hoveredNodeId || edge.to === hoveredNodeId);
             return (
               <FlowEdge
                 key={edge.id}
@@ -626,6 +630,8 @@ export default function FlowCanvas({
                 toX={to.x}    toY={to.y}
                 label={edgeLabelFor(edge)}
                 color={edgeColor(edge.fromPort)}
+                highlighted={!!touchesHovered}
+                dimmed={!!hoveredNodeId && !touchesHovered}
                 onDoubleClick={() => onDisconnect(edge.from, edge.fromPort)}
               />
             );
@@ -669,6 +675,7 @@ export default function FlowCanvas({
             onDragStart={handleNodeDragStart}
             onDragEnd={handleNodeDragEnd}
             onContextMenu={handleContextMenu}
+            onHover={setHoveredNodeId}
             summaryResolvers={summaryResolvers}
             onPortClick={(targetId) => {
               if (draft) {
