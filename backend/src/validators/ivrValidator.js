@@ -67,6 +67,9 @@ const GatherNodeSchema = z.object({
   // Kept as string (not null) so the Lua handler's nil check works correctly.
   terminators:           z.string().max(4).optional().default(''),
   variable_name:         varName.optional().default('gather_result'),
+  // Interruptible pause (ms) after a retry prompt and before the menu replays,
+  // so re-prompts don't sound rushed. Configurable-retry path only.
+  reprompt_pause_ms:     z.number().int().min(0).max(5000).optional().default(700),
   prompt_source_type:    z.enum(['tts', 'audio', 'none']).optional().default('tts'),
   prompt_audio_file_id:  z.number().int().positive().optional(),
   prompt_text:           z.string().max(1000).optional(),

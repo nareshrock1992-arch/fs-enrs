@@ -233,6 +233,10 @@ end`,
         hint: 'Leave BLANK for legacy behavior (native 3-try retry). Set a value (e.g. 3) to enable the configurable retry model below, where each failure reason has its own retry toggle and its own prompt.',
       },
       {
+        key: 'reprompt_pause_ms', label: 'Re-prompt pause (ms)', fieldType: 'number', min: 0, max: 5000,
+        hint: 'Natural pause after a retry (invalid / no-input) prompt and before the menu replays, so re-prompts do not sound rushed. Default 700 ms; set 0 for no pause. Interruptible by a keypress. Configurable retry model only — legacy gather is unaffected.',
+      },
+      {
         key: 'retry_on_no_input', label: 'Retry on no-input', fieldType: 'select',
         options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to no_input branch' } ],
         hint: 'Only used when Max attempts is set. Whether an empty (no digits) attempt is retried. Set No to expose a no_input branch.',
@@ -416,6 +420,18 @@ local function exec_gather(s, node)
   local retry_io = node.retry_on_invalid_option
   if retry_io == nil then retry_io = false else retry_io = (retry_io == true or retry_io == "yes") end
 
+  -- Re-prompt pause (ms) — a natural gap so retries do not sound rushed.
+  -- Nodes saved before this field existed default to 700 (?? 700). Played as an
+  -- interruptible silence_stream so a keypress during the pause still barges.
+  local pause_ms = tonumber(node.reprompt_pause_ms)
+  if pause_ms == nil then pause_ms = 700 end
+  if pause_ms < 0 then pause_ms = 0 end
+  local function reprompt_pause()
+    if pause_ms > 0 and s:ready() then
+      s:execute("playback", "silence_stream://" .. math.floor(pause_ms))
+    end
+  end
+
   local retry_src, retry_url, retry_text, retry_replay
   local attempt = 0
 
@@ -432,8 +448,15 @@ local function exec_gather(s, node)
     if attempt == 1 then
       played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
     else
+      -- Start of a retry iteration: flush any stale/early DTMF left in the
+      -- buffer BEFORE the exception prompt, so leftover keypresses can't trigger
+      -- an instant repeat-invalid. (Not flushed later — digits pressed during
+      -- the menu replay are intentionally kept for barge-in.)
+      s:flushDigits()
       -- Exception prompt first (may be 'none'/nil → play_prompt is a no-op).
       played = play_prompt(s, retry_src, retry_url, retry_text)
+      -- Breath between the exception prompt and the menu replay / re-collection.
+      reprompt_pause()
       if retry_replay then
         -- Reuse the ORIGINAL menu prompt — never a separate menu slot.
         local menu_played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
@@ -490,7 +513,8 @@ local function exec_gather(s, node)
     retry_replay = (rm == nil or rm == true or rm == "yes")
   end
 
-  -- Attempts exhausted — optional configured terminal prompt, then terminal branch.
+  -- Attempts exhausted — brief pause, then optional terminal prompt + branch.
+  reprompt_pause()
   play_prompt(s, node.max_attempts_exceeded_source_type,
                  node.max_attempts_exceeded_audio_url,
                  node.max_attempts_exceeded_text)

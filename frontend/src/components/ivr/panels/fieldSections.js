@@ -30,7 +30,7 @@ export function sectionForFieldKey(key = '') {
   if (/^(min_digits|max_digits|num_digits|terminators|variable_name|inter_digit_timeout)$/.test(k)) return 'Input';
   // Retry BEHAVIOR (how many attempts, whether to retry) — kept open by default
   // because it governs caller experience, not merely timing.
-  if (/(retry|max_attempts|max_no_answer)/i.test(k)) return 'Retries';
+  if (/(retry|max_attempts|max_no_answer|reprompt_pause)/i.test(k)) return 'Retries';
   // Pure timing values (secondary) — collapsible.
   if (/(timeout|_delay|wait)/i.test(k)) return 'Timeouts';
   return 'General';
