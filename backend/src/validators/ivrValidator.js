@@ -70,6 +70,9 @@ const GatherNodeSchema = z.object({
   // Interruptible pause (ms) after a retry prompt and before the menu replays,
   // so re-prompts don't sound rushed. Configurable-retry path only.
   reprompt_pause_ms:     z.number().int().min(0).max(5000).optional().default(700),
+  // Barge-in: first DTMF stops the prompt and is collected. Default on. Accepts
+  // boolean or the 'yes'/'no' the select stores (matches the retry toggles).
+  allow_barge_in:        z.union([z.boolean(), z.enum(['yes', 'no'])]).optional(),
   prompt_source_type:    z.enum(['tts', 'audio', 'none']).optional().default('tts'),
   prompt_audio_file_id:  z.number().int().positive().optional(),
   prompt_text:           z.string().max(1000).optional(),

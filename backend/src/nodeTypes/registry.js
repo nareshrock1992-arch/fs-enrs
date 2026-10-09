@@ -237,6 +237,11 @@ end`,
         hint: 'Natural pause after a retry (invalid / no-input) prompt and before the menu replays, so re-prompts do not sound rushed. Default 700 ms; set 0 for no pause. Interruptible by a keypress. Configurable retry model only — legacy gather is unaffected.',
       },
       {
+        key: 'allow_barge_in', label: 'Allow barge-in', fieldType: 'select',
+        options: [{ value: 'yes', label: 'Yes (stop prompt on keypress)' }, { value: 'no', label: 'No (play prompt fully)' }],
+        hint: 'When Yes (default), the first DTMF stops the prompt and is collected immediately (TTS and audio); remaining digits use the inter-digit timeout. When No, the prompt always plays in full before input. Configurable retry model only.',
+      },
+      {
         key: 'retry_on_no_input', label: 'Retry on no-input', fieldType: 'select',
         options: [ { value: 'yes', label: 'Yes (default)' }, { value: 'no', label: 'No — route to no_input branch' } ],
         hint: 'Only used when Max attempts is set. Whether an empty (no digits) attempt is retried. Set No to expose a no_input branch.',
@@ -374,6 +379,40 @@ local function exec_gather(s, node)
   local terms   = node.terminators or ""
   local var     = node.variable_name or "gather_result"
 
+  -- Barge-in: stop the prompt on the first DTMF and collect it. Default ON;
+  -- accepts boolean true / string "yes". When OFF, the prompt plays fully first.
+  local allow_barge = node.allow_barge_in
+  if allow_barge == nil then allow_barge = true else allow_barge = (allow_barge == true or allow_barge == "yes") end
+
+  -- collect(psrc,purl,ptext) → raw digits string. With barge on, the prompt is
+  -- played by playAndGetDigits (first DTMF stops it, remaining digits collected
+  -- with the inter-digit timeout, terminators respected) for BOTH audio and TTS
+  -- (TTS rendered to a wav first). min is fixed at 1 and the regex is permissive
+  -- so the RAW digits are returned — the caller's own #d<min_d check still
+  -- classifies no_input / invalid_length / invalid_option exactly as before.
+  -- Falls back to getDigits (no barge) when there is no playable prompt
+  -- (source=none / TTS render unavailable) or when barge is off.
+  local function collect(psrc, purl, ptext)
+    psrc = psrc or "none"
+    if allow_barge then
+      local file
+      if psrc == "audio" then
+        file = resolve_audio(purl)
+      elseif psrc == "tts" then
+        local t = interp(s, ptext)
+        if t and t ~= "" then file = speak_to_file(s, t) end
+      end
+      if file then
+        local d = s:playAndGetDigits(1, max_d, 1, timeout, terms, file, "", "[0-9*#]+", "", idt) or ""
+        if psrc == "tts" then os.remove(file) end
+        return d
+      end
+      return s:getDigits(max_d, terms, timeout, idt) or ""
+    end
+    play_prompt(s, psrc, purl, ptext)
+    return s:getDigits(max_d, terms, timeout, idt) or ""
+  end
+
   -- ─────────────────────────────────────────────────────────────────────
   -- EXTERNAL mode — exactly ONE collection attempt; failure handling is the
   -- graph's responsibility. Valid input → success (digit branch, or _default
@@ -382,8 +421,7 @@ local function exec_gather(s, node)
   -- No retry loop, no max_attempts_exceeded. _default keeps its success meaning.
   -- ─────────────────────────────────────────────────────────────────────
   if node.retry_mode == "external" then
-    play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
-    local d = s:getDigits(max_d, terms, timeout, idt) or ""
+    local d = collect(node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
     s:setVariable(var, d)
     if d == "" then
       freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=no_input → timeout\\n")
@@ -444,36 +482,26 @@ local function exec_gather(s, node)
     -- the same single menu prompt (node.prompt_*) before collecting again. Menu
     -- prompt and exception prompt are distinct concepts; the menu is defined once
     -- and reused (no second menu-prompt slot).
-    local played
+    -- Collection point. The MENU prompt is played by collect() so the first
+    -- DTMF barges in (prompt + collect unified). On retries the EXCEPTION prompt
+    -- is played first (interruptible; a digit pressed during it carries into the
+    -- following collect), then the pause, then the menu replay / collection.
+    local d
     if attempt == 1 then
-      played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
+      d = collect(node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
     else
-      -- Start of a retry iteration: flush any stale/early DTMF left in the
-      -- buffer BEFORE the exception prompt, so leftover keypresses can't trigger
-      -- an instant repeat-invalid. (Not flushed later — digits pressed during
-      -- the menu replay are intentionally kept for barge-in.)
+      -- Start of a retry iteration: flush stale/early DTMF BEFORE the exception
+      -- prompt so leftover keypresses can't trigger an instant repeat-invalid.
+      -- (Not flushed after — digits pressed during the menu are kept for barge.)
       s:flushDigits()
-      -- Exception prompt first (may be 'none'/nil → play_prompt is a no-op).
-      played = play_prompt(s, retry_src, retry_url, retry_text)
-      -- Breath between the exception prompt and the menu replay / re-collection.
-      reprompt_pause()
+      play_prompt(s, retry_src, retry_url, retry_text)   -- exception prompt
+      reprompt_pause()                                    -- breath before the menu
       if retry_replay then
-        -- Reuse the ORIGINAL menu prompt — never a separate menu slot.
-        local menu_played = play_prompt(s, node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
-        played = played or menu_played
+        d = collect(node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
+      else
+        d = collect("none", nil, nil)                     -- no menu replay; collect only
       end
     end
-
-    -- A prompt (playback) failure is NOT a caller-input failure: log it and
-    -- still collect input. It must not consume the input attempt on its own.
-    if not played then
-      freeswitch.consoleLog("WARN", "[ivr_executor] gather: prompt playback failed on attempt " .. attempt .. "/" .. max_att .. " (var=" .. var .. ") — collecting input anyway; NOT counted as no_input\\n")
-    end
-
-    -- Single-attempt collection so each failure reason is classifiable.
-    -- getDigits returns "" on no input; a shorter-than-min result is incomplete.
-    -- 4th arg = inter-digit timeout (ms between consecutive digits).
-    local d = s:getDigits(max_d, terms, timeout, idt) or ""
     s:setVariable(var, d)
 
     local reason
