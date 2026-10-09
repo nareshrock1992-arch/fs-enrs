@@ -3,7 +3,7 @@
 // and validation messages render. No persistence or runtime behavior is touched.
 import { describe, it, expect } from 'vitest';
 import {
-  nodeDisplayName, nodeDisplayDetail, nodeOptionLabel, shortNodeId,
+  nodeDisplayName, nodeDisplayDetail, nodeOptionLabel, shortNodeId, nodeHeaderParts,
 } from '../components/ivr/canvas/nodeIdentity.js';
 
 // Inline cfgs mirror the real registry entries (summaryTemplate values).
@@ -88,6 +88,24 @@ describe('nodeOptionLabel — destination picker options are distinguishable', (
   it('never renders a doubled "Type — Type"', () => {
     const s = nodeOptionLabel({ id: 'z', type: 'transfer' }, TRANSFER);
     expect(s).not.toMatch(/Transfer — Transfer/);
+  });
+});
+
+describe('nodeHeaderParts — title + non-redundant type eyebrow (Phase 2b)', () => {
+  it('named node shows title AND the type eyebrow', () => {
+    const n = { id: 't1', type: 'transfer', nickname: 'Route to Support', destination: '7352' };
+    expect(nodeHeaderParts(n, TRANSFER)).toEqual({ title: 'Route to Support', typeLabel: 'Transfer' });
+  });
+  it('legacy-labelled node shows the type eyebrow too', () => {
+    const n = { id: 't2', type: 'say', label: 'Greeting', text: 'Hi' };
+    expect(nodeHeaderParts(n, SAY)).toEqual({ title: 'Greeting', typeLabel: 'Say' });
+  });
+  it('unnamed node shows the type once (no "Transfer / Transfer")', () => {
+    const n = { id: 't3', type: 'transfer' }; // title falls back to type label
+    expect(nodeHeaderParts(n, TRANSFER)).toEqual({ title: 'Transfer', typeLabel: null });
+  });
+  it('safe on empty node/cfg', () => {
+    expect(nodeHeaderParts({}, {})).toEqual({ title: 'Node', typeLabel: null });
   });
 });
 

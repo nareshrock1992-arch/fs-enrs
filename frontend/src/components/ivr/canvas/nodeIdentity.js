@@ -66,6 +66,19 @@ export function nodeDisplayDetail(node, cfg = {}, resolvers = {}) {
   return meaningfulSummary(node, cfg, resolvers);
 }
 
+/**
+ * Header hierarchy for a canvas card (Phase 2b): the prominent title plus the
+ * node-type eyebrow. The type line is returned only when it is NOT redundant
+ * with the title (i.e. a real configured name/summary is shown) — so a named
+ * node reads "Route to Support / TRANSFER" while an unnamed one shows just the
+ * type once, never "Transfer / Transfer". Presentation-only.
+ */
+export function nodeHeaderParts(node, cfg = {}, resolvers = {}) {
+  const title = nodeDisplayName(node, cfg, resolvers, { withSummary: false });
+  const typeLabel = trimmed(cfg?.label) || trimmed(node?.type);
+  return { title, typeLabel: (typeLabel && title !== typeLabel) ? typeLabel : null };
+}
+
 /** Last 6 characters of the stable node id (render-time tie-breaker only). */
 export function shortNodeId(node) {
   const id = String(node?.id ?? '');

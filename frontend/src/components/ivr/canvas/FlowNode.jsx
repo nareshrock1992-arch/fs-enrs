@@ -4,7 +4,7 @@ import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import { nodeSubtitleLines } from './nodeSubtitle.js';
-import { nodeDisplayName } from './nodeIdentity.js';
+import { nodeHeaderParts } from './nodeIdentity.js';
 import { nodeStyle, NODE_TEXT } from './nodeStyle.js';
 import {
   NODE_WIDTH, HEADER_H, SUMMARY_H, PORT_ROW_H, PORT_TOP, nodeHeight,
@@ -44,10 +44,10 @@ export default function FlowNode({
 
   const connectedPorts = new Set(edges.filter(e => e.from === node.id).map(e => e.fromPort));
   const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
-  // Card title via the shared resolver. withSummary:false preserves existing
-  // behavior exactly — nickname when set, otherwise the type label — because
-  // the config summary is already shown below as the subtitle (no duplication).
-  const cardTitle = nodeDisplayName(node, cfg, summaryResolvers, { withSummary: false });
+  // Card header hierarchy (Phase 2b): prominent title + a type eyebrow shown
+  // only when it adds information (a real configured name/summary is present).
+  // Preserves Phase-1 identity exactly (title === previous cardTitle).
+  const { title: cardTitle, typeLabel } = nodeHeaderParts(node, cfg, summaryResolvers);
   const height = nodeHeight(ports.length);
 
   // Category-tinted surface — subtle at rest, stronger on hover, stronger still
@@ -114,15 +114,24 @@ export default function FlowNode({
         {/* Header — drag handle */}
         <div
           onPointerDown={headerPointerDown}
-          style={{ height: HEADER_H, cursor: isDragging ? 'grabbing' : 'grab', borderBottom: `1px solid ${accent}22` }}
-          className="pl-3 pr-2 flex items-center gap-2"
+          style={{ height: HEADER_H, cursor: isDragging ? 'grabbing' : 'grab', borderBottom: '1px solid rgb(var(--node-border))' }}
+          className="pl-2.5 pr-2 flex items-center gap-2"
         >
-          <span className="flex items-center justify-center w-6 h-6 rounded-md shrink-0"
-                style={{ background: `${accent}22`, color: accent }}>
-            <Icon size={14} strokeWidth={2} />
+          <span className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0"
+                style={{ background: `${accent}1f`, color: accent }}>
+            <Icon size={15} strokeWidth={2} />
           </span>
-          <span className="text-[13px] font-semibold truncate flex-1 leading-tight" style={{ color: NODE_TEXT.title }}>
-            {cardTitle}
+          {/* Title (prominent) over an optional type eyebrow (secondary) */}
+          <span className="flex flex-col min-w-0 flex-1 justify-center" style={{ lineHeight: 1.15 }}>
+            <span className="text-[12.5px] font-semibold truncate" style={{ color: NODE_TEXT.title }} title={cardTitle}>
+              {cardTitle}
+            </span>
+            {typeLabel && (
+              <span className="text-[9px] font-semibold uppercase tracking-wide truncate"
+                    style={{ color: NODE_TEXT.muted }}>
+                {typeLabel}
+              </span>
+            )}
           </span>
           {isSelected && (
             <button
@@ -139,13 +148,13 @@ export default function FlowNode({
 
         {/* Summary (reserved area) — click opens inspector */}
         <div
-          style={{ height: SUMMARY_H, color: NODE_TEXT.summary }}
-          className="px-3 py-1 text-[11px] leading-tight cursor-pointer overflow-hidden"
+          style={{ height: SUMMARY_H }}
+          className="px-3 py-1 leading-tight cursor-pointer overflow-hidden"
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}
           title={[primary, secondary].filter(Boolean).join(' — ')}
         >
-          {primary && <span className="truncate block">{primary}</span>}
-          {secondary && <span className="truncate block italic" style={{ color: NODE_TEXT.muted }}>{secondary}</span>}
+          {primary && <span className="truncate block text-[11px] font-medium" style={{ color: NODE_TEXT.summary }}>{primary}</span>}
+          {secondary && <span className="truncate block text-[10px]" style={{ color: NODE_TEXT.muted }}>{secondary}</span>}
         </div>
 
         {/* Output ports — absolutely positioned to match FlowCanvas anchor math */}
