@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { useDrag } from '../../../hooks/useDrag.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
@@ -18,7 +18,7 @@ export { NODE_HEIGHT } from './nodeGeometry.js';
 const FALLBACK_CFG = { label: 'Unknown', type: '', category: '', ports: [] };
 
 export default function FlowNode({
-  node, isSelected, isEntry, hasErrors, hasWarnings, edges, scale,
+  node, isSelected, isEntry, hasErrors, hasWarnings, errorCount = 0, warningCount = 0, edges, scale,
   onSelect, onMove, onDelete, onPortDragStart, onPortClick,
   onDragStart, onDragEnd, onContextMenu, summaryResolvers,
 }) {
@@ -133,6 +133,21 @@ export default function FlowNode({
               </span>
             )}
           </span>
+          {/* Status badge: error count > warning count > valid. Non-color-only
+              (icon + count) so it reads for color-blind users. */}
+          {errorCount > 0 ? (
+            <span className="shrink-0 flex items-center gap-0.5 text-[10px] font-bold" style={{ color: '#DC2626' }}
+                  title={`${errorCount} error${errorCount !== 1 ? 's' : ''} — open to fix`}>
+              <XCircle size={12} />{errorCount}
+            </span>
+          ) : warningCount > 0 ? (
+            <span className="shrink-0 flex items-center gap-0.5 text-[10px] font-bold" style={{ color: '#D97706' }}
+                  title={`${warningCount} warning${warningCount !== 1 ? 's' : ''}`}>
+              <AlertTriangle size={12} />{warningCount}
+            </span>
+          ) : (
+            <CheckCircle2 size={13} className="shrink-0" style={{ color: '#059669', opacity: 0.55 }} title="Valid" />
+          )}
           {isSelected && (
             <button
               className="shrink-0 transition-colors hover:opacity-80"

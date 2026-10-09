@@ -658,6 +658,8 @@ export default function FlowCanvas({
             isEntry={entryNodeId === node.id}
             hasErrors={!!(errors[node.id]?.length)}
             hasWarnings={!!(warnings?.[node.id]?.length)}
+            errorCount={errors[node.id]?.length || 0}
+            warningCount={warnings?.[node.id]?.length || 0}
             edges={edges}
             scale={transform.scale}
             onSelect={onSelect}
