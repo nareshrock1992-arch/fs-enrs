@@ -131,6 +131,10 @@ const EnsNodeSchema = z.object({
 const ErsNodeSchema = z.object({
   type:                  z.literal('ers'),
   ers_configuration_id:  z.number().int().positive(),
+  // Responder tier. The executor reads node.group_type (defaulting to 'primary')
+  // and the /ers/incidents endpoint requires it — so it MUST be persisted, not
+  // stripped. Optional here: absent → runtime default 'primary'.
+  group_type:            z.enum(['primary', 'secondary']).optional(),
 });
 
 const HangupNodeSchema = z.object({

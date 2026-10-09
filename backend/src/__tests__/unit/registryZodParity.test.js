@@ -28,14 +28,11 @@ const KNOWN_REQUIRED_RELAXATIONS = new Set([
   'ens_playback.branches',         // record(...).optional() — outcomes wired on canvas
 ]);
 
-// Registry fields that currently have NO zod rule and are therefore STRIPPED on
-// save/publish (ZodObject strip-mode). These are tracked gaps, not accepted
-// behaviour: `ers.group_type` is offered in the UI but never persisted/executed.
-// Listed so this test passes and LOCKS the set — any NEW uncovered field fails
-// the test — while the gap is reported for a follow-up fix (add it to zod).
-const KNOWN_UNCOVERED = new Set([
-  'ers.group_type',
-]);
+// Registry fields that intentionally have NO zod rule and are therefore stripped
+// on save/publish. Currently empty: ers.group_type (previously here) is now a
+// real zod rule so the responder tier persists. Any NEW uncovered field fails
+// the coverage test rather than being silently dropped.
+const KNOWN_UNCOVERED = new Set([]);
 
 describe('registry ↔ ivrValidator parity', () => {
   it('every node type in the registry has a zod schema', () => {
