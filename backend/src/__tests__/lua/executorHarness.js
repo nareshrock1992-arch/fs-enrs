@@ -47,6 +47,7 @@ function makeSession({ vars = {}, digits = [], readyAfter = Infinity } = {}) {
     setAutoHangup() { /* no-op */ },
     streamFile(f) { record('streamFile', f); return true; },
     execute(app, data) { record('execute', app, data == null ? '' : String(data)); return true; },
+    flushDigits() { record('flushDigits'); return true; },
     getDigits() { const d = digitQ.length ? digitQ.shift() : ''; record('getDigits', d); return d; },
     playAndGetDigits() { const d = digitQ.length ? digitQ.shift() : ''; record('playAndGetDigits', d); return d; },
     hangup(cause) { state.hungUp = true; record('hangup', cause == null ? '' : String(cause)); },
