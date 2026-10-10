@@ -1326,6 +1326,188 @@ end`,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Queue Wait — bounded pre-transfer eligibility wait (Phase 1).
+  // Encapsulates the "hold + recheck until eligible or deadline" loop so a flow
+  // never has to poll queue_eligibility back into itself (which has no deadline
+  // and announces every cycle). Reuses the SAME read-only eligibility endpoint;
+  // adds NO new backend logic. Contact-centre only — no ERS/conference reuse.
+  // Deadline is absolute (computed once, never reset) and covers PRE-TRANSFER
+  // waiting only; after an ELIGIBLE→Transfer, native mod_callcenter owns the
+  // queue experience. queue_overflow_dial (the OVERFLOW dialer) is out of scope.
+  // ═══════════════════════════════════════════════════════════════════════════
+  {
+    type: 'queue_wait',
+    label: 'Queue Wait',
+    icon: '⏳',
+    bg: '#14241e', border: '#2a6a4a', color: '#a7f3d0',
+    category: 'Flow',
+    description: 'Hold the caller, rechecking queue eligibility until an agent frees up or a deadline expires',
+    footnote: 'Bounded pre-transfer wait: plays hold audio and polls queue eligibility on an interval, with an optional periodic announcement. ELIGIBLE routes the instant an agent can take the call — wire it to a Transfer. OVERFLOW fires once when the absolute deadline (max wait) expires. CHECK_ERROR is a genuine eligibility-check failure (fail closed). The deadline is measured once at entry and never reset; it governs pre-transfer waiting only — after Transfer, native mod_callcenter timers apply.',
+    ports: 'branches',
+    branchKeys: ['ELIGIBLE', 'OVERFLOW', 'CHECK_ERROR'],
+    summaryTemplate: 'Wait ≤${max_wait_seconds}s · ${queue}',
+    portLabels: { ELIGIBLE: 'Agent available', OVERFLOW: 'Wait timed out', CHECK_ERROR: 'Check failed' },
+    configSchema: [
+      // ── Queue ──
+      { key: 'queue', label: 'Queue name', fieldType: 'mono_text', required: true, placeholder: 'Sales@ACME', section: 'Queue',
+        hint: 'Exact FreeSWITCH mod_callcenter queue to recheck. Supports ${var}. Configured here — never inherited from another node.' },
+      // ── Wait timing (kept visible — not in a collapsed Timeouts section) ──
+      { key: 'max_wait_seconds', label: 'Max wait (seconds)', fieldType: 'number', min: 5, max: 3600, required: true, section: 'Wait timing',
+        hint: 'Absolute pre-transfer wait, measured once at entry and NEVER reset by rechecks/announcements. On expiry the node routes OVERFLOW exactly once. Actual worst-case wait ≤ max_wait + check timeout + 2s (one in-flight check).' },
+      { key: 'recheck_interval_seconds', label: 'Recheck interval (seconds)', fieldType: 'number', min: 1, max: 60, section: 'Wait timing',
+        hint: 'How often eligibility is rechecked (also the hold-audio chunk length between checks). Default 5.' },
+      { key: 'check_timeout_seconds', label: 'Eligibility check timeout (seconds)', fieldType: 'number', min: 1, max: 15, section: 'Wait timing',
+        hint: 'Max wait for each eligibility check. On failure the node routes CHECK_ERROR (never treated as "no agents"). Default 5.' },
+      // ── Business policy — what to do for each eligibility outcome ──
+      { key: 'policy_no_available_agents', label: 'When agents are busy / unavailable', fieldType: 'select', section: 'Business policy',
+        options: [{ value: 'wait', label: 'Keep waiting (until eligible or deadline)' }, { value: 'overflow', label: 'Go to overflow now' }],
+        hint: 'Agents are logged in but on calls / not currently available. Default: Keep waiting.' },
+      { key: 'policy_all_agents_paused', label: 'When all agents are on break', fieldType: 'select', section: 'Business policy',
+        options: [{ value: 'wait', label: 'Keep waiting (until eligible or deadline)' }, { value: 'overflow', label: 'Go to overflow now' }],
+        hint: 'Every logged-in agent is paused/on break. Default: Keep waiting.' },
+      { key: 'policy_no_agents_logged_in', label: 'When no agents are logged in', fieldType: 'select', section: 'Business policy',
+        options: [{ value: 'wait', label: 'Keep waiting (until eligible or deadline)' }, { value: 'overflow', label: 'Go to overflow now' }],
+        hint: 'No agents are currently logged in. Default: Keep waiting.' },
+      { key: 'policy_no_members', label: 'When the queue has no members (misconfigured)', fieldType: 'select', section: 'Business policy',
+        options: [{ value: 'error', label: 'Treat as a configuration error (CHECK_ERROR)' }, { value: 'overflow', label: 'Go to overflow now' }],
+        hint: 'A queue with no assigned agents can never become eligible. Default: configuration error. (Waiting is not offered — it would hold the caller pointlessly.)' },
+      { key: 'policy_queue_not_found', label: 'When the queue does not exist (misconfigured)', fieldType: 'select', section: 'Business policy',
+        options: [{ value: 'error', label: 'Treat as a configuration error (CHECK_ERROR)' }, { value: 'overflow', label: 'Go to overflow now' }],
+        hint: 'The configured queue name is not found. Default: configuration error. (Waiting is not offered.)' },
+      // ── Hold & announcements ──
+      { key: 'hold_source_type', label: 'Hold audio source', fieldType: 'select', section: 'Hold & announcements',
+        options: [{ value: 'none', label: 'None (silence)' }, { value: 'audio', label: 'Audio File' }, { value: 'tts', label: 'Text to Speech' }],
+        hint: 'Played between rechecks (finite per chunk — never an infinitely-looping stream). Default None.' },
+      { key: 'hold_audio_url', label: 'Hold audio file', fieldType: 'audio_url', placeholder: '/media/hold.wav', section: 'Hold & announcements', showWhen: { field: 'hold_source_type', value: 'audio' } },
+      { key: 'hold_prompt_text', label: 'Hold text', fieldType: 'textarea', placeholder: 'Please hold while we connect you.', section: 'Hold & announcements', showWhen: { field: 'hold_source_type', value: 'tts' } },
+      { key: 'announcement_source_type', label: 'Periodic announcement source', fieldType: 'select', section: 'Hold & announcements',
+        options: [{ value: 'none', label: 'None' }, { value: 'audio', label: 'Audio File' }, { value: 'tts', label: 'Text to Speech' }],
+        hint: 'Optional announcement (e.g. a support-email message) played every N seconds while waiting. Default None — and never at the very start unless the cadence has elapsed.' },
+      { key: 'announcement_audio_url', label: 'Announcement audio file', fieldType: 'audio_url', placeholder: '/media/support-email.wav', section: 'Hold & announcements', showWhen: { field: 'announcement_source_type', value: 'audio' } },
+      { key: 'announcement_text', label: 'Announcement text', fieldType: 'textarea', placeholder: 'If you prefer, email support@example.com.', section: 'Hold & announcements', showWhen: { field: 'announcement_source_type', value: 'tts' } },
+      { key: 'announcement_every_seconds', label: 'Announcement cadence (seconds)', fieldType: 'number', min: 0, max: 3600, section: 'Hold & announcements',
+        hint: 'How often the announcement repeats while waiting. 0 = never. The first announcement plays after this many seconds, not immediately.' },
+      // ── Outputs ──
+      { key: 'branches', label: 'Branches (outcome → target node)', fieldType: 'branches_map', required: true, section: 'Outputs',
+        hint: 'Reserved outcomes: ELIGIBLE, OVERFLOW, CHECK_ERROR. Wire ELIGIBLE to a Transfer node; OVERFLOW to your timed-out route (overflow/voicemail/announcement); CHECK_ERROR to a safe fallback. Use _default to catch any not wired.' },
+    ],
+    luaHandler: `
+-- Queue Wait — bounded pre-transfer eligibility wait. Polls the SAME read-only
+-- eligibility endpoint as queue_eligibility; adds hold audio + optional periodic
+-- announcement + an ABSOLUTE deadline. Fails closed (CHECK_ERROR) on any check
+-- failure and never treats a failed check as "no agents". NEVER transfers.
+local function exec_queue_wait(s, node)
+  local br = node.branches or {}
+  local queue = interp(s, node.queue) or ""
+  if queue == "" then
+    freeswitch.consoleLog("ERR", "[ivr_executor] queue_wait: empty queue — fail closed\\n")
+    return br["CHECK_ERROR"] or br["_default"]
+  end
+  local max_wait = tonumber(node.max_wait_seconds) or 0
+  if max_wait < 1 then max_wait = 1 end
+  local interval = tonumber(node.recheck_interval_seconds) or 5
+  if interval < 1 then interval = 1 end
+  local chk_tmo = tonumber(node.check_timeout_seconds) or 5
+  if chk_tmo < 1 then chk_tmo = 1 end
+  if chk_tmo > 15 then chk_tmo = 15 end
+  local ann_every = tonumber(node.announcement_every_seconds) or 0
+
+  -- Deadline computed ONCE. os.time() (wall-clock seconds) is the elapsed-time
+  -- source already used by the executor; 1s granularity is adequate here.
+  local start    = os.time()
+  local deadline = start + max_wait
+  local last_ann = 0   -- seconds-since-start of the last announcement (0 => none yet; first only after ann_every)
+
+  while s:ready() and os.time() < deadline do
+    -- 1) One eligibility snapshot (reuses the read-only endpoint; fail closed).
+    local resp = internal_post_t("/ivr/queue-eligibility", { queue = queue }, chk_tmo + 2)
+    if resp == nil or resp.reason == nil then
+      freeswitch.consoleLog("ERR", "[ivr_executor] queue_wait: eligibility check failed for queue=" .. queue .. " — CHECK_ERROR\\n")
+      return br["CHECK_ERROR"] or br["_default"]
+    end
+    if resp.reason == "ELIGIBLE" then
+      s:setVariable("queue_wait_reason", "ELIGIBLE")
+      s:setVariable("queue_wait_elapsed", tostring(os.time() - start))
+      freeswitch.consoleLog("INFO", "[ivr_executor] queue_wait: ELIGIBLE queue=" .. queue .. " after " .. tostring(os.time() - start) .. "s\\n")
+      return br["ELIGIBLE"] or br["_default"]
+    end
+    -- Per-reason BUSINESS POLICY (admin-configurable). Recoverable reasons
+    -- default to "wait"; structural reasons (no_members/queue_not_found) are
+    -- 'error'|'overflow' in new nodes but an ABSENT policy field (legacy graph)
+    -- falls back to "wait" to preserve the original behaviour. An unexpected /
+    -- unknown reason fails closed to CHECK_ERROR — never waits as if merely busy.
+    --
+    -- policy_pick(): absent (nil) field → "wait" (legacy preserve, for BOTH
+    -- recoverable and structural). A present-but-INVALID value (empty string,
+    -- unknown string, non-string) is coerced to the per-field SAFE default, so a
+    -- corrupt/imported structural value can never silently degrade to an
+    -- indefinite "wait" — it goes to "error". Published graphs can't carry an
+    -- invalid value (Zod enum), so this only shields non-validated/imported ones.
+    local function policy_pick(v, a1, a2, safe_default)
+      if v == nil then return "wait" end          -- legacy/absent → preserve original wait
+      if type(v) ~= "string" then return safe_default end
+      if v == a1 or v == a2 then return v end     -- valid enum value → honour it
+      return safe_default                         -- present-but-invalid → safe default
+    end
+    local reason = resp.reason
+    local action
+    if     reason == "NO_AVAILABLE_AGENTS"  then action = policy_pick(node.policy_no_available_agents, "wait",  "overflow", "wait")
+    elseif reason == "ALL_AGENTS_PAUSED"    then action = policy_pick(node.policy_all_agents_paused,    "wait",  "overflow", "wait")
+    elseif reason == "NO_AGENTS_LOGGED_IN"  then action = policy_pick(node.policy_no_agents_logged_in,  "wait",  "overflow", "wait")
+    elseif reason == "NO_MEMBERS"           then action = policy_pick(node.policy_no_members,            "error", "overflow", "error")
+    elseif reason == "QUEUE_NOT_FOUND"      then action = policy_pick(node.policy_queue_not_found,       "error", "overflow", "error")
+    else                                         action = "error" end
+    if action == "overflow" then
+      s:setVariable("queue_wait_reason", reason .. ":OVERFLOW")
+      freeswitch.consoleLog("INFO", "[ivr_executor] queue_wait: reason=" .. reason .. " policy=overflow → OVERFLOW\\n")
+      return br["OVERFLOW"] or br["_default"]
+    elseif action == "error" then
+      s:setVariable("queue_wait_reason", reason .. ":CHECK_ERROR")
+      freeswitch.consoleLog("ERR", "[ivr_executor] queue_wait: reason=" .. reason .. " policy=error → CHECK_ERROR\\n")
+      return br["CHECK_ERROR"] or br["_default"]
+    end
+    -- action == "wait": keep holding until eligible or the deadline.
+    -- Deadline precedence: if the check consumed the remaining time, do NOT
+    -- start another cycle (no announcement, no hold) — fall out to OVERFLOW.
+    if not s:ready() or os.time() >= deadline then break end
+
+    -- 2) Optional periodic announcement (never at t=0; only once cadence elapsed).
+    if ann_every > 0 then
+      local elapsed = os.time() - start
+      if elapsed - last_ann >= ann_every then
+        play_prompt(s, node.announcement_source_type, node.announcement_audio_url, node.announcement_text)
+        last_ann = elapsed
+        if not s:ready() or os.time() >= deadline then break end
+      end
+    end
+
+    -- 3) Finite hold chunk (never a looping MOH stream), capped at the time left.
+    local remaining = deadline - os.time()
+    if remaining <= 0 then break end
+    local chunk = interval
+    if chunk > remaining then chunk = remaining end
+    local hsrc = node.hold_source_type or "none"
+    if hsrc == "audio" then
+      local hf = resolve_audio(node.hold_audio_url)
+      if hf then s:streamFile(hf) else s:execute("playback", "silence_stream://" .. (chunk * 1000)) end
+    elseif hsrc == "tts" then
+      local ht = interp(s, node.hold_prompt_text)
+      if ht ~= "" then speak(s, ht) else s:execute("playback", "silence_stream://" .. (chunk * 1000)) end
+    else
+      s:execute("playback", "silence_stream://" .. (chunk * 1000))
+    end
+  end
+
+  -- Caller gone → end quietly; otherwise the absolute deadline expired → OVERFLOW once.
+  if not s:ready() then return nil end
+  s:setVariable("queue_wait_reason", "OVERFLOW")
+  freeswitch.consoleLog("INFO", "[ivr_executor] queue_wait: deadline reached (" .. max_wait .. "s) queue=" .. queue .. " — OVERFLOW\\n")
+  return br["OVERFLOW"] or br["_default"]
+end`,
+    apiEndpoint: { method: 'POST', path: '/api/v1/internal/ivr/queue-eligibility' },
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Phase 5 — 3-scenario emergency flow node types.
   // Connection fields deliberately reuse the existing ref names (branches /
   // next / true_node / false_node) so the graph validator's refsOf(), the

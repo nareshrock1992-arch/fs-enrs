@@ -77,6 +77,14 @@ describe('groupFields — structure', () => {
     expect(groupFields()).toEqual([]);
     expect(groupFields(null)).toEqual([]);
   });
+  it('an explicit per-field `section` overrides the key heuristic', () => {
+    // max_wait_seconds would key-heuristic to "Timeouts" (collapsed); an explicit
+    // section places it in an open "Wait timing" group instead.
+    const g = groupFields([{ key: 'max_wait_seconds', section: 'Wait timing' }, { key: 'queue', section: 'Queue' }, { key: 'branches', section: 'Outputs' }]);
+    expect(g.map(s => s.title)).toEqual(['Queue', 'Wait timing', 'Outputs']);
+    expect(sectionDefaultOpen('Wait timing')).toBe(true);
+    expect(sectionDefaultOpen('Business policy')).toBe(true);
+  });
 });
 
 // ── Registry-driven invariants (the audit's required checks) ────────────────────
@@ -84,12 +92,14 @@ describe('registry-driven sectioning invariants', () => {
   const withSchema = NODE_TYPE_REGISTRY.filter(n => (n.configSchema || []).length);
 
   it('1) every REQUIRED field in every node type sits in a default-OPEN section', () => {
+    // Resolve the section the SAME way groupFields does: an explicit per-field
+    // `section` overrides the key heuristic (e.g. queue_wait groups fields into
+    // open sections like "Wait timing").
+    const resolve = (f) => (typeof f.section === 'string' && f.section.trim()) ? f.section.trim() : sectionForFieldKey(f.key);
     const offenders = [];
     for (const n of withSchema) {
       for (const f of n.configSchema) {
-        if (f.required && !sectionDefaultOpen(sectionForFieldKey(f.key))) {
-          offenders.push(`${n.type}.${f.key} → ${sectionForFieldKey(f.key)}`);
-        }
+        if (f.required && !sectionDefaultOpen(resolve(f))) offenders.push(`${n.type}.${f.key} → ${resolve(f)}`);
       }
     }
     expect(offenders).toEqual([]);

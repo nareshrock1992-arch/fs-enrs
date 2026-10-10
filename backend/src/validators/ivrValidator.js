@@ -351,6 +351,35 @@ const QueueEligibilityNodeSchema = z.object({
   branches:        z.record(z.string(), nodeId),
 });
 
+// Queue Wait — bounded pre-transfer eligibility wait (Phase 1). Reuses the same
+// read-only eligibility endpoint as queue_eligibility at runtime; this schema
+// only validates the node's own config. queue is REQUIRED (never inherited);
+// max_wait_seconds is a positive bounded deadline; timing fields are bounded
+// server-side (not UI-only). Cross-field source_type↔asset rules in superRefine.
+const QueueWaitNodeSchema = z.object({
+  type:                      z.literal('queue_wait'),
+  queue:                     z.string().min(1).max(255),
+  max_wait_seconds:          z.number().int().min(5).max(3600),
+  recheck_interval_seconds:  z.number().int().min(1).max(60).optional(),
+  check_timeout_seconds:     z.number().int().min(1).max(15).optional(),
+  hold_source_type:          z.enum(['none', 'audio', 'tts']).optional(),
+  hold_audio_url:            localAudioUrl.optional(),
+  hold_prompt_text:          z.string().max(1000).optional(),
+  announcement_source_type:  z.enum(['none', 'audio', 'tts']).optional(),
+  announcement_audio_url:    localAudioUrl.optional(),
+  announcement_text:         z.string().max(1000).optional(),
+  announcement_every_seconds: z.number().int().min(0).max(3600).optional(),
+  // Per-reason business policy. Recoverable reasons: wait|overflow. Structural
+  // reasons: error|overflow (never "wait" — a missing/empty queue can't resolve).
+  // All optional: an absent field means legacy/default behavior (see Lua + docs).
+  policy_no_available_agents: z.enum(['wait', 'overflow']).optional(),
+  policy_all_agents_paused:   z.enum(['wait', 'overflow']).optional(),
+  policy_no_agents_logged_in: z.enum(['wait', 'overflow']).optional(),
+  policy_no_members:          z.enum(['error', 'overflow']).optional(),
+  policy_queue_not_found:     z.enum(['error', 'overflow']).optional(),
+  branches:                  z.record(z.string(), nodeId),
+});
+
 export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   PlayNodeSchema.extend(BASE_NODE_FIELDS),          // ZodObject ✓
   SayNodeSchema.extend(BASE_NODE_FIELDS),           // ZodObject ✓
@@ -371,6 +400,7 @@ export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   EnsBlastRecordNodeSchema.extend(BASE_NODE_FIELDS),    // ZodObject ✓
   EnsPlaybackNodeSchema.extend(BASE_NODE_FIELDS),       // ZodObject ✓
   QueueEligibilityNodeSchema.extend(BASE_NODE_FIELDS),  // ZodObject ✓
+  QueueWaitNodeSchema.extend(BASE_NODE_FIELDS),         // ZodObject ✓
 ]);
 
 export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
@@ -473,6 +503,27 @@ export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
     }
     if (st === 'tts' && !node.goodbye_text) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'goodbye_source_type=tts requires goodbye_text' });
+    }
+  }
+  if (node.type === 'queue_wait') {
+    // Hold / announcement source must have the matching asset; and an
+    // announcement source is pointless without a positive cadence.
+    const hs = node.hold_source_type ?? 'none';
+    if (hs === 'audio' && !node.hold_audio_url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hold_source_type=audio requires hold_audio_url' });
+    }
+    if (hs === 'tts' && (!node.hold_prompt_text || String(node.hold_prompt_text).trim() === '')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hold_source_type=tts requires hold_prompt_text' });
+    }
+    const as = node.announcement_source_type ?? 'none';
+    if (as === 'audio' && !node.announcement_audio_url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'announcement_source_type=audio requires announcement_audio_url' });
+    }
+    if (as === 'tts' && (!node.announcement_text || String(node.announcement_text).trim() === '')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'announcement_source_type=tts requires announcement_text' });
+    }
+    if (as !== 'none' && !(node.announcement_every_seconds > 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'an announcement source requires announcement_every_seconds > 0 (cadence)' });
     }
   }
   if (node.type === 'ens_blast_record') {

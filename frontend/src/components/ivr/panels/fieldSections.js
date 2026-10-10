@@ -12,7 +12,12 @@
 // bucket) collapse by default to reduce scrolling on large forms.
 
 export const SECTION_ORDER = [
-  'General', 'Content', 'Input', 'Routing', 'Retries', 'Timeouts', 'Outputs', 'Advanced',
+  // Generic (key-derived) sections, then explicit per-field `section` titles a
+  // node may declare (e.g. queue_wait). Any title not listed here still renders,
+  // appended in first-seen order, and is open unless COLLAPSED_BY_DEFAULT.
+  'General', 'Content', 'Input', 'Routing', 'Retries', 'Timeouts',
+  'Queue', 'Wait timing', 'Business policy', 'Hold & announcements',
+  'Outputs', 'Advanced',
 ];
 
 export function sectionForFieldKey(key = '') {
@@ -47,9 +52,15 @@ export function sectionDefaultOpen(title) {
  */
 export function groupFields(schema = []) {
   const grouped = {};
+  const order = [];                       // preserves first-seen order of any title not in SECTION_ORDER
   for (const f of Array.isArray(schema) ? schema : []) {
-    const s = sectionForFieldKey(f?.key || '');
-    (grouped[s] ||= []).push(f);
+    // A field may declare an explicit `section` (opt-in, e.g. queue_wait); it
+    // overrides the key heuristic. Nodes that don't set it are unaffected.
+    const s = (typeof f?.section === 'string' && f.section.trim()) ? f.section.trim() : sectionForFieldKey(f?.key || '');
+    if (!(s in grouped)) { grouped[s] = []; order.push(s); }
+    grouped[s].push(f);
   }
-  return SECTION_ORDER.filter(s => grouped[s]?.length).map(title => ({ title, fields: grouped[title] }));
+  const ranked = SECTION_ORDER.filter(s => grouped[s]?.length);
+  const extras = order.filter(s => !SECTION_ORDER.includes(s)); // unknown titles keep first-seen order
+  return [...ranked, ...extras].map(title => ({ title, fields: grouped[title] }));
 }

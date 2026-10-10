@@ -14,6 +14,7 @@ export const NODE_DEFAULTS = {
   play:              { audio_url: '/media/', next: '' },
   say:               { text: '', language: 'en-US', next: '' },
   gather:            { config_version: 2, retry_mode: 'internal', max_attempts: 3, reprompt_pause_ms: 700, allow_barge_in: 'yes', min_digits: 1, max_digits: 1, timeout_seconds: 5, inter_digit_timeout: 2, terminators: '', variable_name: 'gather_result', prompt_source_type: 'tts', prompt_text: '', branches: {} },
+  queue_wait:        { queue: '', max_wait_seconds: 120, recheck_interval_seconds: 5, check_timeout_seconds: 5, hold_source_type: 'none', announcement_source_type: 'none', announcement_every_seconds: 0, policy_no_available_agents: 'wait', policy_all_agents_paused: 'wait', policy_no_agents_logged_in: 'wait', policy_no_members: 'error', policy_queue_not_found: 'error', branches: {} },
   goto:              { target_node_id: '' },
   ens:               { ens_config_var: 'ens_configuration_id', recording_file_var: 'recorded_file_path', next: '' },
   ers:               { ers_configuration_id: '' },
