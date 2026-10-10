@@ -2506,18 +2506,39 @@ export function parseCcTable(raw) {
 // Pure eligibility evaluator over already-parsed row arrays. No ESL, no I/O —
 // unit-testable with the real table shapes. Throws on untrustworthy data
 // (a tier member with no matching agent record) so callers fail closed.
+// Bound the per-agent diagnostic array so a very large tier never produces an
+// unbounded log/response payload. The eligibility COUNTS are always over all
+// members; only the explanatory `detail` list is capped.
+const ELIG_DETAIL_CAP = 50;
+
+// Describes how the three callcenter lists were obtained. They are THREE
+// INDEPENDENT reads (see getQueueEligibility) — not one atomic snapshot — so a
+// result can, in principle, combine states that never co-existed at one instant.
+// `consistent` is true only when every tier member resolved to an agent record.
+function eligibilitySnapshot(consistent) {
+  return {
+    source: 'callcenter_config {queue,agent,tier} list',
+    atomic: false,                 // three independent ESL reads — NOT a single snapshot
+    consistent,                    // false ⇒ data was incomplete/inconsistent, not a real negative
+  };
+}
+
 export function evaluateQueueEligibility(queueName, { queues, agents, tiers }) {
   const q = String(queueName || '').trim();
   const zero = { queue: q, queue_exists: false, members: 0, logged_in: 0, available: 0, busy: 0, paused: 0, eligible: false };
 
   const queueExists = (queues || []).some(r => r.name === q);
-  if (!queueExists) return { ...zero, reason: 'QUEUE_NOT_FOUND' };
+  if (!queueExists) return { ...zero, reason: 'QUEUE_NOT_FOUND', detail: [], snapshot: eligibilitySnapshot(true) };
 
   const agentByName = new Map((agents || []).map(a => [a.name, a]));
   const memberTiers = (tiers || []).filter(t => t.queue === q);
   const members = memberTiers.length;
-  if (members === 0) return { ...zero, queue_exists: true, reason: 'NO_MEMBERS' };
+  if (members === 0) return { ...zero, queue_exists: true, reason: 'NO_MEMBERS', detail: [], snapshot: eligibilitySnapshot(true) };
 
+  // Per-agent diagnostic breakdown (bounded, PII-safe: agent login id + the
+  // operational status/state/tier_state only — never contact/endpoint/secrets).
+  // It EXPLAINS the counts; it never changes them or the reason.
+  const detail = [];
   let logged_in = 0, paused = 0, available = 0, busy = 0;
   for (const t of memberTiers) {
     const a = agentByName.get(t.agent);
@@ -2526,14 +2547,25 @@ export function evaluateQueueEligibility(queueName, { queues, agents, tiers }) {
       // Do NOT count as available; fail the whole check closed.
       throw new Error(`queue-eligibility: tier member "${t.agent}" has no agent record (inconsistent)`);
     }
-    if (a.status === 'Logged Out') continue;       // not logged in
-    logged_in++;
-    if (a.status === 'On Break') { paused++; continue; }  // paused
-    const routable = a.status === 'Available'
-      && (a.state === 'Waiting' || a.state === 'Idle')
-      && t.state === 'Ready';
-    if (routable) available++;
-    else busy++;                                    // logged-in, not paused, not routable
+    let classification;
+    if (a.status === 'Logged Out') {
+      classification = 'logged_out';                 // not logged in
+    } else {
+      logged_in++;
+      if (a.status === 'On Break') {
+        paused++;                                     // paused
+        classification = 'paused';
+      } else {
+        const routable = a.status === 'Available'
+          && (a.state === 'Waiting' || a.state === 'Idle')
+          && t.state === 'Ready';
+        if (routable) { available++; classification = 'routable'; }
+        else          { busy++;      classification = 'not_routable'; } // logged-in, not paused, not routable
+      }
+    }
+    if (detail.length < ELIG_DETAIL_CAP) {
+      detail.push({ agent: t.agent, status: a.status, state: a.state, tier_state: t.state, classification });
+    }
   }
 
   // Deterministic reason order (see Phase 1B §12).
@@ -2543,7 +2575,12 @@ export function evaluateQueueEligibility(queueName, { queues, agents, tiers }) {
   else if (paused === logged_in) reason = 'ALL_AGENTS_PAUSED';
   else                           reason = 'NO_AVAILABLE_AGENTS';
 
-  return { queue: q, queue_exists: true, members, logged_in, available, busy, paused, eligible: available >= 1, reason };
+  return {
+    queue: q, queue_exists: true, members, logged_in, available, busy, paused,
+    eligible: available >= 1, reason,
+    detail, detail_truncated: members > ELIG_DETAIL_CAP,
+    snapshot: eligibilitySnapshot(true),
+  };
 }
 
 // Fetch + parse + evaluate. Reuses the single shared ESL connection via

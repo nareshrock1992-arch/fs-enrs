@@ -139,15 +139,24 @@ export const queueEligibility = asyncHandler(async (req, res) => {
 
   try {
     const result = await getQueueEligibility(queue);
-    // Observability (no secrets): queue + reason + counts only.
+    // Observability (no secrets): queue + reason + the full count breakdown.
+    // `detail` (per-agent status/state/tier_state) is in the RESPONSE for
+    // diagnostic consumers but intentionally NOT dumped to the log line, to keep
+    // logs bounded and free of agent identifiers.
     console.log(`[internal] queue-eligibility queue="${queue}" reason=${result.reason} ` +
-      `members=${result.members} logged_in=${result.logged_in} available=${result.available}`);
+      `members=${result.members} logged_in=${result.logged_in} available=${result.available} ` +
+      `busy=${result.busy} paused=${result.paused}`);
     return res.json(result);
   } catch (err) {
     console.error(`[internal] queue-eligibility FAILED queue="${queue}" — fail closed: ${err.message}`);
+    // CHECK_ERROR = eligibility could NOT be determined (infra/parse/inconsistent
+    // data) — explicitly distinct from an authoritative negative. snapshot.consistent
+    // =false signals "inability to determine", never "no agents available".
     return res.json({
       queue, queue_exists: false, members: 0, logged_in: 0,
       available: 0, busy: 0, paused: 0, eligible: false, reason: 'CHECK_ERROR',
+      detail: [], detail_truncated: false,
+      snapshot: { source: 'callcenter_config {queue,agent,tier} list', atomic: false, consistent: false },
     });
   }
 });
