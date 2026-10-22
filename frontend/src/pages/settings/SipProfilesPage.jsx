@@ -5,7 +5,7 @@ export default function SipProfilesPage() {
     <ConfigPage
       providerId="sip-profiles"
       title="SIP Global Settings"
-      subtitle="mod_sofia global settings — sofia.conf.xml"
+      subtitle="SIP stack global settings"
     />
   );
 }

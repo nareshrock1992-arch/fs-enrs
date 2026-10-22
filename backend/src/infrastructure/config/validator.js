@@ -62,7 +62,7 @@ const RULES = [
     key: 'ESL_PASSWORD',
     required: false,
     weak: ['ClueCon'],
-    message: 'ESL_PASSWORD is the public FreeSWITCH default. Change before Internet-facing deployment.',
+    message: 'ESL_PASSWORD is the public engine default. Change before Internet-facing deployment.',
     severity: 'warn', // Never fatal — valid on many on-prem deployments
   },
 ];

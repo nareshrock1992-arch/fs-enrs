@@ -483,13 +483,13 @@ export default function ErsConfigList() {
                   <label className="label">Announcement Audio</label>
                   <input className="input font-mono text-xs" value={form.queue_announcement_audio}
                          onChange={e => f('queue_announcement_audio', e.target.value)}
-                         placeholder="/opt/freeswitch/sounds/queue_busy.wav" />
+                         placeholder="/path/to/sounds/queue_busy.wav" />
                 </div>
                 <div>
                   <label className="label">Queue Music / Hold Audio</label>
                   <input className="input font-mono text-xs" value={form.queue_music_path}
                          onChange={e => f('queue_music_path', e.target.value)}
-                         placeholder="/opt/freeswitch/sounds/hold_music.wav" />
+                         placeholder="/path/to/sounds/hold_music.wav" />
                 </div>
                 <div>
                   <label className="label">Queue Timeout (s)</label>
@@ -546,7 +546,7 @@ export default function ErsConfigList() {
                   <input type="checkbox" id="recEnabled" checked={form.recording_enabled}
                          onChange={e => f('recording_enabled', e.target.checked)} />
                   <label htmlFor="recEnabled" className="text-sm font-medium text-text-primary cursor-pointer">
-                    Enable conference recording (ESL)
+                    Enable conference recording
                   </label>
                 </div>
                 {form.recording_enabled && (
@@ -587,7 +587,7 @@ export default function ErsConfigList() {
                 <label className="label">Recording Directory (override)</label>
                 <input className="input font-mono text-xs" value={form.recording_directory}
                        onChange={e => f('recording_directory', e.target.value)}
-                       placeholder="/opt/freeswitch/recordings/ers" />
+                       placeholder="/path/to/recordings/ers" />
                 <p className="text-[11px] text-text-muted mt-1">Leave blank to use the system default.</p>
               </div>
             </section>
@@ -669,7 +669,7 @@ export default function ErsConfigList() {
                   </p>
                 </div>
                 <div>
-                  <label className="label">FreeSWITCH Gateway Name</label>
+                  <label className="label">SIPCommunication Gateway Name</label>
                   <input
                     className={`input font-mono ${form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override) ? 'border-red-400 focus:ring-red-400' : ''}`}
                     value={form.gateway_override}
@@ -686,7 +686,7 @@ export default function ErsConfigList() {
                   <p className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1">Gateway Priority</p>
                   <ol className="text-[10px] text-text-muted space-y-0.5 list-decimal list-inside">
                     <li><span className="text-text-primary font-medium">Per-contact gateway</span> — individual responder override (highest)</li>
-                    <li><span className="text-text-primary font-medium">FreeSWITCH Gateway Name</span> — manual name above (wins over dropdown)</li>
+                    <li><span className="text-text-primary font-medium">SIPCommunication Gateway Name</span> — manual name above (wins over dropdown)</li>
                     <li>Default Gateway — registered gateway from dropdown above</li>
                     <li>Tenant default gateway</li>
                     <li>Internal extension routing</li>

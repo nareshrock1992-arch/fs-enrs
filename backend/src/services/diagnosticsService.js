@@ -32,16 +32,16 @@ async function checkEsl() {
   const st = eslStatus();
   if (!st.connected) {
     return fail(
-      'ESL Connectivity',
-      `Not connected to FreeSWITCH ESL at ${st.host}:${st.port}`,
-      'Verify FreeSWITCH is running and ESL password in .env matches event_socket.conf.xml'
+      'Engine Connectivity',
+      `Not connected to the SIPCommunication engine at ${st.host}:${st.port}`,
+      'Verify the SIPCommunication engine is running and ESL_PASSWORD in .env matches the engine event socket password'
     );
   }
   try {
     const res = await eslCommand('status');
-    return pass('ESL Connectivity', `Connected to ${st.host}:${st.port} — ${(res || '').split('\n')[0]}`);
+    return pass('Engine Connectivity', `Connected to ${st.host}:${st.port} — ${(res || '').split('\n')[0]}`);
   } catch (e) {
-    return warn('ESL Connectivity', `Connected but command failed: ${e.message}`);
+    return warn('Engine Connectivity', `Connected but command failed: ${e.message}`);
   }
 }
 
@@ -120,15 +120,15 @@ async function checkFsGlobalVars() {
     if (!actual) {
       results.push(warn(
         `FS Path: ${fsVar}`,
-        `Configured: ${configured} | FreeSWITCH actual: unknown (ESL not available)`,
-        'Connect ESL to compare paths, or set env var: ' + envVar
+        `Configured: ${configured} | Engine actual: unknown (engine not connected)`,
+        'Connect the engine to compare paths, or set env var: ' + envVar
       ));
     } else if (actual === configured) {
       results.push(pass(`FS Path: ${fsVar}`, `MATCH — ${configured}`));
     } else {
       results.push(fail(
         `FS Path: ${fsVar}`,
-        `MISMATCH — Configured: ${configured} | FreeSWITCH actual: ${actual}`,
+        `MISMATCH — Configured: ${configured} | Engine actual: ${actual}`,
         `Update ${envVar}="${actual}" in your .env file`
       ));
     }
@@ -152,7 +152,7 @@ async function checkAudioCount() {
     return warn(
       'ENRS Audio Directory',
       `${fsPathService.getEnrsSoundDir()} does not exist yet`,
-      'Upload audio files via Audio Library and deploy them to FreeSWITCH'
+      'Upload audio files via Audio Library and deploy them to SIPCommunication'
     );
   }
 }
@@ -378,7 +378,7 @@ async function checkFreeswitchPermissions(label, dirPath) {
   if (!fsIds) {
     return warn(label,
       `${dirPath} — owner uid=${stat.uid} gid=${stat.gid} mode=${mode.toString(8)}. ` +
-      `Could not resolve the 'freeswitch' system user on this box to compare (id command unavailable).`);
+      `Could not resolve the engine system user on this box to compare (id command unavailable).`);
   }
 
   const worldReadable  = (mode & 0o004) !== 0;
@@ -386,10 +386,10 @@ async function checkFreeswitchPermissions(label, dirPath) {
   const ownerReadable  = stat.uid === fsIds.uid && (mode & 0o400) !== 0;
 
   if (worldReadable || groupReadable || ownerReadable) {
-    return pass(label, `${dirPath} — readable by freeswitch (uid=${fsIds.uid}, gid=${fsIds.gid}), mode=${mode.toString(8)}`);
+    return pass(label, `${dirPath} — readable by the engine user (uid=${fsIds.uid}, gid=${fsIds.gid}), mode=${mode.toString(8)}`);
   }
   return fail(label,
-    `${dirPath} owned by uid=${stat.uid} gid=${stat.gid} mode=${mode.toString(8)} — NOT readable by freeswitch (uid=${fsIds.uid}, gid=${fsIds.gid})`,
+    `${dirPath} owned by uid=${stat.uid} gid=${stat.gid} mode=${mode.toString(8)} — NOT readable by the engine user (uid=${fsIds.uid}, gid=${fsIds.gid})`,
     `chown freeswitch:freeswitch "${dirPath}"  OR  chmod o+r "${dirPath}"`
   );
 }
@@ -407,12 +407,12 @@ export async function runDiagnostics() {
   checks.push(await checkDirWritable(
     'Script Directory (Lua)',
     fsPathService.getScriptDir(),
-    'Grant write to freeswitch user: chown freeswitch:freeswitch ' + fsPathService.getScriptDir()
+    'Grant write to the engine user: chown freeswitch:freeswitch ' + fsPathService.getScriptDir()
   ));
   checks.push(await checkDirWritable(
     'Dialplan Directory (search root)',
     fsPathService.getDialplanDir(),
-    'Grant write to freeswitch user: chown freeswitch:freeswitch ' + fsPathService.getDialplanDir()
+    'Grant write to the engine user: chown freeswitch:freeswitch ' + fsPathService.getDialplanDir()
   ));
 
   // 3. Dialplan include chain — where extensions ACTUALLY end up live
@@ -427,7 +427,7 @@ export async function runDiagnostics() {
     checks.push(await checkDirWritable(
       'Dialplan Target Directory (detected)',
       dialplanTargetDir,
-      'Grant write to freeswitch user: chown freeswitch:freeswitch ' + dialplanTargetDir
+      'Grant write to the engine user: chown freeswitch:freeswitch ' + dialplanTargetDir
     ));
   }
 

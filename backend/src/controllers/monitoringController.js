@@ -158,11 +158,11 @@ async function verifyRecordingCreated(room, recPath, recDir) {
   const snap = getConferenceSnapshot().find(c => c.name === room);
   if (snap?.recordingState === 'STARTING') {
     const reason =
-      `Recording file not created by FreeSWITCH after 8s. ` +
+      `Recording file not created by SIPCommunication after 8s. ` +
       `Path attempted: "${recPath}". ` +
-      `Verify that: (1) FS_RECORDINGS_DIR env var points to a directory writable by FreeSWITCH, ` +
+      `Verify that: (1) FS_RECORDINGS_DIR env var points to a directory writable by SIPCommunication, ` +
       `(2) in Docker the recording directory is on a shared volume mounted at the same path in both containers, ` +
-      `(3) FreeSWITCH has write permission to "${recDir}".`;
+      `(3) SIPCommunication has write permission to "${recDir}".`;
     console.error(`[monitoring] verifyRecordingCreated: FAILED — ${reason}`);
     setConferenceRecordingError(room, reason);
   }
@@ -208,7 +208,7 @@ export const startRecording = asyncHandler(async (req, res) => {
   } catch (mkdirErr) {
     console.error(`[monitoring] startRecording: cannot create recording dir "${recDir}": ${mkdirErr.message}`);
     return res.status(500).json({
-      error: `Recording directory unavailable: ${mkdirErr.message}. Set FS_RECORDINGS_DIR to a path writable by both this process and FreeSWITCH.`,
+      error: `Recording directory unavailable: ${mkdirErr.message}. Set FS_RECORDINGS_DIR to a path writable by both this process and SIPCommunication.`,
     });
   }
 
@@ -222,7 +222,7 @@ export const startRecording = asyncHandler(async (req, res) => {
     const reason = eslErr.message || String(eslErr);
     console.error(`[monitoring] startRecording ESL error — cmd="${eslCmd}" error="${reason}" elapsed=${Date.now() - t0}ms`);
     setConferenceRecordingError(room, reason);
-    return res.status(502).json({ error: `FreeSWITCH ESL error: ${reason}` });
+    return res.status(502).json({ error: `SIPCommunication engine error: ${reason}` });
   }
 
   const responseText = String(result ?? '').trim();
@@ -231,7 +231,7 @@ export const startRecording = asyncHandler(async (req, res) => {
   if (responseText.startsWith('-ERR')) {
     console.error(`[monitoring] startRecording: FreeSWITCH rejected — conf="${room}" path="${recPath}" response="${responseText}"`);
     setConferenceRecordingError(room, responseText);
-    return res.status(502).json({ error: `FreeSWITCH rejected recording: ${responseText}` });
+    return res.status(502).json({ error: `SIPCommunication rejected recording: ${responseText}` });
   }
 
   // +OK received. FreeSWITCH accepted the command but the file may not yet exist.
@@ -268,7 +268,7 @@ export const stopRecording = asyncHandler(async (req, res) => {
   } catch (eslErr) {
     const reason = eslErr.message || String(eslErr);
     console.error(`[monitoring] stopRecording ESL error — cmd="${eslCmd}" error="${reason}" elapsed=${Date.now() - t0}ms`);
-    return res.status(502).json({ error: `FreeSWITCH stop failed: ${reason}` });
+    return res.status(502).json({ error: `SIPCommunication stop failed: ${reason}` });
   }
 
   const responseText = String(result ?? '').trim();
@@ -289,9 +289,9 @@ export const stopRecording = asyncHandler(async (req, res) => {
       }
       // Transition to OFF regardless — the recording either wasn't running or is now stopped.
       setConferenceRecordingPath(room, null);
-      return res.json({ ok: true, warning: `Recording path not found in FreeSWITCH (may not have started). State reset to OFF.` });
+      return res.json({ ok: true, warning: `Recording path not found in SIPCommunication (may not have started). State reset to OFF.` });
     }
-    return res.status(502).json({ error: `FreeSWITCH rejected stop: ${responseText}` });
+    return res.status(502).json({ error: `SIPCommunication rejected stop: ${responseText}` });
   }
 
   // norecord succeeded. The stop-recording ESL event will arrive shortly and

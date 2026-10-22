@@ -166,7 +166,7 @@ export const scanAudio = asyncHandler(async (req, res) => {
            (type, name, path_or_uri, fs_path, size_bytes, category,
             description, is_deployed, deployed_at, duration_sec, tenant_id)
          VALUES ('PROMPT', $1, $2, $2, $3, 'general',
-                 'Auto-imported from FreeSWITCH sound directory',
+                 'Auto-imported from SIPCommunication sound directory',
                  true, now(), $4, $5)
          ON CONFLICT DO NOTHING
          RETURNING *`,
@@ -270,7 +270,7 @@ export const uploadAudio = asyncHandler(async (req, res) => {
 
   const status  = deployError ? 207 : 201; // 207 = partial success
   const message = deployError
-    ? `File saved to database but FreeSWITCH copy failed: ${deployError}. Use "Deploy" button to retry.`
+    ? `File saved to database but SIPCommunication copy failed: ${deployError}. Use "Deploy" button to retry.`
     : 'Upload and deploy successful';
 
   res.status(status).json({ file: fresh || record, deploy: deployResult, deployError, message });

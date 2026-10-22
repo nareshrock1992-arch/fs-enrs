@@ -66,7 +66,7 @@ export class PlatformHealthChecker {
       const connected = await this.#driver.isConnected();
       return connected
         ? { name: 'esl_connection', status: 'ok',   detail: 'ESL connected' }
-        : { name: 'esl_connection', status: 'fail',  detail: 'ESL not connected' };
+        : { name: 'esl_connection', status: 'fail',  detail: 'Engine not connected' };
     } catch (err) {
       return { name: 'esl_connection', status: 'fail', error: err.message };
     }

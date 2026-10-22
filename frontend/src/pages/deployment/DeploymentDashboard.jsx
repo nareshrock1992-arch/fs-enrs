@@ -110,7 +110,7 @@ function FlowRow({ flow, onDeploy, deploying }) {
           <button
             onClick={() => onDeploy(flow.flow_uuid)}
             disabled={!canDeploy || deploying[flow.flow_uuid]}
-            title={canDeploy ? 'Deploy to FreeSWITCH' : 'Publish the flow first'}
+            title={canDeploy ? 'Deploy to SIPCommunication' : 'Publish the flow first'}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
                        bg-brand text-white hover:bg-brand/90
                        disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
@@ -222,7 +222,7 @@ function DiagnosticsPanel() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-semibold text-text-primary">FreeSWITCH Integration Diagnostics</p>
+          <p className="text-sm font-semibold text-text-primary">SIPCommunication Integration Diagnostics</p>
           {result && (
             <p className="text-[10px] text-text-muted mt-0.5">
               {result.summary.pass} pass · {result.summary.warn} warn · {result.summary.fail} fail
@@ -337,7 +337,7 @@ function DiagnosticsPanel() {
       {paths && (
         <div className="card">
           <p className="text-[10px] font-medium text-text-muted uppercase tracking-wide mb-3 flex items-center gap-1.5">
-            <FolderOpen size={11} /> Configured FreeSWITCH Paths
+            <FolderOpen size={11} /> Configured SIPCommunication Paths
           </p>
           <div className="space-y-1.5">
             {Object.entries(paths).map(([key, val]) => (
@@ -404,7 +404,7 @@ export default function DeploymentDashboard() {
     <div className="space-y-6">
       <PageHeader
         title="Deployment Dashboard"
-        description="Deploy IVR flows to FreeSWITCH and verify integration"
+        description="Deploy IVR flows to SIPCommunication and verify integration"
         icon={Rocket}
       />
 

@@ -101,7 +101,7 @@ export default function ConfigCenter() {
             <Settings2 size={16} className="text-brand shrink-0" />
             <span className="text-sm font-bold text-text-primary">Config Center</span>
           </div>
-          <p className="text-[10px] text-text-muted mt-0.5 ml-6">FreeSWITCH</p>
+          <p className="text-[10px] text-text-muted mt-0.5 ml-6">SIPCommunication</p>
         </div>
 
         {NAV_SECTIONS.map(section => (

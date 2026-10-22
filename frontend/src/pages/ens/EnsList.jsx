@@ -659,7 +659,7 @@ export default function EnsList() {
                   </p>
                 </div>
                 <div>
-                  <label className="label">FreeSWITCH Gateway Name</label>
+                  <label className="label">SIPCommunication Gateway Name</label>
                   <input
                     className={`input font-mono ${form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override) ? 'border-red-400 focus:ring-red-400' : ''}`}
                     value={form.gateway_override}
@@ -669,7 +669,7 @@ export default function EnsList() {
                   />
                   {form.gateway_override && !/^[a-zA-Z0-9\-_.]+$/.test(form.gateway_override)
                     ? <p className="text-[11px] text-red-500 mt-1">Only letters, numbers, -, _, and . are allowed.</p>
-                    : <p className="text-[11px] text-text-muted mt-1">Optional. Enter an existing FreeSWITCH gateway name. Leave empty to use the selected gateway.</p>
+                    : <p className="text-[11px] text-text-muted mt-1">Optional. Enter an existing SIPCommunication gateway name. Leave empty to use the selected gateway.</p>
                   }
                 </div>
 
@@ -710,7 +710,7 @@ export default function EnsList() {
                 <div className="col-span-2 rounded-lg bg-surface-hover border border-surface-border px-3 py-2">
                   <p className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1">Routing Priority</p>
                   <ol className="text-[11px] text-text-muted space-y-0.5 list-decimal list-inside">
-                    <li><span className="text-text-primary font-medium">FreeSWITCH Gateway Name</span> — manual XML-only gateway</li>
+                    <li><span className="text-text-primary font-medium">SIPCommunication Gateway Name</span> — manual XML-only gateway</li>
                     <li>Selected Gateway — managed gateway from dropdown above</li>
                     <li>Organization Default Gateway</li>
                     <li>Tenant Default Gateway</li>

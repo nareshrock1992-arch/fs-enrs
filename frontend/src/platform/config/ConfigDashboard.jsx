@@ -276,10 +276,10 @@ function PlatformInfoSection({ summary, status }) {
       <SectionTitle icon={Cpu} title="Platform Information" subtitle="Software versions and build context" />
       <div>
         <InfoRow label="Platform Version"    value={summary?.platformInfo?.platformVersion} mono />
-        <InfoRow label="FreeSWITCH Version"  value={status?.freeSwitchVersion}              mono />
+        <InfoRow label="Engine Version"      value={status?.freeSwitchVersion?.replace(/^\s*FreeSWITCH\s+Version\s*/i, '').replace(/\s*\(.*\)\s*$/, '')}              mono />
         <InfoRow label="DB Schema Version"   value={summary?.platformInfo?.dbSchemaVersion} mono />
         <InfoRow label="Build Environment"   value={summary?.platformInfo?.buildEnvironment} />
-        <InfoRow label="ESL Connected"
+        <InfoRow label="Engine Connected"
           value={status?.eslConnected === true ? 'Yes' : status?.eslConnected === false ? 'No' : '—'} />
       </div>
     </div>

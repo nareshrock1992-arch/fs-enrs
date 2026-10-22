@@ -217,7 +217,7 @@ function EmptyState({ count, loading }) {
         <p className="text-xs text-text-muted mt-1">
           {count > 0
             ? 'Select a context file from the tree to view its extensions.'
-            : 'No dialplan files were discovered. Ensure FS_DIALPLAN_DIR points to your FreeSWITCH dialplan directory.'}
+            : 'No dialplan files were discovered. Ensure FS_DIALPLAN_DIR points to your SIPCommunication dialplan directory.'}
         </p>
       </div>
     </div>

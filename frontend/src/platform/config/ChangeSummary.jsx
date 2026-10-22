@@ -32,7 +32,7 @@ export default function ChangeSummary({ changeDescriptions }) {
           {hasRestart && (
             <div className="flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400">
               <RefreshCw size={11} />
-              FreeSWITCH restart may be required after this deployment
+              SIPCommunication restart may be required after this deployment
             </div>
           )}
         </div>

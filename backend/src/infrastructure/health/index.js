@@ -52,7 +52,7 @@ export async function getHealthStatus() {
     const esl = eslStatus();
     checks.esl = { healthy: esl.connected, host: esl.host, port: esl.port };
   } catch {
-    checks.esl = { healthy: false, error: 'ESL service not loaded' };
+    checks.esl = { healthy: false, error: 'Engine service not loaded' };
   }
 
   const dbHealthy    = checks.database.healthy === true;

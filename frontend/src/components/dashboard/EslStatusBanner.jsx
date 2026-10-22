@@ -16,8 +16,8 @@ export default function EslStatusBanner({ initialConnected = false, host = '', p
       <PulsingDot active={esl.connected} size="sm" />
       <span className="flex items-center gap-1.5">
         {esl.connected
-          ? <><Wifi size={12} /> FreeSWITCH ESL connected — {esl.host}:{esl.port}</>
-          : <><WifiOff size={12} /> FreeSWITCH ESL disconnected — retrying…</>}
+          ? <><Wifi size={12} /> SIPCommunication engine connected — {esl.host}:{esl.port}</>
+          : <><WifiOff size={12} /> SIPCommunication engine disconnected — retrying…</>}
       </span>
     </div>
   );

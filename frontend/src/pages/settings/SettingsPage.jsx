@@ -58,7 +58,7 @@ export default function SettingsPage() {
           {esl?.connected ? <Wifi size={18} /> : <WifiOff size={18} />}
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-text-primary">FreeSWITCH ESL</p>
+          <p className="text-sm font-semibold text-text-primary">SIPCommunication Engine</p>
           <p className="text-xs text-text-muted">{esl?.host}:{esl?.port}</p>
         </div>
         <Badge variant={esl?.connected ? 'success' : 'danger'}>

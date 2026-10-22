@@ -38,7 +38,7 @@ export default function BindNumbersModal({ flowUuid, flowName, boundNumbers, onC
     <Modal title={`Bind Numbers — ${flowName}`} onClose={onClose} size="md">
       <p className="text-xs text-text-muted mb-4">
         Select which emergency numbers route through this IVR flow.
-        Inbound calls to bound numbers will execute this flow on FreeSWITCH.
+        Inbound calls to bound numbers will execute this flow on SIPCommunication.
       </p>
 
       {loading && <p className="text-xs text-text-muted py-4 text-center">Loading numbers…</p>}

@@ -99,7 +99,7 @@ export default function DetailsPanel({ entry }) {
           {meta.restartRequired && (
             <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
               <RefreshCw size={10} />
-              <span>Requires FreeSWITCH restart</span>
+              <span>Requires SIPCommunication restart</span>
               {meta.estimatedDowntime && (
                 <span className="text-text-muted">({meta.estimatedDowntime})</span>
               )}

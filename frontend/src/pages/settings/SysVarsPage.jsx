@@ -12,7 +12,7 @@ export default function SysVarsPage() {
     <ConfigPage
       providerId="vars"
       title="System Variables"
-      subtitle="Global FreeSWITCH pre-processor variables — vars.xml"
+      subtitle="Global SIPCommunication pre-processor variables"
     />
   );
 }

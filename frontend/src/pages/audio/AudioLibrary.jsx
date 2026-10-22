@@ -112,7 +112,7 @@ function UploadModal({ onClose, onSuccess }) {
       const result = await api.deployment.uploadAudio(fd);
       // 207 = file saved but FS copy failed — surface the deploy error
       if (result?.deployError) {
-        setError(`Saved to database, but FreeSWITCH deploy failed: ${result.deployError}. Use the Deploy button to retry.`);
+        setError(`Saved to database, but SIPCommunication deploy failed: ${result.deployError}. Use the Deploy button to retry.`);
         onSuccess(); // still refresh the list
         // keep modal open so user sees the warning
         return;
@@ -331,14 +331,14 @@ export default function AudioLibrary() {
       {/* Header */}
       <PageHeader
         title="Audio Library"
-        description={`${total} file${total !== 1 ? 's' : ''} — audio deployed to FreeSWITCH sound directory`}
+        description={`${total} file${total !== 1 ? 's' : ''} — audio deployed to SIPCommunication sound directory`}
         icon={Music}
       >
         {canEdit && (
           <button
             onClick={() => handleScan()}
             disabled={scanning}
-            title="Scan FreeSWITCH sound directory for existing files"
+            title="Scan SIPCommunication sound directory for existing files"
             className="btn-secondary disabled:opacity-50"
           >
             <HardDrive size={14} className={scanning ? 'animate-pulse' : ''} />
@@ -371,7 +371,7 @@ export default function AudioLibrary() {
       {/* Info banner */}
       <div className="px-4 py-3 rounded-lg bg-brand/5 border border-brand/20 text-[11px] text-text-muted leading-relaxed">
         Audio files uploaded here are automatically copied to{' '}
-        <code className="font-mono text-brand">$FS_SOUND_DIR/enrs/</code> on FreeSWITCH.
+        <code className="font-mono text-brand">$FS_SOUND_DIR/enrs/</code> on SIPCommunication.
         Reference them in IVR nodes as{' '}
         <code className="font-mono text-brand">/media/filename.wav</code>
       </div>
@@ -419,7 +419,7 @@ export default function AudioLibrary() {
                            bg-surface border border-surface-border text-text-muted
                            hover:text-brand hover:border-brand/50 transition-colors"
               >
-                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan FreeSWITCH sound dir'}
+                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan SIPCommunication sound dir'}
               </button>
               <button onClick={() => setShowUpload(true)}
                       className="text-xs text-brand hover:underline">
@@ -475,7 +475,7 @@ export default function AudioLibrary() {
                   <button
                     onClick={() => handleDeploy(f.id)}
                     disabled={deploying[f.id]}
-                    title="Deploy to FreeSWITCH"
+                    title="Deploy to SIPCommunication"
                     className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg
                                bg-green-500/10 text-green-500 border border-green-500/20
                                hover:bg-green-500/20 disabled:opacity-50 transition-colors"
@@ -490,7 +490,7 @@ export default function AudioLibrary() {
                   <button
                     onClick={() => handleDeploy(f.id)}
                     disabled={deploying[f.id]}
-                    title="Re-deploy to FreeSWITCH"
+                    title="Re-deploy to SIPCommunication"
                     className="p-1.5 text-text-muted hover:text-green-500 transition-colors"
                   >
                     <RefreshCw size={12} />

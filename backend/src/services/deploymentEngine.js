@@ -337,7 +337,7 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
           // ESL offline is a warning, not a fatal error
           // (files are deployed; dialplan will load on next FS restart)
           eslConnected = false;
-          report.warnings.push('ESL reloadxml skipped (ESL not connected): ' + eslErr.message);
+          report.warnings.push('Configuration reload skipped (engine not connected): ' + eslErr.message);
         }
       });
     });
@@ -368,14 +368,14 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
 
         if (unloaded.length > 0) {
           throw new Error(
-            `Deployed files were written but FreeSWITCH did not load the extension${unloaded.length > 1 ? 's' : ''} ` +
+            `Deployed files were written but SIPCommunication did not load the extension${unloaded.length > 1 ? 's' : ''} ` +
             `(${unloaded.join(', ')}). Check dialplan/default.xml's include pattern on this box — ` +
             `run GET /deployment/diagnostics to see the resolved include chain.`
           );
         }
       });
     } else {
-      report.warnings.push('Extension-load verification skipped (ESL not connected) — files are deployed but not confirmed live.');
+      report.warnings.push('Extension-load verification skipped (engine not connected) — files are deployed but not confirmed live.');
     }
 
     // 9. Update deployment cache on ivr_flows + insert history row

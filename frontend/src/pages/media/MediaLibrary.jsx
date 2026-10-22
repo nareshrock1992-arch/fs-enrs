@@ -385,7 +385,7 @@ function UploadModal({ onClose, onSuccess }) {
       const result = await api.mediaLibrary.upload(fd);
       setProgress(100);
       if (result?.deployError) {
-        setWarn(`Saved, but FreeSWITCH deploy failed: ${result.deployError}. Use Deploy button to retry.`);
+        setWarn(`Saved, but SIPCommunication deploy failed: ${result.deployError}. Use Deploy button to retry.`);
         onSuccess();
         return;
       }
@@ -583,7 +583,7 @@ function FileDetail({ file, onClose, onDeploy, onDelete, onPlay, deploying, dele
             {file.is_deployed ? (
               <>
                 <span className="w-2 h-2 rounded-full bg-green-500" />
-                <span className="text-[11px] text-green-500 font-semibold">Deployed to FreeSWITCH</span>
+                <span className="text-[11px] text-green-500 font-semibold">Deployed to SIPCommunication</span>
               </>
             ) : (
               <>
@@ -913,7 +913,7 @@ function MediaLibraryInner() {
           <Library size={36} className="mx-auto text-text-muted/20 mb-3" />
           <p className="text-sm font-semibold text-text-secondary">No media files</p>
           <p className="text-xs text-text-muted mt-1">
-            {search || catFilter ? 'No results match your filter' : 'Upload or scan FreeSWITCH to import files'}
+            {search || catFilter ? 'No results match your filter' : 'Upload or scan SIPCommunication to import files'}
           </p>
           {canEdit && !search && !catFilter && (
             <div className="mt-4 flex items-center justify-center gap-3">
@@ -921,7 +921,7 @@ function MediaLibraryInner() {
                 className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg
                            bg-surface border border-surface-border text-text-muted
                            hover:text-brand hover:border-brand/30 transition-colors">
-                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan FreeSWITCH'}
+                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan SIPCommunication'}
               </button>
               <button onClick={() => setShowUpload(true)}
                 className="text-xs text-brand hover:underline font-medium">
@@ -1007,7 +1007,7 @@ function MediaLibraryInner() {
                     <button
                       onClick={e => { e.stopPropagation(); handleDeploy(f.id); }}
                       disabled={deploying[f.id]}
-                      title="Deploy to FreeSWITCH"
+                      title="Deploy to SIPCommunication"
                       className="p-1.5 rounded-lg bg-green-500/10 border border-green-500/20
                                  text-green-500 hover:bg-green-500/20 disabled:opacity-50 transition-colors">
                       {deploying[f.id]

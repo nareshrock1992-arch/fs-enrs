@@ -5,7 +5,7 @@ export default function EventSocketPage() {
     <ConfigPage
       providerId="event-socket"
       title="Event Socket"
-      subtitle="ESL listener settings — event_socket.conf.xml"
+      subtitle="Event socket listener settings"
     />
   );
 }

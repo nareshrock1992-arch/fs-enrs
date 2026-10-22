@@ -11,7 +11,7 @@ export default function SwitchCorePage() {
     <ConfigPage
       providerId="switch-core"
       title="Switch Core"
-      subtitle="Core FreeSWITCH settings — switch.conf.xml"
+      subtitle="Core SIPCommunication settings"
     />
   );
 }

@@ -156,7 +156,7 @@ export function IncidentSidebar({ conferences, selectedConf, onSelect, now, load
             <Headphones size={22} className="text-text-muted/25" />
             <div>
               <p className="text-xs font-medium text-text-secondary">No Active Incidents</p>
-              <p className="text-[10px] text-text-muted mt-0.5">Waiting for FreeSWITCH…</p>
+              <p className="text-[10px] text-text-muted mt-0.5">Waiting for SIPCommunication…</p>
             </div>
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           </div>

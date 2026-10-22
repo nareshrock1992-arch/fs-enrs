@@ -189,7 +189,7 @@ function Placeholder({ count, loading }) {
         <p className="text-xs text-text-muted mt-1">
           {count > 0
             ? 'Select a gateway from the tree to view and edit its configuration.'
-            : 'No gateways were discovered. Ensure FS_SIP_PROFILE_DIR points to your FreeSWITCH sip_profiles directory.'}
+            : 'No gateways were discovered. Ensure FS_SIP_PROFILE_DIR points to your SIPCommunication SIP profiles directory.'}
         </p>
       </div>
     </div>

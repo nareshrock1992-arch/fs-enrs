@@ -231,7 +231,7 @@ describe('Phase 6 — deployFlow() FAILS loudly, never silently, for each Phase 
     eslState.xmlLocateContains = false; // reloadxml says +OK but the extension never appears
     const report = await deployFlow(publishedFlowUuid, { deployedBy: null, tenantId });
     expect(report.status).toBe('failed');
-    expect(report.errors.join(' ')).toContain('FreeSWITCH did not load the extension');
+    expect(report.errors.join(' ')).toContain('SIPCommunication did not load the extension');
     eslState.xmlLocateContains = true;
   });
 

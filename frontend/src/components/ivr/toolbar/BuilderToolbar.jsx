@@ -306,7 +306,7 @@ export default function BuilderToolbar({
           <div className="space-y-4">
             <p className="text-xs text-text-muted">
               Publishing <strong className="text-text-primary">"{flow?.name}"</strong> will make
-              this version live on FreeSWITCH immediately on the next inbound call.
+              this version live on SIPCommunication immediately on the next inbound call.
             </p>
 
             {/* Validation summary */}

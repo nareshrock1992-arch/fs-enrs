@@ -7,7 +7,7 @@ import { deployGateway } from '../services/gatewayDeployment.js';
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 
 const GatewaySchema = z.object({
-  name:                z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/, 'name must be alphanumeric/underscore/hyphen (used as the FreeSWITCH gateway name)'),
+  name:                z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/, 'name must be alphanumeric/underscore/hyphen (used as the SIPCommunication gateway name)'),
   type:                z.enum(['avaya', 'cisco', 'generic_sip', 'other']).default('generic_sip'),
   host:                z.string().min(1).max(255),
   port:                z.number().int().min(1).max(65535).default(5060),

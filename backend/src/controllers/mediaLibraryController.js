@@ -469,7 +469,7 @@ export const uploadMedia = asyncHandler(async (req, res) => {
     file: fresh,
     deployError,
     message: deployError
-      ? `Uploaded (id=${record.id}) but FreeSWITCH copy failed: ${deployError}. File is streamable from uploads/. Use Deploy to retry.`
+      ? `Uploaded (id=${record.id}) but SIPCommunication copy failed: ${deployError}. File is streamable from uploads/. Use Deploy to retry.`
       : 'Upload and deploy successful.',
   });
 });
@@ -522,7 +522,7 @@ export const scanMedia = asyncHandler(async (req, res) => {
             duration_sec, sample_rate, channels, codec, bitrate_kbps, checksum,
             tenant_id)
          VALUES ('PROMPT',$1,$2,$2,$3,'general',
-                 'Auto-imported from FreeSWITCH sound directory',
+                 'Auto-imported from SIPCommunication sound directory',
                  true, now(), $4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT DO NOTHING
          RETURNING *`,

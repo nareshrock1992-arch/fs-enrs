@@ -76,7 +76,7 @@ export default function Monitoring() {
                 ? 'border-emerald-500/30 bg-emerald-500/8 text-emerald-500'
                 : 'border-red-500/30 bg-red-500/8 text-red-500'}`}>
             {esl?.connected ? <Wifi size={9} /> : <WifiOff size={9} />}
-            {esl?.connected ? `ESL ${esl.host}:${esl.port}` : 'ESL Offline'}
+            {esl?.connected ? `Engine ${esl.host}:${esl.port}` : 'Engine Offline'}
             <span className={`w-1.5 h-1.5 rounded-full shrink-0
               ${esl?.connected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
           </div>
@@ -113,7 +113,7 @@ export default function Monitoring() {
           danger pulse={recordingCount > 0} />
         <KpiCard icon={Activity} label="Events/s"    value={evHist.at(-1) ?? 0}
           valueClass="text-purple-400" />
-        <KpiCard icon={Signal}   label="ESL lat"     value={eslLatency != null ? `${eslLatency}ms` : '—'}
+        <KpiCard icon={Signal}   label="Engine lat"     value={eslLatency != null ? `${eslLatency}ms` : '—'}
           valueClass={eslLatency != null && eslLatency < 80 ? 'text-emerald-500' : 'text-amber-400'} />
       </div>
 

@@ -93,7 +93,7 @@ export default function VersionDrawer({ flowUuid, currentVersion, restoreLoading
 
         <div className="px-4 py-3 border-t border-surface-border">
           <p className="text-[10px] text-text-muted">
-            Versions are immutable snapshots. FreeSWITCH always uses the latest published version.
+            Versions are immutable snapshots. SIPCommunication always uses the latest published version.
           </p>
         </div>
       </div>

@@ -47,7 +47,7 @@ export const IVR_VARIABLES = [
     name: 'uuid',
     label: 'Call ID (UUID)',
     category: 'Call',
-    description: 'The unique FreeSWITCH channel ID for this call. Useful for reference numbers.',
+    description: 'The unique SIPCommunication channel ID for this call. Useful for reference numbers.',
     example: 'Your reference is ${uuid}.',
     availability: 'Always present.',
   },

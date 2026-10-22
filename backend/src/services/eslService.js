@@ -165,7 +165,7 @@ export function setConferenceRecordingStarting(confName, recPath) {
     recordingStartTimers.delete(confName);
     const e = conferenceRegistry.get(confName);
     if (e && e.recordingState === 'STARTING') {
-      const reason = 'FreeSWITCH did not confirm recording start (5 s timeout — check FS file permissions and recording directory)';
+      const reason = 'SIPCommunication did not confirm recording start (5 s timeout — check file permissions and recording directory)';
       e.recordingState = 'FAILED';
       e.recordingError = reason;
       e.recording      = false;

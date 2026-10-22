@@ -72,7 +72,7 @@ export default function TelephonyGateways() {
     try {
       const result = await api.gateways.deploy(r.id);
       alert(result.status === 'success'
-        ? `Deployed and verified — ${r.name} is registering with FreeSWITCH.`
+        ? `Deployed and verified — ${r.name} is registering with SIPCommunication.`
         : `Deployed but verification failed: ${result.verify_detail || result.reload_error || 'unknown error'}`);
       load();
     } catch (e) { alert(e.message); } finally { setDeploying(null); }
@@ -108,7 +108,7 @@ export default function TelephonyGateways() {
               </Td>
               <Td>
                 <div className="flex gap-1 justify-end">
-                  <button onClick={() => deploy(r)} disabled={deploying === r.id} className="btn-ghost p-1.5" title="Deploy to FreeSWITCH">
+                  <button onClick={() => deploy(r)} disabled={deploying === r.id} className="btn-ghost p-1.5" title="Deploy to SIPCommunication">
                     <UploadCloud size={13} />
                   </button>
                   <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
@@ -126,7 +126,7 @@ export default function TelephonyGateways() {
             <div><label className="label">Name</label>
               <input className="input" value={form.name} onChange={e => f('name', e.target.value)}
                      placeholder="avaya_main" disabled={!!modal.id} />
-              <p className="text-[10px] text-text-muted mt-1">Must match the FreeSWITCH gateway name — cannot be changed after creation.</p>
+              <p className="text-[10px] text-text-muted mt-1">Must match the SIPCommunication gateway name — cannot be changed after creation.</p>
             </div>
             <div><label className="label">Type</label>
               <select className="input" value={form.type} onChange={e => f('type', e.target.value)}>
