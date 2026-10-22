@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { query } from '../db/pool.js';
+import { guardedQuery } from '../services/mediaDependencyService.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 
@@ -216,7 +217,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
   const d = EnsConfigSchema.parse(req.body);
   const tenantId = requireTenantForWrite(req);
 
-  const { rows } = await query(
+  const { rows } = await guardedQuery([d.no_pending_audio_url, d.expiry_audio_url, d.unauthorized_audio_url])(
     `INSERT INTO ens_configurations (
        organization_id, tenant_id, name, description,
        blast_clid, reply_clid, pin,
@@ -280,7 +281,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
   // from the request body entirely, fall back to the existing DB value.
   const gatewayOverrideInBody = Object.prototype.hasOwnProperty.call(req.body, 'gateway_override');
 
-  const { rows } = await query(
+  const { rows } = await guardedQuery([d.no_pending_audio_url, d.expiry_audio_url, d.unauthorized_audio_url])(
     `UPDATE ens_configurations SET
        name                      = COALESCE($2,  name),
        description               = COALESCE($3,  description),

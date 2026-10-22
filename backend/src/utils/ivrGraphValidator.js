@@ -327,6 +327,8 @@ export async function validateGraph(graph, tenantId) {
   const audioFileIds = [...audioIdToNode.keys()];
 
   const checks = [];
+  const dependencyErrors = [];
+  const depError = (msg) => { errors.push(msg); dependencyErrors.push(msg); };
 
   if (ensIds.length > 0) {
     checks.push(
@@ -394,11 +396,42 @@ export async function validateGraph(graph, tenantId) {
     );
   }
 
+  // ── Pass 2f: /media/ path shape ───────────────────────────────────────────
+  // Every string value starting with "/media/" names a file in the ENRS sound
+  // directory; its path must be well-formed (no traversal). References to
+  // soft-deleted library media are rejected by the publish transaction's media
+  // guard (409 MEDIA_DELETED), not here.
+  const mediaRefs = [];   // { nid, field, uri }
+  const walk = (nid, v, field) => {
+    if (typeof v === 'string') { if (v.startsWith('/media/')) mediaRefs.push({ nid, field, uri: v }); return; }
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(nid, x, `${field}[${i}]`)); return; }
+    if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(nid, x, field ? `${field}.${k}` : k);
+  };
+  for (const [nid, node] of Object.entries(nodes)) {
+    if (!node) continue;
+    // A play node with a dynamic (session-variable) source never uses audio_url at
+    // runtime (exec_play), and the editor only hides that field — it keeps the
+    // node's '/media/' default. That bare placeholder is not a media reference.
+    // Static play nodes, and any other value, are still checked.
+    const unusedPlaceholder = node.type === 'play' && node.audio_source_type === 'variable' && node.audio_url === '/media/';
+    walk(nid, unusedPlaceholder ? { ...node, audio_url: undefined } : node, '');
+  }
+  for (const ref of mediaRefs) {
+    const segs = ref.uri.slice('/media/'.length).split('/');
+    // eslint-disable-next-line no-control-regex
+    if (segs.some((s) => s === '' || s === '.' || s === '..' || /[\\\x00-\x1f]/.test(s))) {
+      depError(`node ${ref.nid}: ${ref.field} "${ref.uri}" is not a valid /media/ path`);
+    }
+  }
+
   await Promise.all(checks);
 
   return {
     valid:    errors.length === 0,
     errors,
+    // Subset of `errors` produced by publish-only checks (/media/ path shape).
+    // Draft saves skip these — they are structural-only.
+    dependencyErrors,
     warnings,
     stats: {
       node_count:  Object.keys(nodes).length,

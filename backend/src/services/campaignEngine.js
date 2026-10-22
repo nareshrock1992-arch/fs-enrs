@@ -17,6 +17,7 @@ import { randomUUID }  from 'crypto';
 import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { query, withTransaction } from '../db/pool.js';
+import { guardMedia } from './mediaDependencyService.js';
 import { originateCampaignCall } from './eslService.js';
 import { emitInternal } from './socketService.js';
 import { config } from '../config/index.js';
@@ -29,6 +30,9 @@ import { fsConfig } from '../config/fsConfig.js';
 const TICK_MS          = 1000;
 const ORIGINATE_TIMEOUT = 30;  // seconds before FreeSWITCH gives up on an outbound leg
 const STALE_DIALING_SEC = 90;  // reset 'dialing' rows stuck longer than this (crash recovery)
+// A repeated campaign-start for the same (configuration, recording file) within
+// this window is treated as a retry of the same request (see createCampaignByConfigId).
+const CAMPAIGN_REPLAY_WINDOW_MIN = 15;
 
 const RETRYABLE_CAUSES = new Set([
   'BUSY', 'USER_BUSY', 'NO_ANSWER', 'CALL_REJECTED',
@@ -873,6 +877,35 @@ export async function createCampaignByConfigId({
   }
 
   return withTransaction(async (tq) => {
+    // Shared media locks (one sorted acquisition). messageAudioUrl is library
+    // media: rejected (409) if soft-deleted. recordingFile is a phone-recorded
+    // blast (Lua ens_blast_trigger: ENRS_REC_DIR/ens_<cfg>_<caller>_<ts>.wav),
+    // never library media: lock-only, never rejected.
+    await guardMedia(tq, { check: [messageAudioUrl], lockOnly: [recordingFile] });
+
+    // Idempotent replay. A phone-recorded blast is identified by its recording
+    // file (generated once per call). If the caller's HTTP request timed out
+    // after this transaction committed and Lua retries the SAME request, return
+    // the campaign that already exists instead of starting a second blast. The
+    // per-filename media lock taken above is held until commit, so concurrent
+    // identical requests serialise here: the second one sees the first's row.
+    if (recordingFile) {
+      const { rows: [existing] } = await tq(
+        `SELECT * FROM ens_campaigns
+          WHERE ens_configuration_id = $1 AND recording_file = $2
+            AND created_at > now() - ($3 || ' minutes')::interval
+          ORDER BY created_at DESC LIMIT 1`,
+        [configId, recordingFile, String(CAMPAIGN_REPLAY_WINDOW_MIN)]
+      );
+      if (existing) {
+        logger.warn({
+          module: 'campaignEngine', operation: 'createCampaignByConfigId',
+          campaignId: existing.id, configId, status: existing.status,
+        }, 'Duplicate campaign-start for the same recording — returning the existing campaign (no new blast)');
+        return { ...existing, idempotent_replay: true };
+      }
+    }
+
     const { rows: [campaign] } = await tq(
       `INSERT INTO ens_campaigns (
          ens_configuration_id, organization_id, triggered_by, triggered_via,

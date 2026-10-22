@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { query, withTransaction } from '../db/pool.js';
+import { guardedQuery } from '../services/mediaDependencyService.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
@@ -240,7 +241,7 @@ export const createConfiguration = asyncHandler(async (req, res) => {
   const tenantId = requireTenantForWrite(req);
   await validateGatewayTenant(d.sip_gateway_id, tenantId);
 
-  const { rows } = await query(
+  const { rows } = await guardedQuery([d.queue_announcement_audio, d.queue_hold_audio, d.queue_music_path])(
     `INSERT INTO ers_configurations (
        organization_id, tenant_id, name, description,
        primary_bridge_number, secondary_bridge_number, conference_profile,
@@ -306,7 +307,7 @@ export const updateConfiguration = asyncHandler(async (req, res) => {
   //   key present, null     → explicitly clear to NULL   (CASE returns $43 = null)
   const gatewayOverrideInBody = Object.prototype.hasOwnProperty.call(req.body, 'gateway_override');
 
-  const { rows } = await query(
+  const { rows } = await guardedQuery([d.queue_announcement_audio, d.queue_hold_audio, d.queue_music_path])(
     `UPDATE ers_configurations SET
        name                         = COALESCE($2,  name),
        description                  = COALESCE($3,  description),

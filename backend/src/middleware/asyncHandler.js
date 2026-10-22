@@ -104,6 +104,11 @@ export function errorHandler(err, req, res, _next) {
     return res.status(409).json({ error: 'Referenced record does not exist' });
   }
 
+  // Errors that carry an explicit structured response (e.g. media-safety guard
+  // 409 MEDIA_DELETED / 503 MEDIA_BUSY) are returned as-is. Additive: no
+  // existing error sets `httpBody`.
+  if (err.httpBody && err.status) return res.status(err.status).json(err.httpBody);
+
   const status = err.status || err.statusCode || 500;
   res.status(status).json({ error: err.message || 'Internal server error' });
 }

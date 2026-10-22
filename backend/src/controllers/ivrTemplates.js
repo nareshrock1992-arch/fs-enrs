@@ -6,7 +6,8 @@
  * so the frontend can immediately navigate to the designer.
  */
 
-import { query } from '../db/pool.js';
+import { withTransaction } from '../db/pool.js';
+import { guardMediaReferences, mediaGuardErrorResponse } from '../services/mediaDependencyService.js';
 import { v4 as uuidv4 } from 'uuid';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 import { requireTenantForWrite } from '../middleware/tenantScope.js';
@@ -748,6 +749,10 @@ const TEMPLATES = {
   },
 };
 
+// Read-only view of the built-in templates for media dependency checks
+// (mediaDependencyService) — templates reference /media/<file> prompts.
+export const BUILTIN_IVR_TEMPLATES = TEMPLATES;
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 export async function listTemplates(req, res) {
@@ -772,20 +777,33 @@ export async function createFromTemplate(req, res) {
   const flowUuid   = uuidv4();
   const name       = customName || tpl.name;
 
-  const { rows: [flow] } = await query(
-    `INSERT INTO ivr_flows
-       (tenant_id, flow_uuid, name, description, graph, is_active, created_by)
-     VALUES ($1, $2, $3, $4, $5, true, $6)
-     RETURNING flow_uuid, name`,
-    [
-      tenantId,
-      flowUuid,
-      name,
-      tpl.description,
-      JSON.stringify(tpl.graph),
-      req.user.id,
-    ]
-  );
+  // Template prompts take the shared media locks and are rejected (409) if they
+  // name library media that has been deleted; built-in prompt names with no
+  // library record remain allowed.
+  let flow;
+  try {
+    ({ rows: [flow] } = await withTransaction(async (tq) => {
+      await guardMediaReferences(tq, tpl.graph);
+      return tq(
+        `INSERT INTO ivr_flows
+           (tenant_id, flow_uuid, name, description, graph, is_active, created_by)
+         VALUES ($1, $2, $3, $4, $5, true, $6)
+         RETURNING flow_uuid, name`,
+        [
+          tenantId,
+          flowUuid,
+          name,
+          tpl.description,
+          JSON.stringify(tpl.graph),
+          req.user.id,
+        ]
+      );
+    }));
+  } catch (err) {
+    const mapped = mediaGuardErrorResponse(err);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    throw err;
+  }
 
   res.status(201).json({
     flow_uuid: flow.flow_uuid,

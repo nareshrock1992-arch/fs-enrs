@@ -8,6 +8,9 @@ import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { query } from '../../db/pool.js';
 import { config } from '../../config/index.js';
 import { effectiveTenantId, requireTenantForWrite } from '../../middleware/tenantScope.js';
+import {
+  deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody,
+} from '../../services/mediaDependencyService.js';
 
 // Ensure upload directory exists
 mkdirSync(config.uploads.dir, { recursive: true });
@@ -77,16 +80,23 @@ router.post('/upload', adminOnly, upload.single('file'), asyncHandler(async (req
   res.status(201).json(record);
 }));
 
+// Same guarded delete as /media-library/:id (409 while referenced, 503 fail
+// closed, shared per-filename lock held through the file move). Route, RBAC,
+// tenant rule and 404 message are unchanged.
 router.delete('/:id', adminOnly, asyncHandler(async (req, res) => {
-  const tenantFilter = effectiveTenantId(req);
-  const { rowCount } = await query(
-    `UPDATE media_files SET deleted_at = now()
-     WHERE id = $1
-       AND deleted_at IS NULL
-       AND ($2::int IS NULL OR tenant_id = $2)`,
-    [req.params.id, tenantFilter]
-  );
-  if (!rowCount) return res.status(404).json({ error: 'Media not found or access denied' });
+  let result;
+  try {
+    result = await deleteMediaSafely({
+      id:            req.params.id,
+      tenantId:      effectiveTenantId(req),
+      correlationId: req.headers['x-request-id'] ?? null,
+    });
+  } catch (err) {
+    if (err instanceof DependencyCheckError) return res.status(503).json(dependencyFailureBody(err));
+    throw err;
+  }
+  if (result.status === 'not_found') return res.status(404).json({ error: 'Media not found or access denied' });
+  if (result.status === 'blocked')   return res.status(409).json(blockedDeleteBody(result));
   res.status(204).end();
 }));
 

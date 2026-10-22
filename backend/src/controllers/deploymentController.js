@@ -12,6 +12,10 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { query }        from '../db/pool.js';
 import { config }       from '../config/index.js';
 import { fsPathService }         from '../services/freeSwitchPathService.js';
+import {
+  deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody,
+  deployMediaLocked, importScannedFileLocked, mediaGuardErrorResponse,
+} from '../services/mediaDependencyService.js';
 import { deployFlow, redeployAll, getDeploymentHistory, previewDeployment }
                                  from '../services/deploymentEngine.js';
 import { runDiagnostics, pingEsl, reloadXml, disableLegacyExtension }
@@ -155,7 +159,9 @@ export const scanAudio = asyncHandler(async (req, res) => {
       const stat = await fs.stat(filePath);
       const meta = await parseWavMetadata(filePath);
 
-      const { rows: [record] } = await query(
+      // Insert under the shared media lock, re-verifying the file still exists
+      // (a concurrent delete may have just moved it to quarantine).
+      const record = await importScannedFileLocked(filePath, async (tq) => (await tq(
         `INSERT INTO media_files
            (type, name, path_or_uri, fs_path, size_bytes, category,
             description, is_deployed, deployed_at, duration_sec, tenant_id)
@@ -171,7 +177,7 @@ export const scanAudio = asyncHandler(async (req, res) => {
           meta.duration_sec,
           req.user?.tenantId || null,
         ]
-      );
+      )).rows[0], { expectedSize: stat.size });
 
       if (record) {
         imported.push(record);
@@ -244,9 +250,10 @@ export const uploadAudio = asyncHandler(async (req, res) => {
   let deployResult = null;
   let deployError  = null;
   try {
-    deployResult = await copyToFreeSwitch(record.id, req.file.path, req.file.filename);
+    deployResult = await copyToFreeSwitch(record, req.file.path, req.file.filename);
+    if (!deployResult) throw new Error('Media was deleted before it could be deployed');
   } catch (err) {
-    deployError = err.message;
+    deployError = mediaGuardErrorResponse(err)?.body.message || err.message;
     console.error(`[audio-upload] FS copy failed for media_file ${record.id}: ${err.message}`);
     // Persist error so the UI can surface it without requiring a re-upload
     await query(
@@ -281,7 +288,8 @@ export const deployAudio = asyncHandler(async (req, res) => {
   if (!record) return res.status(404).json({ error: 'Audio file not found' });
   if (!record.path_or_uri) return res.status(400).json({ error: 'No source file path on record' });
 
-  const result = await copyToFreeSwitch(record.id, record.path_or_uri, path.basename(record.path_or_uri));
+  const result = await copyToFreeSwitch(record, record.path_or_uri, path.basename(record.path_or_uri));
+  if (!result) return res.status(404).json({ error: 'Audio file not found' });   // deleted meanwhile
   res.json(result);
 });
 
@@ -313,20 +321,23 @@ export const streamAudio = asyncHandler(async (req, res) => {
 
 /** DELETE /deployment/audio/:id */
 export const deleteAudio = asyncHandler(async (req, res) => {
-  // Tenant isolation: only allow deleting files owned by this tenant or shared system files.
-  const { rows: [record] } = await query(
-    `UPDATE media_files SET deleted_at = now()
-     WHERE id = $1 AND deleted_at IS NULL
-       AND ($2::int IS NULL OR tenant_id = $2 OR tenant_id IS NULL)
-     RETURNING *`,
-    [req.params.id, effectiveTenantId(req)]
-  );
-  if (!record) return res.status(404).json({ error: 'Not found' });
-
-  // Clean up FS copy (best-effort, don't fail the response)
-  if (record.fs_path) {
-    fs.unlink(record.fs_path).catch(() => {});
+  // Tenant isolation: only allow deleting files owned by this tenant or shared
+  // system files (unchanged rule). Same guarded delete as the Media Library:
+  // 409 while referenced, 503 (nothing deleted) if the check cannot run.
+  let result;
+  try {
+    result = await deleteMediaSafely({
+      id:                req.params.id,
+      tenantId:          effectiveTenantId(req),
+      allowSystemShared: true,
+      correlationId:     req.headers['x-request-id'] ?? null,
+    });
+  } catch (err) {
+    if (err instanceof DependencyCheckError) return res.status(503).json(dependencyFailureBody(err));
+    throw err;
   }
+  if (result.status === 'not_found') return res.status(404).json({ error: 'Not found' });
+  if (result.status === 'blocked')   return res.status(409).json(blockedDeleteBody(result));
 
   res.status(204).end();
 });
@@ -442,21 +453,19 @@ export const disableLegacyExtensionRoute = asyncHandler(async (req, res) => {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-async function copyToFreeSwitch(mediaId, srcPath, filename) {
+async function copyToFreeSwitch(record, srcPath, filename) {
   const destDir  = fsPathService.getEnrsSoundDir();
   const destPath = path.join(destDir, path.basename(filename));
 
-  await fs.mkdir(destDir, { recursive: true });
-  await fs.copyFile(srcPath, destPath);
-  await fs.chmod(destPath, 0o644).catch(() => {});
-
-  // Update DB
-  await query(
-    `UPDATE media_files
-     SET fs_path = $2, is_deployed = true, deployed_at = now()
-     WHERE id = $1`,
-    [mediaId, destPath]
-  );
+  // Copy + fs_path update under the shared media lock (a concurrent delete
+  // either completes first — nothing is copied — or waits for us).
+  const deployed = await deployMediaLocked(record, path.basename(filename), async () => {
+    await fs.mkdir(destDir, { recursive: true });
+    await fs.copyFile(srcPath, destPath);
+    await fs.chmod(destPath, 0o644).catch(() => {});
+    return destPath;
+  });
+  if (!deployed) return null;
 
   return {
     ok:       true,

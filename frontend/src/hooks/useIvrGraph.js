@@ -1,5 +1,6 @@
 import { useReducer, useCallback, useEffect, useRef } from 'react';
 import { api } from '../api/client.js';
+import { createAutosaveController, INITIAL_SAVE_STATUS } from './autosave.js';
 
 // ── ID generation ─────────────────────────────────────────────────────────────
 
@@ -112,6 +113,9 @@ const INIT = {
   dirty:        false,
   saving:       false,
   saveError:    null,
+  rev:          0,      // bumped on every graph/viewport edit (see reducer wrapper)
+  seedEpoch:    0,      // bumped on every SEED — stale save responses are ignored
+  saveStatus:   INITIAL_SAVE_STATUS,
   errors:       {},
   nodeWarnings: {},
   warnings:     [],
@@ -119,12 +123,24 @@ const INIT = {
   viewport:     null, // null = new flow (default transform); object = restore saved pan+zoom
 };
 
-function reducer(state, action) {
+// Wrapper: any edit that changes the graph or viewport and leaves it dirty gets
+// a new revision, so a save that was in flight during the edit cannot mark the
+// newer state as saved.
+export function reducer(state, action) {
+  const next = baseReducer(state, action);
+  if (next !== state && next.dirty && action.type !== 'SEED' &&
+      (next.nodes !== state.nodes || next.entryNodeId !== state.entryNodeId || next.viewport !== state.viewport)) {
+    return { ...next, rev: state.rev + 1 };
+  }
+  return next;
+}
+
+function baseReducer(state, action) {
   switch (action.type) {
 
     case 'SEED': {
       const { nodes, entryNodeId, viewport } = deserialiseGraph(action.flow.graph);
-      return { ...INIT, nodes, entryNodeId, viewport, flowMeta: action.flow };
+      return { ...INIT, nodes, entryNodeId, viewport, flowMeta: action.flow, seedEpoch: (state.seedEpoch || 0) + 1 };
     }
 
     case 'MOVE_VIEWPORT':
@@ -252,8 +268,11 @@ function reducer(state, action) {
     }
 
     case 'MARK_SAVING':      return { ...state, saving: true,  saveError: null };
-    case 'MARK_SAVED':       return { ...state, saving: false, dirty: false, saveError: null };
-    case 'MARK_SAVE_ERROR':  return { ...state, saving: false, saveError: action.message || 'Autosave failed' };
+    // Only clean if nothing was edited while the save was in flight (action.rev = saved revision).
+    case 'MARK_SAVED':       return { ...state, saving: false, dirty: action.rev === undefined ? false : state.rev !== action.rev,
+                                      saveError: null, saveStatus: INITIAL_SAVE_STATUS };
+    case 'MARK_SAVE_ERROR':  return { ...state, saving: false, saveError: action.message || 'Autosave failed',
+                                      saveStatus: action.status || state.saveStatus };
     case 'UPDATE_META':      return { ...state, flowMeta: { ...state.flowMeta, ...action.patch } };
 
     default: return state;
@@ -266,7 +285,6 @@ const MAX_UNDO_STEPS = 100;
 
 export function useIvrGraph(flowUuid) {
   const [state, dispatch] = useReducer(reducer, INIT);
-  const saveTimer  = useRef(null);
   const stateRef   = useRef(state);
   stateRef.current = state;
 
@@ -297,41 +315,37 @@ export function useIvrGraph(flowUuid) {
 
   // ── Persist ───────────────────────────────────────────────────────────────
 
-  async function persistGraph() {
-    const s = stateRef.current;
-    if (!s.dirty || !s.flowMeta?.flow_uuid) return;
-    dispatch({ type: 'MARK_SAVING' });
-    try {
-      const graph = serialiseGraph(s.nodes, s.entryNodeId);
-      const layout = {};
-      for (const [id, node] of Object.entries(s.nodes)) layout[id] = { x: node.x, y: node.y };
-      graph._layout = layout;
-      if (s.viewport) graph._viewport = s.viewport;
-      await api.ivr.update(s.flowMeta.flow_uuid, { graph });
-      dispatch({ type: 'MARK_SAVED' });
-    } catch (e) {
-      console.error('[ivr] save failed', e);
-      // Prefer the first structural error (e.g. "node X: references non-existent node Y")
-      // over the generic HTTP error text so the tooltip is actionable.
-      const firstError = e.data?.errors?.[0];
-      dispatch({ type: 'MARK_SAVE_ERROR', message: firstError || e.message || 'Save failed' });
-      throw e;
-    }
+  // Autosave (policy + single in-flight request + stale-response guard live in
+  // ./autosave.js). The error message shown in the toolbar prefers the first
+  // structural error (e.g. "node X: references non-existent node Y"), then the
+  // server's human message, over the raw HTTP error code.
+  const autosave = useRef(null);
+  if (!autosave.current) {
+    autosave.current = createAutosaveController({
+      getState: () => stateRef.current,
+      dispatch,
+      save: (flowUuid, s) => {
+        const graph = serialiseGraph(s.nodes, s.entryNodeId);
+        const layout = {};
+        for (const [id, node] of Object.entries(s.nodes)) layout[id] = { x: node.x, y: node.y };
+        graph._layout = layout;
+        if (s.viewport) graph._viewport = s.viewport;
+        return api.ivr.update(flowUuid, { graph });
+      },
+    });
   }
 
   useEffect(() => {
-    if (!state.dirty || state.saving) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { persistGraph().catch(() => {}); }, 800);
-    return () => clearTimeout(saveTimer.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.dirty, state.saving, state.viewport]);
-
-  const saveNow = useCallback(async () => {
-    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    await persistGraph();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    autosave.current.activate();
+    return () => autosave.current.dispose();
   }, []);
+
+  useEffect(() => {
+    autosave.current.schedule();
+  }, [state.dirty, state.saving, state.rev, state.saveStatus, state.flowMeta?.flow_uuid]);
+
+  // Explicit user action: saves even when autosave is paused; rejects on failure.
+  const saveNow = useCallback(() => autosave.current.run({ manual: true }), []);
 
   // ── Public actions (undoable mutations push snapshot first) ──────────────
 

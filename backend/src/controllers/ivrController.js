@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { validateGraph } from '../utils/ivrGraphValidator.js';
+import { guardMediaReferences, mediaGuardErrorResponse, MediaLockError } from '../services/mediaDependencyService.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { publicNodeTypes } from '../nodeTypes/registry.js';
 import {
@@ -163,7 +164,8 @@ export const updateFlow = asyncHandler(async (req, res) => {
     const fullCheck = GraphSchema.safeParse(graph);
     if (fullCheck.success) {
       const result = await validateGraph(graph, effectiveTenantId(req));
-      const structural = (result.errors || []).filter(e => !e.includes('not found') && !e.includes('wrong tenant'));
+      const dependency = new Set(result.dependencyErrors || []);   // publish-only gates
+      const structural = (result.errors || []).filter(e => !dependency.has(e) && !e.includes('not found') && !e.includes('wrong tenant'));
       if (structural.length > 0) {
         return res.status(400).json({ error: 'Graph structure invalid', errors: structural });
       }
@@ -197,10 +199,19 @@ export const updateFlow = asyncHandler(async (req, res) => {
   }
 
   params.push(flow.id);
-  const { rows: [updated] } = await query(
-    `UPDATE ivr_flows SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-    params
-  );
+  const updateSql = `UPDATE ivr_flows SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`;
+  let updated;
+  try {
+    // A graph save takes the shared media filename locks and rejects references
+    // to deleted library media (409) — atomically with the UPDATE.
+    ({ rows: [updated] } = graph !== undefined
+      ? await withTransaction(async (tq) => { await guardMediaReferences(tq, graph); return tq(updateSql, params); })
+      : await query(updateSql, params));
+  } catch (err) {
+    const mapped = mediaGuardErrorResponse(err);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    throw err;
+  }
 
   res.json({ flow: updated });
 });
@@ -259,7 +270,14 @@ export const publishFlow = asyncHandler(async (req, res) => {
     });
   }
 
-  const { rows: [version] } = await withTransaction(async tq => {
+  let version;
+  try {
+  ({ rows: [version] } = await withTransaction(async tq => {
+    // Shared media locks FIRST (global order), then the flow row. The graph we
+    // validated must be the graph we publish: if it changed meanwhile, retry.
+    await guardMediaReferences(tq, flow.graph);
+    const { rows: [locked] } = await tq('SELECT graph FROM ivr_flows WHERE id = $1 FOR UPDATE', [flow.id]);
+    if (JSON.stringify(locked?.graph) !== JSON.stringify(flow.graph)) throw new MediaLockError('MEDIA_CHANGED', null);
     const { rows: [{ next_ver }] } = await tq(
       `SELECT COALESCE(MAX(version_number), 0) + 1 AS next_ver
        FROM ivr_flow_versions WHERE ivr_flow_id = $1`,
@@ -273,7 +291,12 @@ export const publishFlow = asyncHandler(async (req, res) => {
          (SELECT email FROM users WHERE id = $4) AS published_by_email`,
       [flow.id, next_ver, JSON.stringify(flow.graph), req.user.id, parsed.data.change_notes || null]
     );
-  });
+  }));
+  } catch (err) {
+    const mapped = mediaGuardErrorResponse(err);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    throw err;
+  }
 
   res.status(201).json({ version: { ...version, warnings: result.warnings } });
 });

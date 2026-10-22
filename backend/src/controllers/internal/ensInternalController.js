@@ -178,7 +178,7 @@ export const startCampaign = asyncHandler(async (req, res) => {
 
   // Register the Lua blast recording in the unified recordings table.
   // ens_blast_trigger.lua records to recordings/ens/ before calling this endpoint.
-  if (recording_file) {
+  if (recording_file && !campaign.idempotent_replay) {   // a replay was registered by the first request
     import('../recordingController.js').then(({ upsertRecordingStart }) => {
       upsertRecordingStart({
         type:       'ENS',
@@ -198,11 +198,13 @@ export const startCampaign = asyncHandler(async (req, res) => {
     }).catch(() => {});
   }
 
-  res.status(201).json({
+  // 200 + idempotent_replay:true when this was a retry of an already-created campaign.
+  res.status(campaign.idempotent_replay ? 200 : 201).json({
     success:     true,
     campaign_id: campaign.id,
     status:      campaign.status,
     total_destinations: campaign.total_destinations,
+    idempotent_replay:  campaign.idempotent_replay === true,
   });
 });
 
@@ -256,11 +258,12 @@ export const startCampaignByConfig = asyncHandler(async (req, res) => {
     throw err; // let asyncHandler/errorHandler handle it
   }
 
-  res.status(201).json({
+  res.status(campaign.idempotent_replay ? 200 : 201).json({
     success:            true,
     campaign_id:        campaign.id,
     status:             campaign.status,
     total_destinations: campaign.total_destinations,
+    idempotent_replay:  campaign.idempotent_replay === true,
   });
 });
 

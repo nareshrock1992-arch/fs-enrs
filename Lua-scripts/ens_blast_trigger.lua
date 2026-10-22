@@ -153,6 +153,9 @@ session:answer()
 session:sleep(400)
 
 -- 2. PIN verification (if configured)
+-- The verified PIN is kept and sent with the campaign start: /campaign/start
+-- re-checks it server-side (defense-in-depth) and rejects a start without it (401).
+local verified_pin = nil
 if cfg.pin_required then
   local verified = false
   local attempts = 0
@@ -181,6 +184,7 @@ if cfg.pin_required then
     if verify and verify.authorized then
       log("INFO", "PIN authorized: " .. dest)
       verified = true
+      verified_pin = entered
     else
       attempts = attempts + 1
       log("WARN", "PIN attempt " .. attempts .. " failed for " .. dest)
@@ -237,6 +241,7 @@ local campaign = http_post("/ens/campaign/start", {
   trigger_number = dest,
   recording_file = rec_path,
   caller_number  = caller,
+  pin            = verified_pin,   -- nil (omitted) when the service has no PIN
 })
 
 if not campaign or not campaign.success then
