@@ -136,6 +136,17 @@ describe('media library — tenant A can never touch tenant B media (all 404, no
     expect(MEDIA.find(m => m.id === 21)).toMatchObject({ name: 'Tenant 20 prompt', deleted_at: null });
     expect(deleteCalls).toEqual([{ id: '21', tenantId: 10 }]);           // tenant comes from the token
   });
+  it('where-used (/references) is tenant-checked and role-gated like the detail view', async () => {
+    expect((await request(app).get('/media-library/21/references').set(as(A10))).status).toBe(404);   // other tenant
+    expect((await request(app).get('/media-library/11/references').set(as(VIEW10))).status).toBe(403);
+    expect((await request(app).get('/media-library/11/references').set(as(ORPHAN))).status).toBe(403);
+    expect((await request(app).get('/media-library/11/references')).status).toBe(401);
+    expect((await request(app).get('/media-library/abc/references').set(as(A10))).status).toBe(404);
+    // own file: the scan runs (this emulator has no schema → the check fails CLOSED with 503, never "unused")
+    const own = await request(app).get('/media-library/11/references').set(as(OP10));
+    expect(own.status).toBe(503);
+    expect(own.body.in_use).toBeUndefined();
+  });
   it('a forged ?tenant_id cannot widen a tenant user\'s scope', async () => {
     expect((await request(app).get('/media-library/21?tenant_id=20').set(as(A10))).status).toBe(404);
     await request(app).delete('/media-library/21?tenant_id=20').set(as(A10));

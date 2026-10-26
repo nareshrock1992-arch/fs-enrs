@@ -26,7 +26,7 @@ import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 import { contentDisposition, sendFileWithRange } from '../utils/mediaHttp.js';
 import {
-  deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody,
+  deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody, findMediaReferences,
   deployMediaLocked, importScannedFileLocked, mediaGuardErrorResponse,
 } from '../services/mediaDependencyService.js';
 
@@ -642,6 +642,41 @@ export const getMedia = asyncHandler(async (req, res) => {
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
   res.json({ file: record });
+});
+
+// ── Where used (read-only) ────────────────────────────────────────────────────
+// The same dependency scan the guarded delete runs, without changing anything.
+// References owned by another tenant are reported only as a count (no names/ids).
+// A failed scan is a 503 — never reported as "not used".
+
+export const getMediaReferences = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
+  if (!/^\d+$/.test(String(req.params.id))) return res.status(404).json({ error: 'Not found' });
+  const { rows: [record] } = await query(
+    `SELECT id, name, path_or_uri, fs_path, tenant_id FROM media_files
+     WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR tenant_id = $2)`,
+    [req.params.id, tenantId]
+  );
+  if (!record) return res.status(404).json({ error: 'Not found' });
+  let deps;
+  try {
+    deps = await findMediaReferences(query, record, {
+      viewerTenantId: req.user.role === 'SUPER_ADMIN' ? null : req.user.tenantId,
+    });
+  } catch (err) {
+    if (err instanceof DependencyCheckError) return res.status(503).json(dependencyFailureBody(err));
+    throw err;
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    media_id: record.id,
+    in_use: deps.references.length > 0,
+    references: deps.references.filter(r => !r.other_tenant),
+    other_tenant_count: deps.hiddenCount,
+    blocking_count: deps.blocking.length,
+    warning_count: deps.warnings.length,
+    skipped_sources: deps.skippedSources,
+  });
 });
 
 // ── Update metadata ───────────────────────────────────────────────────────────

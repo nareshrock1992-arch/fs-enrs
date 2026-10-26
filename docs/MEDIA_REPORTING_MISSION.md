@@ -62,8 +62,26 @@ WSL test checkout `/opt/freeswitch-ui/fs-enrs`: on `media-safety-remediation@7b4
     - ERS/ENS/campaign `emitInternal` callers still pass no tenant → all authenticated sockets of every
       tenant receive them. Per-tenant scoping touches telephony controllers (out of scope).
     - Platform config writable by tenant ADMIN — product decision (see Decisions).
-- [ ] Phase 3 — Reporting / Recording Reports (Phase F).
-- [ ] Phase 4 — trash/restore/audit, where-used, ZIP (store-only via zlib.crc32, no new dep), undeploy design.
+- [x] Phase 3 — Reporting. PASS.
+  - Backend `routes/v1/reports.js`: playback access log tenant-scoped (via the ERS configuration in
+    `audit_logs.details`); ERS detail recording = same tenant, `incident_uuid` → exact path → room only
+    inside the incident window (ended_at / cancelled_at / now while ACTIVE / start+2 min); responders no
+    longer duplicated per group (groups joined); ENS delivery names only from the own tenant (one row);
+    filters validated → 400 (dates `YYYY-MM-DD`, from ≤ to, org_id int, status token, uuid ids — incl.
+    `ens-campaigns/:id`, which is a UUID); malformed paging → defaults; `/ers` + `/ens-campaigns` return
+    a `summary` over the whole filtered set.
+  - Frontend: ERS/ENS report summary from the server (was page-derived); error state + Retry, stale rows
+    cleared, latest-request guard; legacy Notification Report statuses = DB CHECK values, CSV RFC 4180 +
+    formula-safe; sidebar hides Reports/Recordings/Media Library for roles the API refuses
+    (`reports.view` = adminOrOp, `visibleNav`).
+  - Docs: 18-reporting-guide (params, statuses, metrics incl. `no_answer_count` = not answered incl.
+    still-INVITED, DB-timezone day bounds, summary), 14-recording-guide, media-rbac.
+  - Review agent findings fixed: campaign id is UUID (was a 400 regression), cancelled-incident window,
+    Retry page, uuid cast for index use; boot-scan recording limit documented.
+  - Tests: `reportsRoutes.test.js`, `reportState.test.js`; isolated e2e R-1…R-9 against real PostgreSQL.
+  - Note: `errorHandler` logs every error incl. 4xx as "UNHANDLED ERROR" (pre-existing, unchanged) — the
+    4 blocks in the e2e log are R-7's deliberate 400s.
+- [ ] Phase 4 — trash/restore/audit, ZIP (store-only, no new dep), undeploy design. Where-used DONE: `GET /media-library/:id/references` (media.view, tenant 404, other-tenant refs only counted, scan failure 503); e2e F-21/S-23.
 - [ ] Phase 5 — regression baseline. Lockfile part DONE: `backend/package-lock.json` +46/−0 (fengari
       0.1.5, fengari-interop 0.1.4, readline-sync 1.4.10, sprintf-js 1.1.3, tmp 0.2.7 — declared in
       package.json since 6327a96 but missing from the lock); clean `npm ci` exit 0, lock unchanged after.

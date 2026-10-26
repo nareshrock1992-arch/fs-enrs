@@ -10,7 +10,7 @@ import { requireMediaAccess, issueMediaAccess } from '../../middleware/mediaAcce
 import {
   listMedia, listCategories, uploadMedia, uploadMiddleware,
   scanMedia, getMedia, updateMedia, deployMedia,
-  streamMedia, downloadMedia, getWaveform, deleteMedia,
+  streamMedia, downloadMedia, getWaveform, deleteMedia, getMediaReferences,
 } from '../../controllers/mediaLibraryController.js';
 
 const router = Router();
@@ -29,6 +29,7 @@ router.get('/:id/waveform',       requireAuthOrToken, canViewMedia, getWaveform)
 // All other routes require a full Bearer session.
 router.get('/categories',         requireAuth, canViewMedia, listCategories);
 router.get('/',                   requireAuth, canViewMedia, listMedia);
+router.get('/:id/references',     requireAuth, canViewMedia, getMediaReferences);   // read-only "where used"
 router.get('/:id',                requireAuth, canViewMedia, getMedia);
 router.post('/scan',              requireAuth, adminOnly, scanMedia);
 router.post('/upload',            requireAuth, adminOrSuper, uploadMiddleware, uploadMedia);
