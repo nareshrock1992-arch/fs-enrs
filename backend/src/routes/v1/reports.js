@@ -8,9 +8,55 @@ import { effectiveTenantId } from '../../middleware/tenantScope.js';
 const router = Router();
 router.use(requireAuth, adminOrOp);
 
+// ── Query validation ──────────────────────────────────────────────────────────
+// Malformed filters are a 400, never a 500 (a bad ::date / ::int cast) and never
+// silently "no filter".
+const badRequest = (msg) => Object.assign(new Error(msg), { status: 400 });
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseDate(v, name) {
+  if (v === undefined || v === '') return null;
+  const s = String(v);
+  const d = new Date(`${s}T00:00:00Z`);
+  if (!DATE_RE.test(s) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
+    throw badRequest(`${name} must be a date (YYYY-MM-DD)`);
+  }
+  return s;
+}
+function parseId(v, name) {
+  if (v === undefined || v === '') return null;
+  if (!/^\d+$/.test(String(v)) || Number(v) < 1 || Number(v) > 2147483647) throw badRequest(`${name} must be a positive integer`);
+  return Number(v);
+}
+// from / to / status / org_id + page / limit (malformed paging falls back to defaults, as media does)
+export function parseReportQuery(q = {}) {
+  const from = parseDate(q.from, 'from');
+  const to   = parseDate(q.to, 'to');
+  if (from && to && from > to) throw badRequest('from must not be after to');
+  const status = q.status === undefined || q.status === '' ? null : String(q.status);
+  if (status !== null && !/^[A-Za-z_]{1,32}$/.test(status)) throw badRequest('status is not valid');
+  const intOr = (v, d) => (/^\d+$/.test(String(v ?? '')) ? parseInt(v, 10) : d);
+  const page  = Math.max(1, intOr(q.page, 1));
+  const limit = Math.min(200, Math.max(1, intOr(q.limit, 50)));
+  return { from, to, status, org_id: parseId(q.org_id, 'org_id'), page, limit, offset: (page - 1) * limit };
+}
+const requireUuid = (v) => { if (!UUID_RE.test(String(v))) throw badRequest('not a valid id'); return v; };
+
+// End of the window in which a bare conference-room match may belong to this incident.
+// Rooms are reused, so the window must close: ended_at, else cancelled_at (a cancelled
+// queued incident has no ended_at), else "now" only while the incident is ACTIVE; any
+// other unfinished state (e.g. FAILED) gets just the 2-minute start slack.
+export function roomWindowEnd(incident) {
+  if (incident.ended_at) return incident.ended_at;
+  if (incident.cancelled_at) return incident.cancelled_at;
+  if (incident.status === 'ACTIVE') return new Date();
+  return new Date(new Date(incident.started_at).getTime() + 2 * 60 * 1000);
+}
+
 // GET /api/v1/reports/notifications?from=&to=&status=&org_id=
 router.get('/notifications', asyncHandler(async (req, res) => {
-  const { from, to, status, org_id } = req.query;
+  const { from, to, status, org_id } = parseReportQuery(req.query);
   const { rows } = await query(
     `SELECT n.*, e.name AS ens_name, o.name AS org_name, u.full_name AS triggered_by
      FROM ens_notifications n
@@ -57,7 +103,7 @@ router.get('/contact-usage', asyncHandler(async (req, res) => {
 // Per-notification detail: who triggered it, per-contact delivery status,
 // and the playback access log (ers_playback_attempt audit entries).
 router.get('/ens-broadcasts', asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
+  const { from, to } = parseReportQuery(req.query);
   const { rows: broadcasts } = await query(
     `SELECT n.id, n.notification_uuid, n.status, n.triggered_via,
        n.caller_number, n.recording_file, n.total_targets, n.total_answered,
@@ -91,13 +137,18 @@ router.get('/ens-broadcasts', asyncHandler(async (req, res) => {
     deliveries = rows;
   }
 
+  // audit_logs has no tenant_id: an attempt belongs to the tenant of the ERS configuration
+  // named in its details (text comparison, so a malformed value can never raise a cast error).
   const { rows: playbackLog } = await query(
-    `SELECT details, created_at FROM audit_logs
-     WHERE action = 'ers_playback_attempt'
-       AND ($1::date IS NULL OR created_at >= $1::date)
-       AND ($2::date IS NULL OR created_at <  $2::date + interval '1 day')
-     ORDER BY created_at DESC LIMIT 200`,
-    [from || null, to || null]
+    `SELECT a.details, a.created_at FROM audit_logs a
+     WHERE a.action = 'ers_playback_attempt'
+       AND ($3::int IS NULL OR EXISTS (
+             SELECT 1 FROM ers_configurations ec
+              WHERE ec.id::text = a.details->>'configuration_id' AND ec.tenant_id = $3))
+       AND ($1::date IS NULL OR a.created_at >= $1::date)
+       AND ($2::date IS NULL OR a.created_at <  $2::date + interval '1 day')
+     ORDER BY a.created_at DESC LIMIT 200`,
+    [from || null, to || null, effectiveTenantId(req)]
   );
 
   const byNotif = {};
@@ -115,16 +166,24 @@ router.get('/ens-broadcasts', asyncHandler(async (req, res) => {
 
 // GET /api/v1/reports/ers?page=1&limit=50&from=&to=&status=&org_id=
 router.get('/ers', asyncHandler(async (req, res) => {
-  const { from, to, status, org_id } = req.query;
-  const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
+  const { from, to, status, org_id, page, limit, offset } = parseReportQuery(req.query);
 
+  // Totals over the WHOLE filtered set (not just this page) — the page header and the
+  // summary line must not change when the user pages.
   const { rows: countRows } = await query(
-    `SELECT COUNT(*)::INT AS total
+    `SELECT COUNT(*)::INT AS total,
+       COUNT(*) FILTER (WHERE i.status = 'ACTIVE')::INT    AS active,
+       COUNT(*) FILTER (WHERE i.status = 'COMPLETED')::INT AS completed,
+       COALESCE(SUM(rc.responders), 0)::INT AS responders,
+       COALESCE(SUM(rc.answered), 0)::INT   AS answered
      FROM ers_incidents i
      JOIN ers_configurations e ON e.id = i.ers_configuration_id
      JOIN organizations o ON o.id = e.organization_id
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) AS responders,
+              COUNT(*) FILTER (WHERE r.status IN ('JOINED','REJOINED')) AS answered
+         FROM ers_incident_responders r WHERE r.ers_incident_id = i.id
+     ) rc ON true
      WHERE i.deleted_at IS NULL
        AND ($1::int IS NULL OR i.tenant_id = $1)
        AND ($2::date IS NULL OR i.started_at >= $2::date)
@@ -163,12 +222,17 @@ router.get('/ers', asyncHandler(async (req, res) => {
     [effectiveTenantId(req), from || null, to || null, status || null, org_id || null, limit, offset]
   );
 
-  res.json({ incidents: rows, total: countRows[0]?.total ?? 0, page, limit });
+  const s = countRows[0] || {};
+  res.json({
+    incidents: rows, total: s.total ?? 0, page, limit,
+    summary: { total: s.total ?? 0, active: s.active ?? 0, completed: s.completed ?? 0,
+               responders: s.responders ?? 0, responders_answered: s.answered ?? 0 },
+  });
 }));
 
 // GET /api/v1/reports/ers/:incidentUuid
 router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
-  const { incidentUuid } = req.params;
+  const incidentUuid = requireUuid(req.params.incidentUuid);
 
   const { rows: [incident] } = await query(
     `SELECT i.*, e.name AS ers_name, o.name AS org_name,
@@ -217,11 +281,16 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
          r.ring_start_time, r.dial_attempts, r.hangup_cause, r.tier, r.wave_number,
          c.first_name, c.last_name, c.mobile_number, c.extension_number,
          c.role AS contact_role,
-         rg.name AS group_name
+         g.group_name
        FROM ers_incident_responders r
        LEFT JOIN emergency_contacts c   ON c.id = r.emergency_contact_id
-       LEFT JOIN responder_group_members rgm ON rgm.emergency_contact_id = c.id
-       LEFT JOIN responder_groups rg    ON rg.id = rgm.responder_group_id AND rg.deleted_at IS NULL
+       -- one row per responder: a contact in several groups used to repeat the responder
+       LEFT JOIN LATERAL (
+         SELECT string_agg(DISTINCT rg.name, ', ' ORDER BY rg.name) AS group_name
+           FROM responder_group_members rgm
+           JOIN responder_groups rg ON rg.id = rgm.responder_group_id AND rg.deleted_at IS NULL
+          WHERE rgm.emergency_contact_id = c.id
+       ) g ON true
        WHERE r.ers_incident_id = $1
        ORDER BY r.join_time NULLS LAST, r.id`,
       [incident.id]
@@ -239,13 +308,23 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
         [incident.id]
       )
     ),
-    // Recording for this incident
+    // Recording for this incident: by incident_uuid, else the exact recording path; a bare
+    // conference-room match only within this incident's time window (rooms are reused across
+    // incidents — an unbounded room match returned another incident's recording). Same tenant.
     query(
       `SELECT id, recording_path, status, duration_sec, file_size_bytes, started_at, ended_at
        FROM recordings
-       WHERE (recording_path = $1 OR conference_room = $2) AND deleted_at IS NULL
+       WHERE deleted_at IS NULL
+         AND ($6::int IS NULL OR tenant_id = $6)
+         AND (incident_uuid = $3::uuid
+              OR ($1::text IS NOT NULL AND recording_path = $1)
+              OR ($2::text IS NOT NULL AND conference_room = $2
+                  AND started_at >= $4::timestamptz - interval '2 minutes'
+                  AND started_at <= $5::timestamptz))
+       ORDER BY (incident_uuid = $3::uuid) DESC NULLS LAST, started_at DESC NULLS LAST, id DESC
        LIMIT 1`,
-      [incident.recording_path, incident.conference_room]
+      [incident.recording_path, incident.conference_room, incident.incident_uuid,
+       incident.started_at, roomWindowEnd(incident), effectiveTenantId(req)]
     ),
     // Mute/floor event history
     query(
@@ -342,10 +421,7 @@ router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {
 
 // GET /api/v1/reports/ens?page=1&limit=50&from=&to=&status=&org_id=
 router.get('/ens', asyncHandler(async (req, res) => {
-  const { from, to, status, org_id } = req.query;
-  const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
+  const { from, to, status, org_id, page, limit, offset } = parseReportQuery(req.query);
 
   const { rows: countRows } = await query(
     `SELECT COUNT(*)::INT AS total
@@ -389,10 +465,11 @@ router.get('/ens', asyncHandler(async (req, res) => {
 
 // GET /api/v1/reports/ens/:notificationUuid
 router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
-  const { notificationUuid } = req.params;
+  const notificationUuid = requireUuid(req.params.notificationUuid);
 
   const { rows: [notification] } = await query(
-    `SELECT n.*, e.name AS ens_name, o.name AS org_name, u.full_name AS triggered_by_name
+    `SELECT n.*, e.name AS ens_name, o.name AS org_name, u.full_name AS triggered_by_name,
+       e.tenant_id AS config_tenant_id
      FROM ens_notifications n
      JOIN ens_configurations e ON e.id = n.ens_configuration_id
      LEFT JOIN organizations o ON o.id = e.organization_id
@@ -407,11 +484,21 @@ router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
        d.answered_at, d.hangup_cause, d.call_uuid,
        c.first_name, c.last_name
      FROM ens_notification_deliveries d
-     LEFT JOIN emergency_contacts c ON c.mobile_number = d.contact_number AND c.deleted_at IS NULL
+     -- name lookup by number: only the notification's own tenant, at most one contact
+     -- (an unscoped join showed other tenants' contact names and duplicated rows)
+     LEFT JOIN LATERAL (
+       SELECT ec.first_name, ec.last_name
+         FROM emergency_contacts ec
+         JOIN organizations o ON o.id = ec.organization_id
+        WHERE ec.mobile_number = d.contact_number AND ec.deleted_at IS NULL
+          AND o.tenant_id IS NOT DISTINCT FROM $2::int
+        ORDER BY ec.id LIMIT 1
+     ) c ON true
      WHERE d.ens_notification_id = $1
      ORDER BY d.contact_number, d.attempt_number`,
-    [notification.id]
+    [notification.id, notification.config_tenant_id]
   );
+  delete notification.config_tenant_id;
 
   res.json({
     notification: {
@@ -435,13 +522,14 @@ router.get('/ens/:notificationUuid', asyncHandler(async (req, res) => {
 
 // GET /api/v1/reports/ens-campaigns?page=&limit=&from=&to=&status=&org_id=
 router.get('/ens-campaigns', asyncHandler(async (req, res) => {
-  const { from, to, status, org_id } = req.query;
-  const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
+  const { from, to, status, org_id, page, limit, offset } = parseReportQuery(req.query);
 
   const { rows: countRows } = await query(
-    `SELECT COUNT(*)::INT AS total
+    `SELECT COUNT(*)::INT AS total,
+       COUNT(*) FILTER (WHERE c.status = 'running')::INT   AS running,
+       COUNT(*) FILTER (WHERE c.status = 'completed')::INT AS completed,
+       COALESCE(SUM(c.total_destinations), 0)::INT AS destinations,
+       COALESCE(SUM(c.answered_count), 0)::INT     AS answered
      FROM ens_campaigns c
      JOIN ens_configurations e ON e.id = c.ens_configuration_id
      JOIN organizations o ON o.id = c.organization_id
@@ -476,12 +564,17 @@ router.get('/ens-campaigns', asyncHandler(async (req, res) => {
     [effectiveTenantId(req), from || null, to || null, status || null, org_id || null, limit, offset]
   );
 
-  res.json({ campaigns: rows, total: countRows[0]?.total ?? 0, page, limit });
+  const s = countRows[0] || {};
+  res.json({
+    campaigns: rows, total: s.total ?? 0, page, limit,
+    summary: { total: s.total ?? 0, running: s.running ?? 0, completed: s.completed ?? 0,
+               destinations: s.destinations ?? 0, destinations_answered: s.answered ?? 0 },
+  });
 }));
 
 // GET /api/v1/reports/ens-campaigns/:id
 router.get('/ens-campaigns/:id', asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = requireUuid(req.params.id);                // ens_campaigns.id is a UUID (008_campaign_engine.sql)
 
   const { rows: [campaign] } = await query(
     `SELECT c.*,

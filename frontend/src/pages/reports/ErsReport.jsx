@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, memo } from 'react';
+import { useEffect, useState, useCallback, useRef, memo } from 'react';
 import {
   RefreshCw, ChevronDown, ChevronRight,
   Mic, Phone, Users, Clock, Building2,
@@ -12,6 +12,7 @@ import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
+import { createLatestGuard, ersSummary, loadErrorMessage } from './reportState.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -490,14 +491,10 @@ function FilterBar({ filters, onChange, onSearch, loading }) {
 
 // ─── Summary stat pills ───────────────────────────────────────────────────────
 
-function SummaryStats({ incidents }) {
-  const total     = incidents.length;
-  const active    = incidents.filter(i => i.status === 'ACTIVE').length;
-  const completed = incidents.filter(i => i.status === 'COMPLETED').length;
-  const totalResp = incidents.reduce((s, i) => s + (i.responder_count || i.participant_count || 0), 0);
-  const answered  = incidents.reduce((s, i) => s + (i.answered_count  || 0), 0);
-
-  if (total === 0) return null;
+// Totals for ALL incidents matching the filters (server-computed), not just this page.
+function SummaryStats({ summary }) {
+  if (!summary || summary.total === 0) return null;
+  const { total, active, completed, responders: totalResp, answered } = summary;
 
   return (
     <div className="flex items-center gap-3 flex-wrap text-xs">
@@ -513,6 +510,19 @@ function SummaryStats({ incidents }) {
           {answered}/{totalResp} responders answered
         </span>
       )}
+    </div>
+  );
+}
+
+function LoadError({ message, onRetry }) {
+  return (
+    <div className="card flex items-start gap-3 border border-red-500/40" role="alert">
+      <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-500" />
+      <div className="flex-1 text-sm">
+        <p className="font-semibold">The report could not be loaded</p>
+        <p className="text-text-muted">{message}</p>
+      </div>
+      <button className="btn-ghost btn-sm" onClick={onRetry}>Retry</button>
     </div>
   );
 }
@@ -552,26 +562,37 @@ export default function ErsReport() {
   const [total,     setTotal]     = useState(0);
   const [page,      setPage]      = useState(1);
   const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(null);
+  const [summary,   setSummary]   = useState(null);
   const [expanded,  setExpanded]  = useState({});
   const [filters,   setFilters]   = useState({ from: '', to: '', status: '' });
+  const guard = useRef(createLatestGuard()).current;
   const LIMIT = 25;
 
   const load = useCallback(async (pg = 1) => {
+    const token = guard.next();
     setLoading(true);
+    setError(null);
+    setPage(pg);                                    // so Retry repeats the page that was asked for
     try {
       const q = { page: pg, limit: LIMIT };
       if (filters.from)   q.from   = filters.from;
       if (filters.to)     q.to     = filters.to;
       if (filters.status) q.status = filters.status;
       const r = await api.reports.ers(q);
+      if (!guard.isCurrent(token)) return;            // a newer filter/page/tenant request won
       setIncidents(r.incidents || []);
       setTotal(r.total ?? 0);
-      setPage(pg);
+      setSummary(ersSummary(r));
       setExpanded({});
     } catch (e) {
+      if (!guard.isCurrent(token)) return;
       console.error('[ErsReport] load failed:', e);
+      // never leave the previous filter's rows on screen as if they matched
+      setIncidents([]); setTotal(0); setSummary(null);
+      setError(loadErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (guard.isCurrent(token)) setLoading(false);
     }
   }, [filters, activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -596,12 +617,14 @@ export default function ErsReport() {
         loading={loading}
       />
 
-      <SummaryStats incidents={incidents} />
+      {error && <LoadError message={error} onRetry={() => load(page)} />}
+
+      <SummaryStats summary={summary} />
 
       <div className="space-y-2.5">
         {loading ? (
           [...Array(5)].map((_, i) => <IncidentSkeleton key={i} />)
-        ) : incidents.length === 0 ? (
+        ) : error ? null : incidents.length === 0 ? (
           <div className="card">
             <EmptyState
               icon={Siren}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, memo } from 'react';
+import { useEffect, useState, useCallback, useRef, memo } from 'react';
 import {
   RefreshCw, ChevronRight, Phone, Users, Clock,
   Building2, Calendar, AlertCircle, CheckCircle2,
@@ -10,6 +10,7 @@ import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
+import { createLatestGuard, ensSummary, loadErrorMessage } from './reportState.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -415,14 +416,10 @@ function FilterBar({ filters, onChange, onSearch, loading }) {
 
 // ─── Summary stats ────────────────────────────────────────────────────────────
 
-function SummaryStats({ campaigns }) {
-  const total     = campaigns.length;
-  const active    = campaigns.filter(c => c.status === 'running').length;
-  const completed = campaigns.filter(c => c.status === 'completed').length;
-  const totalT    = campaigns.reduce((s, c) => s + (c.total_destinations || 0), 0);
-  const totalA    = campaigns.reduce((s, c) => s + (c.answered_count     || 0), 0);
-
-  if (total === 0) return null;
+// Totals for ALL campaigns matching the filters (server-computed), not just this page.
+function SummaryStats({ summary }) {
+  if (!summary || summary.total === 0) return null;
+  const { total, running: active, completed, destinations: totalT, answered: totalA } = summary;
 
   return (
     <div className="flex items-center gap-3 flex-wrap text-xs">
@@ -434,6 +431,19 @@ function SummaryStats({ campaigns }) {
       )}
       {completed > 0 && <span className="badge badge-green">{completed} completed</span>}
       {totalT > 0 && <span className="text-text-muted">{totalA}/{totalT} contacts answered</span>}
+    </div>
+  );
+}
+
+function LoadError({ message, onRetry }) {
+  return (
+    <div className="card flex items-start gap-3 border border-red-500/40" role="alert">
+      <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-500" />
+      <div className="flex-1 text-sm">
+        <p className="font-semibold">The report could not be loaded</p>
+        <p className="text-text-muted">{message}</p>
+      </div>
+      <button className="btn-ghost btn-sm" onClick={onRetry}>Retry</button>
     </div>
   );
 }
@@ -468,26 +478,37 @@ export default function EnsReport() {
   const [total,     setTotal]     = useState(0);
   const [page,      setPage]      = useState(1);
   const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(null);
+  const [summary,   setSummary]   = useState(null);
   const [expanded,  setExpanded]  = useState({});
   const [filters,   setFilters]   = useState({ from: '', to: '', status: '' });
+  const guard = useRef(createLatestGuard()).current;
   const LIMIT = 25;
 
   const load = useCallback(async (pg = 1) => {
+    const token = guard.next();
     setLoading(true);
+    setError(null);
+    setPage(pg);                                    // so Retry repeats the page that was asked for
     try {
       const q = { page: pg, limit: LIMIT };
       if (filters.from)   q.from   = filters.from;
       if (filters.to)     q.to     = filters.to;
       if (filters.status) q.status = filters.status;
       const r = await api.reports.ensCampaigns(q);
+      if (!guard.isCurrent(token)) return;            // a newer filter/page/tenant request won
       setCampaigns(r.campaigns || []);
       setTotal(r.total ?? 0);
-      setPage(pg);
+      setSummary(ensSummary(r));
       setExpanded({});
     } catch (e) {
+      if (!guard.isCurrent(token)) return;
       console.error('[EnsReport] load failed:', e);
+      // never leave the previous filter's rows on screen as if they matched
+      setCampaigns([]); setTotal(0); setSummary(null);
+      setError(loadErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (guard.isCurrent(token)) setLoading(false);
     }
   }, [filters, activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -507,12 +528,14 @@ export default function EnsReport() {
 
       <FilterBar filters={filters} onChange={setFilters} onSearch={() => load(1)} loading={loading} />
 
-      <SummaryStats campaigns={campaigns} />
+      {error && <LoadError message={error} onRetry={() => load(page)} />}
+
+      <SummaryStats summary={summary} />
 
       <div className="space-y-2.5">
         {loading ? (
           [...Array(5)].map((_, i) => <CampaignSkeleton key={i} />)
-        ) : campaigns.length === 0 ? (
+        ) : error ? null : campaigns.length === 0 ? (
           <div className="card">
             <EmptyState
               icon={Bell}

@@ -10,6 +10,7 @@ const EXPECTED = {
   'recordings.view':     ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],
   'recordings.annotate': ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],
   'recordings.delete':   ['SUPER_ADMIN', 'ADMIN'],
+  'reports.view':        ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],   // reports.js: adminOrOp
 };
 const ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER'];
 

@@ -346,7 +346,11 @@ Authorization: Bearer <token>
 GET /api/v1/recordings/:id/stream?token=<jwt>
 ```
 
-Supports HTTP `Range` requests for seeking. The `?token=` query parameter allows embedding in `<audio>` elements where Bearer headers cannot be set.
+Supports HTTP `Range` requests for seeking. Requires the `recordings.view` role set
+(SUPER_ADMIN, ADMIN, OPERATOR) and a recording in the caller's tenant (other tenants: 404).
+For `<audio>` elements, request a short-lived signed link with
+`GET /api/v1/recordings/:id/access?purpose=stream` and use `?sig=<sig>`; the `?token=<jwt>`
+form still works but is **deprecated** (it puts the session token in URLs).
 
 **Headers returned:**
 ```

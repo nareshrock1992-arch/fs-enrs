@@ -7,6 +7,7 @@ import {
   Library, Rocket, PhoneCall, Headphones, SlidersHorizontal
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
+import { visibleNav } from '../../auth/permissions.js';
 
 const NAV = [
   { label: 'Dashboard',  icon: LayoutDashboard, to: '/' },
@@ -25,7 +26,7 @@ const NAV = [
   {
     label: 'IVR Builder', icon: Workflow, children: [
       { label: 'IVR Flows',     to: '/ivr' },
-      { label: 'Media Library', to: '/media' },
+      { label: 'Media Library', to: '/media', capability: 'media.view' },
       { label: 'Deployment',    to: '/deployment' },
     ]
   },
@@ -42,10 +43,10 @@ const NAV = [
 
   {
     label: 'Reports', icon: FileBarChart2, children: [
-      { label: 'ERS Reports',            to: '/reports/ers' },
-      { label: 'ENS Reports',            to: '/reports/ens' },
-      { label: 'Contact Usage',          to: '/reports/contact-usage' },
-      { label: 'Conference Recordings',  to: '/recordings' },
+      { label: 'ERS Reports',            to: '/reports/ers',           capability: 'reports.view' },
+      { label: 'ENS Reports',            to: '/reports/ens',           capability: 'reports.view' },
+      { label: 'Contact Usage',          to: '/reports/contact-usage', capability: 'reports.view' },
+      { label: 'Conference Recordings',  to: '/recordings',            capability: 'recordings.view' },
     ]
   },
 
@@ -113,11 +114,7 @@ function NavItem({ item, depth = 0 }) {
 export default function Sidebar({ collapsed, onToggle }) {
   const user = useAuthStore(s => s.user);
 
-  const visible = NAV.filter(n => {
-    if (n.superAdminOnly) return user?.role === 'SUPER_ADMIN';
-    if (n.adminOnly) return user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
-    return true;
-  });
+  const visible = visibleNav(NAV, user);
 
   return (
     <aside className={`

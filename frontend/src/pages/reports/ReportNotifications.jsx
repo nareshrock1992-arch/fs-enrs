@@ -6,7 +6,10 @@ import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
 
-const STATUSES = ['', 'PENDING', 'SENT', 'FAILED', 'CANCELLED'];
+import { csvLine, loadErrorMessage } from './reportState.js';
+
+// Exactly the values allowed by ens_notifications_status_check (there is no "SENT").
+const STATUSES = ['', 'PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'CANCELLED'];
 
 function fmt(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
 
@@ -14,17 +17,22 @@ export default function ReportNotifications() {
   const activeTenantId = useAuthStore(s => s.activeTenantId);
   const [rows,    setRows]    = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState(null);
   const [filters, setFilters] = useState({ status: '', from: '', to: '' });
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const q = {};
       if (filters.status) q.status = filters.status;
       if (filters.from)   q.from   = filters.from;
       if (filters.to)     q.to     = filters.to;
       setRows((await api.reports.notifications(q)).notifications || []);
-    } catch {} finally { setLoading(false); }
+    } catch (e) {
+      setRows([]);
+      setError(loadErrorMessage(e));
+    } finally { setLoading(false); }
   }
 
   useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -33,8 +41,8 @@ export default function ReportNotifications() {
 
   function exportCsv() {
     const h = ['ID', 'ENS Name', 'Status', 'Targets', 'Answered', 'Created At'];
-    const lines = [h.join(','), ...rows.map(r =>
-      [r.id, `"${r.ens_name || ''}"`, r.status, r.total_targets ?? '', r.total_answered ?? '', fmt(r.created_at)].join(',')
+    const lines = [csvLine(h), ...rows.map(r =>
+      csvLine([r.id, r.ens_name || '', r.status, r.total_targets ?? '', r.total_answered ?? '', fmt(r.created_at)])
     )];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -71,6 +79,8 @@ export default function ReportNotifications() {
 
       {loading ? (
         <p className="text-sm text-text-muted">Loading…</p>
+      ) : error ? (
+        <p className="text-sm text-red-500" role="alert">The report could not be loaded: {error}</p>
       ) : (
         <Table>
           <thead><tr>

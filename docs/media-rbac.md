@@ -73,7 +73,10 @@ ADMIN, **OPERATOR**) since they were created. Phase B deliberately leaves
 recordings **view** access unchanged. Decide whether supervisors should see
 recordings (and whether operators should keep seeing them) before changing it.
 
-Related, and also unchanged: recording **stream/download/waveform** accept any
-authenticated user in the tenant, through Bearer or legacy `?token=`. Only the
-new signed-link issuance enforces `recordings.view`. Aligning the stream routes
-with the view policy belongs to the same decision.
+**Resolved for byte access (feature/media-reporting-hardening, 2026-10-26):**
+recording **stream/download/waveform** now enforce `recordings.view` (`adminOrOp`)
+like the list and the signed-link issuance; media **access/stream/download/waveform**
+enforce `media.view`; `/uploads` is no longer public (auth + `media.view` + the
+file's media row must be in the caller's tenant or shared). A request without
+tenant context is 403. The SUPERVISOR-vs-OPERATOR question for recordings
+**viewing** remains open as described above. See `docs/MEDIA_REPORTING_MISSION.md`.

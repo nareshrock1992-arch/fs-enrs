@@ -2,7 +2,9 @@
 
 ## Overview
 
-fs-enrs provides two primary report categories: ERS incident reports and ENS broadcast reports. All reporting endpoints require the ADMIN or OPERATOR role. Reports reflect persisted historical data and are accurate regardless of live conference state.
+fs-enrs provides two primary report categories: ERS incident reports and ENS broadcast reports. All reporting endpoints require the SUPER_ADMIN, ADMIN or OPERATOR role (`adminOrOp`; SUPERVISOR and VIEWER get 403, and the sidebar hides Reports for them). Every query is scoped to the caller's tenant from the token; only SUPER_ADMIN may pass `?tenant_id=` (a malformed value is 400). Reports reflect persisted historical data and are accurate regardless of live conference state.
+
+
 
 ---
 
@@ -18,10 +20,10 @@ fs-enrs provides two primary report categories: ERS incident reports and ENS bro
 |---|---|---|
 | `page` | integer | Page number (1-based) |
 | `limit` | integer | Records per page |
-| `from` | ISO 8601 | Start of date range (inclusive) |
-| `to` | ISO 8601 | End of date range (inclusive) |
+| `from` | date `YYYY-MM-DD` | Start of date range (inclusive) |
+| `to` | date `YYYY-MM-DD` | End of date range (inclusive, whole day) |
 | `status` | string | Filter by incident status |
-| `org_id` | UUID | Filter by organization |
+| `org_id` | integer | Filter by organization |
 
 **Response fields per incident:**
 
@@ -31,16 +33,21 @@ fs-enrs provides two primary report categories: ERS incident reports and ENS bro
 | `conference_room` | `ers_incidents.conference_room` | FreeSWITCH conference room name |
 | `started_at` | `ers_incidents.started_at` | Incident start timestamp |
 | `ended_at` | `ers_incidents.ended_at` | Incident end timestamp (null if active) |
-| `status` | `ers_incidents.status` | ACTIVE / ENDED / ABANDONED |
+| `status` | `ers_incidents.status` | ACTIVE / COMPLETED / QUEUED / FAILED / CANCELLED |
 | `caller_number` | `ers_incidents.caller_number` | DNIS / initiating caller number |
 | `caller_name` | `ers_incidents.caller_name` | Caller display name |
 | `ers_configuration` | `ers_configurations.name` | ERS configuration name |
 | `organization` | `organizations.name` | Organization name |
 | `participant_count` | `ers_incident_participants` COUNT | Total participants (historical, persisted) |
 | `responder_count` | `ers_incident_responders` COUNT | Contacts rung via ring-all |
-| `answered_count` | `ers_incident_responders` | Responders with status JOINED or `join_time IS NOT NULL` |
+| `answered_count` | `ers_incident_responders` | Responders with status JOINED or REJOINED |
+| `no_answer_count` | `ers_incident_responders` | Responders with any status other than JOINED / REJOINED / OBSERVER — i.e. INVITED (still ringing or never answered) **and** MISSED. It is "not answered", not strictly "missed". |
 | `duration_seconds` | `ended_at - started_at` | Incident duration in seconds |
 | `recording_path` | `ers_incidents.recording_path` | Path to recording file (if enabled) |
+
+**`summary`** (whole filtered set, not just the current page — the UI summary line uses it):
+`{ total, active, completed, responders, responders_answered }`, where `responders` counts
+`ers_incident_responders` rows of all matching incidents and `responders_answered` those JOINED/REJOINED.
 
 ---
 
@@ -77,6 +84,17 @@ Sourced from `ers_incident_responders`. Contains the outcome for each contact th
 | `leave_time` | When the responder disconnected |
 | `rejoin_count` | Number of REJOIN flow uses |
 | `joined_via` | Channel or gateway used |
+| `group` | All responder groups of the contact, comma-separated (one row per responder — a contact in several groups is not repeated) |
+
+#### recording
+
+At most one row from `recordings`, same tenant only: matched by `incident_uuid`, else the exact
+`recording_path`, else the conference room **only within the incident's own time window**
+(conference rooms are reused across incidents, so an unbounded room match could return another
+incident's recording). The window ends at `ended_at`, else `cancelled_at`, else "now" only while
+the incident is ACTIVE, else 2 minutes after the start. Known limit: a recording that was only
+imported by the boot-time directory scan carries the scan time as `started_at`; unless its
+`incident_uuid` or exact `recording_path` is set, it is not matched by room.
 
 ---
 
@@ -100,10 +118,10 @@ Sourced from `ers_incident_responders`. Contains the outcome for each contact th
 |---|---|---|
 | `page` | integer | Page number (1-based) |
 | `limit` | integer | Records per page |
-| `from` | ISO 8601 | Start of date range (inclusive) |
-| `to` | ISO 8601 | End of date range (inclusive) |
+| `from` | date `YYYY-MM-DD` | Start of date range (inclusive) |
+| `to` | date `YYYY-MM-DD` | End of date range (inclusive, whole day) |
 | `status` | string | Filter by notification status |
-| `org_id` | UUID | Filter by organization |
+| `org_id` | integer | Filter by organization |
 
 **Response fields per notification:**
 
@@ -116,7 +134,7 @@ Sourced from `ers_incident_responders`. Contains the outcome for each contact th
 | `triggered_by` | `users.name` | User who initiated (if UI/API) |
 | `started_at` | `ens_notifications.started_at` | Notification start timestamp |
 | `completed_at` | `ens_notifications.completed_at` | Completion timestamp |
-| `status` | `ens_notifications.status` | PENDING / ACTIVE / COMPLETED / CANCELLED |
+| `status` | `ens_notifications.status` | PENDING / IN_PROGRESS / COMPLETED / FAILED / CANCELLED |
 | `total_targets` | campaign counter | Total contacts targeted |
 | `total_answered` | campaign counter | Contacts who answered |
 | `total_no_answer` | campaign counter | No-answer outcomes |
@@ -142,7 +160,24 @@ Sourced from `ens_notification_deliveries` or `ens_campaign_destinations`.
 | `attempt_number` | Which retry attempt this record represents |
 | `answered_at` | Timestamp of answer (null if not answered) |
 | `hangup_cause` | FreeSWITCH hangup cause string |
-| `first_name`, `last_name` | Joined from `emergency_contacts` |
+| `name` | From `emergency_contacts` with the same mobile number **in the notification's tenant** (first match); null otherwise |
+
+### ENS campaign report (what the "ENS Reports" page shows)
+
+**Endpoints:** `GET /reports/ens-campaigns` (list, same query rules) and `GET /reports/ens-campaigns/:id`.
+The campaign engine writes `ens_campaigns` / `ens_campaign_destinations`, not `ens_notifications`.
+The list carries **`summary`** over the whole filtered set:
+`{ total, running, completed, destinations, destinations_answered }` (sums of `total_destinations`
+and `answered_count`).
+
+Metric notes: `answered_count` counts destinations whose call was answered; `retried_count`
+counts destinations that needed at least one retry (not the number of retry calls).
+
+### ENS broadcasts (legacy)
+
+`GET /reports/ens-broadcasts?from=&to=` — `ens_notifications` with deliveries, plus the ERS
+playback-line access log (`audit_logs` action `ers_playback_attempt`). The access log is
+tenant-scoped through the ERS configuration named in each entry.
 
 ---
 
@@ -180,11 +215,9 @@ Returns per-destination delivery status for every contact in the campaign.
 
 | Endpoint | Description |
 |---|---|
-| `GET /reports/ers-incidents?from=&to=` | Time-range aggregate statistics for ERS incidents |
-| `GET /reports/ens-broadcasts?from=&to=` | Time-range aggregate statistics for ENS broadcasts |
-| `GET /reports/notifications` | Paginated list of all notifications |
-| `GET /reports/incidents` | Paginated list of all incidents |
-| `GET /reports/contact-usage` | Contact utilization across incidents and broadcasts |
+| `GET /reports/ens-broadcasts?from=&to=` | Latest 200 ENS notifications with deliveries + playback access log |
+| `GET /reports/notifications?from=&to=&status=&org_id=` | Latest 500 ENS notifications (legacy "Notification Report"; CSV export is RFC 4180-escaped and formula-safe) |
+| `GET /reports/contact-usage` | Contact utilization across incidents and broadcasts (max 500 rows) |
 
 ---
 
