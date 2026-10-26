@@ -702,6 +702,153 @@ export async function deleteMediaSafely(
   }
 }
 
+/**
+ * Restore a soft-deleted library record — the inverse of deleteMediaSafely, with the
+ * same per-filename session locks (so it cannot interleave with a delete, deploy, scan
+ * or reference writer of the same filename):
+ *   1. lock the record's filenames; TX: re-read the DELETED row FOR UPDATE
+ *   2. refuse if a LIVE record now owns the same filename (any tenant: the sound
+ *      directory is shared) → 'conflict'; nothing changes
+ *   3. deployed copy: if the deployed file is still in place (it was retained, e.g.
+ *      shared) keep it; else move the newest quarantined copy
+ *      `<sound>/.deleted/<id>_<ts>_<basename>` back; if none exists, restore the row
+ *      as NOT deployed (fs_path NULL) so the user can redeploy from the upload copy
+ *   4. un-delete the row + audit_logs 'media_restored'; COMMIT. A failed COMMIT moves
+ *      the file back into quarantine (best effort, logged).
+ * Only files inside the ENRS sound directory are ever moved.
+ *
+ * @returns { status: 'not_found'|'conflict'|'restored', record?, file? }
+ */
+export async function restoreMediaSafely(
+  { id, tenantId = null, userId = null, correlationId = null },
+  deps = {},
+) {
+  const {
+    connect       = () => dbPool.connect(),
+    fs            = defaultFs,
+    fsPathService = defaultFsPathService,
+  } = deps;
+
+  if (!/^\d+$/.test(String(id))) return { status: 'not_found' };
+  const scope = '($2::int IS NULL OR tenant_id = $2)';
+  const client = await connect();
+  const q = (sql, params) => client.query(sql, params);
+  const held = [];
+  let destroy = false;
+
+  try {
+    const { rows: [pre] } = await q(
+      `SELECT id, fs_path, path_or_uri FROM media_files WHERE id = $1 AND deleted_at IS NOT NULL AND ${scope}`,
+      [id, tenantId],
+    );
+    if (!pre) return { status: 'not_found' };
+    const keys = mediaLockKeys(mediaReferenceKeys(pre));
+
+    await q(`SET lock_timeout = '${MEDIA_LOCK_TIMEOUT}'`);
+    for (const key of keys) {
+      await q('SELECT pg_advisory_lock($1, hashtext($2))', [MEDIA_LOCK_NS, key]);
+      held.push(key);
+    }
+
+    let moved = null;                      // { from, to } once the quarantined copy is back
+    await q('BEGIN');
+    try {
+      const { rows: [record] } = await q(
+        `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NOT NULL AND ${scope} FOR UPDATE`,
+        [id, tenantId],
+      );
+      if (!record) { await q('ROLLBACK'); return { status: 'not_found' }; }
+
+      // 2. A live record with the same filename (same normalisation as the guards).
+      const base = (col) => `lower(regexp_replace(translate(coalesce(${col}, ''), '\\', '/'), '^.*/', ''))`;
+      const { rows: clash } = await q(
+        `SELECT id, tenant_id FROM media_files
+          WHERE deleted_at IS NULL AND id <> $1
+            AND (${base('fs_path')} = ANY($2::text[]) OR ${base('path_or_uri')} = ANY($2::text[]))
+          LIMIT 1`,
+        [record.id, keys],
+      );
+      if (clash.length) {
+        await q('ROLLBACK');
+        const own = tenantId == null || Number(clash[0].tenant_id) === Number(tenantId);
+        return { status: 'conflict', record, conflictId: own ? clash[0].id : null };
+      }
+
+      // 3. Deployed copy.
+      let file = { action: 'none', reason: 'not_deployed' };
+      let keepDeployed = !!record.fs_path;
+      if (record.fs_path) {
+        const soundDir = path.posix.resolve(fsPathService.getEnrsSoundDir());
+        const target = path.posix.resolve(record.fs_path);
+        const present = await fs.stat(target).then((s) => s.isFile(), () => false);
+        if (present) {
+          file = { action: 'kept', reason: 'deployed_copy_present' };
+        } else if (path.posix.dirname(target) !== soundDir) {
+          file = { action: 'none', reason: 'outside_media_dir' };
+          keepDeployed = false;
+        } else {
+          const qdir = path.posix.join(soundDir, QUARANTINE_DIRNAME);
+          const leaf = path.posix.basename(target);
+          const prefix = `${record.id}_`;
+          const names = await fs.readdir(qdir).catch(() => []);
+          const candidates = names
+            .filter((n) => n.startsWith(prefix) && n.endsWith(`_${leaf}`)
+              && /^\d+$/.test(n.slice(prefix.length, n.length - leaf.length - 1)))
+            .sort((a, b) => Number(b.slice(prefix.length).split('_')[0]) - Number(a.slice(prefix.length).split('_')[0]));
+          if (candidates.length) {
+            const from = path.posix.join(qdir, candidates[0]);
+            await fs.rename(from, target);
+            moved = { from, to: target };
+            file = { action: 'restored', from };
+          } else {
+            file = { action: 'none', reason: 'quarantine_missing' };
+            keepDeployed = false;
+          }
+        }
+      }
+
+      // 4. Un-delete (+ not deployed when no deployed copy could be restored) and audit.
+      const { rows: [restored] } = await q(
+        `UPDATE media_files SET deleted_at = NULL,
+           fs_path     = CASE WHEN $2 THEN fs_path ELSE NULL END,
+           is_deployed = CASE WHEN $2 THEN is_deployed ELSE false END,
+           updated_at  = now()
+         WHERE id = $1 RETURNING *`,
+        [record.id, keepDeployed],
+      );
+      await q(
+        `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+         VALUES ($1, 'media_restored', 'media_file', $2, $3)`,
+        [userId, String(record.id), JSON.stringify({ tenant_id: record.tenant_id, file_action: file.action, reason: file.reason ?? null })],
+      );
+      await q('COMMIT');
+      moved = null;
+      log.info('media.restored', { correlationId, mediaId: record.id, fileAction: file.action, reason: file.reason ?? null });
+      return { status: 'restored', record: restored, file };
+    } catch (err) {
+      await q('ROLLBACK').catch(() => { destroy = true; });
+      if (moved) {
+        await fs.rename(moved.to, moved.from).catch((e) =>
+          log.error('media.restore_rollback_file_failed', { mediaId: id, error: e.message }));
+      }
+      throw err;
+    }
+  } catch (err) {
+    if (err?.code === '55P03') throw new MediaLockError('MEDIA_BUSY', err);
+    throw err;
+  } finally {
+    for (const key of held.reverse()) {
+      try {
+        const { rows: [r] } = await q('SELECT pg_advisory_unlock($1, hashtext($2)) AS ok', [MEDIA_LOCK_NS, key]);
+        if (!r?.ok) destroy = true;
+      } catch { destroy = true; }
+    }
+    try { await q('RESET lock_timeout'); } catch { destroy = true; }
+    if (destroy) log.warn('media.lock_release_failed', { mediaId: id, keys: held.length });
+    client.release(destroy ? true : undefined);
+  }
+}
+
 /** Lock contention or a concurrent filename change — retryable, nothing deleted. */
 export class MediaLockError extends DependencyCheckError {
   constructor(code, cause) {

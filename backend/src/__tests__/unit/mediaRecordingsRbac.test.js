@@ -35,7 +35,7 @@ vi.mock('../../middleware/mediaAccess.js', () => ({
 vi.mock('../../controllers/mediaLibraryController.js', () => ({
   listMedia: stub, listCategories: stub, uploadMedia: stub, scanMedia: stub, getMedia: stub,
   updateMedia: stub, deployMedia: stub, streamMedia: stub, downloadMedia: stub, getWaveform: stub,
-  deleteMedia: stub, getMediaReferences: stub, uploadMiddleware: (req, res, next) => next(),
+  deleteMedia: stub, getMediaReferences: stub, listTrash: stub, restoreMedia: stub, uploadMiddleware: (req, res, next) => next(),
 }));
 vi.mock('../../controllers/recordingController.js', () => ({
   listRecordings: stub, getRecording: stub, streamRecording: stub, downloadRecording: stub,
@@ -63,6 +63,8 @@ const MATRIX = [
   ['put',    '/media-library/7',           ADMIN],
   ['post',   '/media-library/7/deploy',    ADMIN],
   ['delete', '/media-library/7',           ADMIN],
+  ['post',   '/media-library/7/restore',   ADMIN],
+  ['get',    '/media-library/trash',       ADMIN],
   ['get',    '/recordings',                REC_VIEW],
   ['get',    '/recordings/7',              REC_VIEW],
   ['put',    '/recordings/7',              REC_VIEW],

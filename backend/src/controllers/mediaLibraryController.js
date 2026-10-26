@@ -26,7 +26,7 @@ import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 import { contentDisposition, sendFileWithRange } from '../utils/mediaHttp.js';
 import {
-  deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody, findMediaReferences,
+  deleteMediaSafely, restoreMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody, findMediaReferences,
   deployMediaLocked, importScannedFileLocked, mediaGuardErrorResponse,
 } from '../services/mediaDependencyService.js';
 
@@ -862,5 +862,73 @@ export const deleteMedia = asyncHandler(async (req, res) => {
   if (result.status === 'blocked')   return res.status(409).json(blockedDeleteBody(result));
 
   emitMediaEvent('media.deleted', { id: result.record.id }, result.record.tenant_id);
+  // Audit trail for trash/restore (best effort: the delete itself has committed).
+  try {
+    await query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'media_deleted', 'media_file', $2, $3)`,
+      [req.user?.id ?? null, String(result.record.id),
+       JSON.stringify({ tenant_id: result.record.tenant_id, name: result.record.name, file_action: result.file?.action ?? null })]
+    );
+  } catch (err) {
+    console.warn('[media] audit media_deleted failed:', err.message);
+  }
   res.status(204).end();
+});
+
+// ── Trash (soft-deleted media) and restore ────────────────────────────────────
+
+// GET /media-library/trash — newest first, own tenant (SUPER_ADMIN: all / ?tenant_id=).
+// `restorable_copy` tells the UI whether a restore will bring the deployed file back
+// ('quarantine') or only the record (redeploy needed).
+export const listTrash = asyncHandler(async (req, res) => {
+  const tenantId = effectiveTenantId(req);
+  const { rows } = await query(
+    `SELECT m.id, m.name, m.category, m.tenant_id, m.deleted_at, m.size_bytes, m.duration_sec,
+            (m.fs_path IS NOT NULL) AS was_deployed,
+            a.user_email AS deleted_by_email
+       FROM media_files m
+       LEFT JOIN LATERAL (
+         SELECT u.email AS user_email FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id
+          WHERE al.action = 'media_deleted' AND al.entity_type = 'media_file' AND al.entity_id = m.id::text
+          ORDER BY al.created_at DESC LIMIT 1
+       ) a ON true
+      WHERE m.deleted_at IS NOT NULL
+        AND ($1::int IS NULL OR m.tenant_id = $1)
+      ORDER BY m.deleted_at DESC, m.id DESC
+      LIMIT 200`,
+    [tenantId]
+  );
+  res.set('Cache-Control', 'no-store');
+  res.json({ files: rows });
+});
+
+// POST /media-library/:id/restore
+export const restoreMedia = asyncHandler(async (req, res) => {
+  let result;
+  try {
+    result = await restoreMediaSafely({
+      id:            req.params.id,
+      tenantId:      effectiveTenantId(req),
+      userId:        req.user?.id ?? null,
+      correlationId: req.headers['x-request-id'] ?? null,
+    });
+  } catch (err) {
+    if (err instanceof DependencyCheckError) return res.status(503).json(dependencyFailureBody(err));
+    throw err;
+  }
+  if (result.status === 'not_found') return res.status(404).json({ error: 'Not found' });
+  if (result.status === 'conflict') {
+    return res.status(409).json({
+      error:   'MEDIA_RESTORE_CONFLICT',
+      message: 'A live media file already uses this filename. Nothing was restored.',
+      ...(result.conflictId ? { conflict_id: result.conflictId } : {}),
+    });
+  }
+  emitMediaEvent('media.restored', { file: publicFile(result.record) }, result.record.tenant_id);
+  res.json({
+    file: result.record,
+    deployed_copy: result.file.action,                 // restored | kept | none
+    needs_redeploy: result.file.action === 'none' && result.file.reason !== 'not_deployed',
+  });
 });
