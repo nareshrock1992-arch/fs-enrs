@@ -832,7 +832,7 @@ export const downloadMediaZip = asyncHandler(async (req, res) => {
     let found = null;
     for (const p of [r.fs_path, r.path_or_uri].filter(Boolean)) {
       const resolved = path.isAbsolute(p) ? p : path.resolve(p);
-      try { const st = await fs.stat(resolved); if (st.isFile()) { found = { path: resolved, size: st.size }; break; } } catch {}
+      try { const st = await fs.stat(resolved); if (st.isFile()) { found = { path: resolved, size: st.size }; break; } } catch { /* try the next candidate */ }
     }
     if (!found) return res.status(404).json({ error: 'One or more files were not found' });
     total += found.size;

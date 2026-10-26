@@ -82,11 +82,11 @@ WSL test checkout `/opt/freeswitch-ui/fs-enrs`: on `media-safety-remediation@7b4
   - Note: `errorHandler` logs every error incl. 4xx as "UNHANDLED ERROR" (pre-existing, unchanged) — the
     4 blocks in the e2e log are R-7's deliberate 400s.
 - [x] Phase 4 — PASS. ZIP DONE: `POST /media-library/download-zip {ids}` (media.view, all-or-nothing tenant 404, ≤50 files / ≤200 MB, store-only `utils/zipStore.js` with bundled CRC-32 — no new dependency, Node 20.0-compatible; verified by Python zipfile in e2e F-26/S-25). The existing UI bulk download is unchanged (still per-file); switching it to the ZIP endpoint is a UI change → needs approval. Undeploy: design only, `docs/MEDIA_UNDEPLOY_DESIGN.md` (no live undeploy). Trash/restore/audit DONE: `GET /media-library/trash` + `POST /:id/restore` (admin, tenant 404, per-filename locks, newest `.deleted/<id>_<ts>_<leaf>` copy moved back, else restored as not deployed; live-filename conflict 409; audit_logs media_deleted/media_restored; tests mediaRestore 8 + e2e F-22…F-25/S-24). Where-used DONE: `GET /media-library/:id/references` (media.view, tenant 404, other-tenant refs only counted, scan failure 503); e2e F-21/S-23.
-- [ ] Phase 5 — regression baseline. Lockfile part DONE: `backend/package-lock.json` +46/−0 (fengari
+- [x] Phase 5 — PASS. Regression: full backend (unit+lua) on unmodified base `7b40b59` (disposable clone, repaired lockfile only) = 1546 tests / 24 failing; release = 1642 / 24 failing, IDENTICAL failing-test names. Frontend 233 → 249, all pass; build OK. Lint on changed files: no new errors (2 introduced and fixed); +1 warning per report page = known JSX false positive (`react/jsx-uses-vars` off). Lockfile DONE: `backend/package-lock.json` +46/−0 (fengari
       0.1.5, fengari-interop 0.1.4, readline-sync 1.4.10, sprintf-js 1.1.3, tmp 0.2.7 — declared in
       package.json since 6327a96 but missing from the lock); clean `npm ci` exit 0, lock unchanged after.
-- [ ] Phase 6 — commit/push feature branch; server pull gated (live DEV).
-- [ ] Phase 7 — DEV release package.
+- [x] Phase 6 — feature branch committed and pushed (`origin/feature/media-reporting-hardening`); `main` untouched. WSL test checkout NOT pulled: `/opt/freeswitch-ui/fs-enrs` is the live DEV runtime with local modifications (lockfile conflict) → operator steps in the release doc. Tested SHA: disposable clone `~/enrs-iso/fs-enrs` = branch head + overlay, isolated.
+- [x] Phase 7 — DEV release package: `docs/releases/DEV-media-reporting-hardening.md` (changes, read-only pre-checks, DEV checkout blocker + operator steps, smoke test, rollback, evidence, open items). Not deployed.
 
 ## Decisions taken (least privilege)
 - D1: tenant-less accounts may only log out. D2: malformed SUPER_ADMIN tenant_id → 400.

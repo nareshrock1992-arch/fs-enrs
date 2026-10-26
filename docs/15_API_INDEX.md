@@ -158,10 +158,14 @@ All endpoints across both API surfaces. `requireAuth` = JWT Bearer token. `inter
 | 150 | GET | `/media-library/:id` | Bearer | ADMIN/OP | `mediaLibraryController.get` |
 | 151 | PUT | `/media-library/:id` | Bearer | ADMIN | `mediaLibraryController.update` |
 | 152 | POST | `/media-library/:id/deploy` | Bearer | ADMIN | `mediaLibraryController.deploy` |
-| 153 | GET | `/media-library/:id/stream` | Bearer/Token | any | `mediaLibraryController.stream` |
-| 154 | GET | `/media-library/:id/download` | Bearer/Token | any | `mediaLibraryController.download` |
-| 155 | GET | `/media-library/:id/waveform` | Bearer/Token | any | `mediaLibraryController.waveform` |
+| 153 | GET | `/media-library/:id/stream` | Sig/Bearer/Token | media.view | `mediaLibraryController.stream` |
+| 154 | GET | `/media-library/:id/download` | Sig/Bearer/Token | media.view | `mediaLibraryController.download` |
+| 155 | GET | `/media-library/:id/waveform` | Bearer/Token | media.view | `mediaLibraryController.waveform` |
 | 156 | DELETE | `/media-library/:id` | Bearer | ADMIN | `mediaLibraryController.delete` |
+| 156a | GET | `/media-library/:id/references` | Bearer | media.view | `mediaLibraryController.getMediaReferences` (read-only where-used) |
+| 156b | GET | `/media-library/trash` | Bearer | ADMIN | `mediaLibraryController.listTrash` |
+| 156c | POST | `/media-library/:id/restore` | Bearer | ADMIN | `mediaLibraryController.restoreMedia` |
+| 156d | POST | `/media-library/download-zip` | Bearer | media.view | `mediaLibraryController.downloadMediaZip` (≤50 files / 200 MB) |
 | 157 | GET | `/recordings` | Bearer | canViewRec | `recordingController.list` |
 | 158 | GET | `/recordings/:id` | Bearer | canViewRec | `recordingController.get` |
 | 159 | PUT | `/recordings/:id` | Bearer | ADMIN/OP | `recordingController.update` |
@@ -216,7 +220,7 @@ All require `X-Internal-Key` header. Rate limit: 500 req/min.
 |---|---|---|---|
 | GET | `/api/health` | None | Health check |
 | GET/POST | `/socket.io/*` | JWT (socket auth) | Socket.IO transport |
-| GET | `/uploads/*` | None | Static file serving |
+| GET | `/uploads/*` | Bearer/Token + media.view | Uploaded audio of the caller's tenant (or shared) only; unknown/other tenant/traversal → 404 (was public static serving) |
 
 ---
 

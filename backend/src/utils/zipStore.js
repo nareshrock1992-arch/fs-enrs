@@ -99,6 +99,7 @@ export function uniqueEntryNames(items) {
   const used = new Set();
   return items.map(({ name, ext }) => {
     let base = String(name || 'audio')
+      // eslint-disable-next-line no-control-regex -- stripping control characters is the point
       .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]/g, '_')
       .replace(/^[.\s]+/, '')
       .trim()
