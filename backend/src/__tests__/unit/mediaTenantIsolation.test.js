@@ -60,6 +60,7 @@ vi.mock('../../db/pool.js', () => ({
       if (p[2]) row.name = p[2];
       return { rows: [row] };
     }
+    if (/id = ANY\(\$1::int\[\]\)/.test(s)) return { rows: MEDIA.filter(m => p[0].includes(m.id) && inScope(m, TENANT2.test(s) ? p[1] : null)) };
     if (/^UPDATE media_files/.test(s.trim())) return { rows: [], rowCount: 1 };
     if (/FROM media_files/.test(s) && /\bid = \$1/.test(s)) return { rows: MEDIA.filter(m => m.id === Number(p[0]) && inScope(m, TENANT2.test(s) ? p[1] : null)) };
     if (/FROM recordings/.test(s) && /\bid = \$1/.test(s)) return { rows: RECS.filter(r => r.id === Number(p[0]) && inScope(r, TENANT2.test(s) ? p[1] : null)) };
@@ -146,6 +147,27 @@ describe('media library — tenant A can never touch tenant B media (all 404, no
     const own = await request(app).get('/media-library/11/references').set(as(OP10));
     expect(own.status).toBe(503);
     expect(own.body.in_use).toBeUndefined();
+  });
+  it('ZIP download: own files only, all-or-nothing 404 across tenants, VIEWER 403, caps and validation', async () => {
+    const own = await request(app).post('/media-library/download-zip').set(as(OP10)).send({ ids: [11] })
+      .buffer(true).parse((res, cb) => { const c = []; res.on('data', d => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
+    expect(own.status).toBe(200);
+    expect(own.headers['content-type']).toBe('application/zip');
+    expect(own.headers['cache-control']).toBe('private, no-store');
+    expect(own.body.readUInt32LE(0)).toBe(0x04034b50);
+    expect(own.body.includes(Buffer.from('bytes-of-111_t10.wav'))).toBe(true);
+    // one foreign id poisons the whole request and nothing reveals which
+    const mixed = await request(app).post('/media-library/download-zip').set(as(A10)).send({ ids: [11, 21] });
+    expect(mixed.status).toBe(404);
+    expect(mixed.body).toEqual({ error: 'One or more files were not found' });
+    expect((await request(app).post('/media-library/download-zip').set(as(VIEW10)).send({ ids: [11] })).status).toBe(403);
+    expect((await request(app).post('/media-library/download-zip').send({ ids: [11] })).status).toBe(401);
+    for (const body of [{}, { ids: [] }, { ids: ['x'] }, { ids: [0] }, { ids: '11' }]) {
+      expect((await request(app).post('/media-library/download-zip').set(as(A10)).send(body)).status).toBe(400);
+    }
+    const many = Array.from({ length: 51 }, (_, i) => i + 1);
+    expect((await request(app).post('/media-library/download-zip').set(as(A10)).send({ ids: many })).status).toBe(413);
+    expect((await request(app).post('/media-library/download-zip').set(as(SA)).send({ ids: [11, 21] })).status).toBe(200);
   });
   it('a forged ?tenant_id cannot widen a tenant user\'s scope', async () => {
     expect((await request(app).get('/media-library/21?tenant_id=20').set(as(A10))).status).toBe(404);

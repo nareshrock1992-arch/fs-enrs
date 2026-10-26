@@ -25,6 +25,7 @@ import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantSc
 import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
 import { contentDisposition, sendFileWithRange } from '../utils/mediaHttp.js';
+import { buildStoredZip, uniqueEntryNames } from '../utils/zipStore.js';
 import {
   deleteMediaSafely, restoreMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody, findMediaReferences,
   deployMediaLocked, importScannedFileLocked, mediaGuardErrorResponse,
@@ -793,6 +794,68 @@ export const downloadMedia = asyncHandler(async (req, res) => {
     mime: MIME_MAP[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
     disposition: contentDisposition('attachment', record.name),
   });
+});
+
+// ── Download several files as one ZIP ─────────────────────────────────────────
+// POST /media-library/download-zip  { ids: [1, 2, …] }
+// Store-only ZIP built in memory (utils/zipStore.js, no dependency), so it is capped:
+// at most ZIP_MAX_FILES files and ZIP_MAX_BYTES in total. Every id must be a live file
+// of the caller's tenant (SUPER_ADMIN: any) — otherwise 404 without saying which.
+export const ZIP_MAX_FILES = 50;
+export const ZIP_MAX_BYTES = 200 * 1024 * 1024;
+
+export const downloadMediaZip = asyncHandler(async (req, res) => {
+  const raw = Array.isArray(req.body?.ids) ? req.body.ids : null;
+  if (!raw || raw.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+  if (!raw.every(v => /^\d+$/.test(String(v)) && Number(v) >= 1 && Number(v) <= 2147483647)) {
+    return res.status(400).json({ error: 'ids must be positive integers' });
+  }
+  const ids = [...new Set(raw.map(Number))];
+  if (ids.length > ZIP_MAX_FILES) {
+    return res.status(413).json({ error: `At most ${ZIP_MAX_FILES} files per ZIP`, max_files: ZIP_MAX_FILES });
+  }
+  const tenantId = effectiveTenantId(req);
+  const { rows } = await query(
+    `SELECT id, name, fs_path, path_or_uri, updated_at FROM media_files
+      WHERE id = ANY($1::int[]) AND deleted_at IS NULL
+        AND ($2::int IS NULL OR tenant_id = $2)`,
+    [ids, tenantId]
+  );
+  if (rows.length !== ids.length) return res.status(404).json({ error: 'One or more files were not found' });
+
+  // Resolve every file first (same candidates as the single download) and enforce the cap.
+  const order = new Map(ids.map((id, i) => [id, i]));
+  rows.sort((a, b) => order.get(a.id) - order.get(b.id));
+  const files = [];
+  let total = 0;
+  for (const r of rows) {
+    let found = null;
+    for (const p of [r.fs_path, r.path_or_uri].filter(Boolean)) {
+      const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+      try { const st = await fs.stat(resolved); if (st.isFile()) { found = { path: resolved, size: st.size }; break; } } catch {}
+    }
+    if (!found) return res.status(404).json({ error: 'One or more files were not found' });
+    total += found.size;
+    if (total > ZIP_MAX_BYTES) {
+      return res.status(413).json({ error: `Selection exceeds ${Math.round(ZIP_MAX_BYTES / 1048576)} MB — download fewer files`, max_bytes: ZIP_MAX_BYTES });
+    }
+    files.push({ record: r, ...found });
+  }
+
+  const names = uniqueEntryNames(files.map(f => ({ name: f.record.name, ext: path.extname(f.path) })));
+  const entries = [];
+  for (let i = 0; i < files.length; i++) {
+    entries.push({ name: names[i], data: await fs.readFile(files[i].path), mtime: files[i].record.updated_at ? new Date(files[i].record.updated_at) : undefined });
+  }
+  const zip = buildStoredZip(entries);
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.set({
+    'Content-Type':        'application/zip',
+    'Content-Length':      String(zip.length),
+    'Content-Disposition': contentDisposition('attachment', `media-${stamp}.zip`),
+    'Cache-Control':       'private, no-store',
+  });
+  res.end(zip);
 });
 
 // ── Waveform peaks ────────────────────────────────────────────────────────────

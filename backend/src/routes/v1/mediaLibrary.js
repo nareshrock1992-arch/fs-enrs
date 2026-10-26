@@ -10,7 +10,7 @@ import { requireMediaAccess, issueMediaAccess } from '../../middleware/mediaAcce
 import {
   listMedia, listCategories, uploadMedia, uploadMiddleware,
   scanMedia, getMedia, updateMedia, deployMedia,
-  streamMedia, downloadMedia, getWaveform, deleteMedia, getMediaReferences, listTrash, restoreMedia,
+  streamMedia, downloadMedia, getWaveform, deleteMedia, getMediaReferences, listTrash, restoreMedia, downloadMediaZip,
 } from '../../controllers/mediaLibraryController.js';
 
 const router = Router();
@@ -32,6 +32,7 @@ router.get('/',                   requireAuth, canViewMedia, listMedia);
 router.get('/trash',              requireAuth, adminOnly, listTrash);              // soft-deleted, own tenant
 router.get('/:id/references',     requireAuth, canViewMedia, getMediaReferences);   // read-only "where used"
 router.get('/:id',                requireAuth, canViewMedia, getMedia);
+router.post('/download-zip',      requireAuth, canViewMedia, downloadMediaZip);   // several files, one ZIP
 router.post('/scan',              requireAuth, adminOnly, scanMedia);
 router.post('/upload',            requireAuth, adminOrSuper, uploadMiddleware, uploadMedia);
 router.put('/:id',                requireAuth, adminOnly, updateMedia);
