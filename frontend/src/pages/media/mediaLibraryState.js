@@ -79,6 +79,19 @@ export function hasActiveFilters(state) {
   return Boolean((state.search || '').trim() || state.category || state.deployed);
 }
 
+/**
+ * One removable chip per active filter, for the active-filter bar.
+ * `key` is the list-state field the chip clears.
+ */
+export function activeFilterChips(state, catLabels = {}) {
+  const chips = [];
+  const search = (state.search || '').trim();
+  if (search) chips.push({ key: 'search', label: 'Search', value: `“${search}”` });
+  if (state.category) chips.push({ key: 'category', label: 'Category', value: catLabels[state.category] || state.category });
+  if (state.deployed) chips.push({ key: 'deployed', label: 'Status', value: state.deployed === 'true' ? 'Deployed' : 'Pending' });
+  return chips;
+}
+
 /** Clear search + filters only; keep sort order and page size. */
 export function clearFilters(state) {
   return applyListChange(state, { search: '', category: '', deployed: '' });

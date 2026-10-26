@@ -6,9 +6,9 @@ export function Table({ children, className = '' }) {
   );
 }
 
-export function Th({ children, className = '' }) {
+export function Th({ children, className = '', ...rest }) {
   return (
-    <th className={`table-head ${className}`}>{children}</th>
+    <th className={`table-head ${className}`} {...rest}>{children}</th>
   );
 }
 

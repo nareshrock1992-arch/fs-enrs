@@ -124,11 +124,13 @@ describe('detail panel stays in step with reloaded rows', () => {
     expect(refreshDetail(d, [{ id: 3 }])).toBe(d);
     expect(refreshDetail(null, [{ id: 7 }])).toBeNull();
   });
-  it('[source check] load() refreshes the detail; uploads return to page 1; off-page deletes just reload', () => {
+  it('[source check] load() refreshes the detail + selection; uploads return to page 1; off-page deletes just reload', () => {
     expect(PAGE).toMatch(/setDetail\(d => refreshDetail\(d, res\.files\)\)/);
+    expect(PAGE).toMatch(/setSelected\(s => refreshSelection\(s, res\.files\)\)/);
     expect(PAGE).toMatch(/onSuccess=\{handleUploaded\}/);
-    expect(PAGE).toMatch(/const onPage = files\.some\(f => f\.id === file\.id\)/);
-    expect(PAGE).toMatch(/Totals below are for the current search and filters/);
+    // only rows deleted FROM THIS PAGE move the page; others just reload
+    expect(PAGE).toMatch(/const onPage = s\.done\.filter\(f => files\.some\(r => r\.id === f\.id\)\)\.length/);
+    expect(PAGE).toMatch(/totals above reflect these filters/);
   });
 });
 
@@ -203,15 +205,48 @@ describe('table, pagination and permissions [source checks]', () => {
     expect(PAGE).not.toMatch(/limit: 200,/);                     // old "load 200 rows" approach
   });
   it('the table never renders internal server paths', () => {
-    const table = PAGE.slice(PAGE.indexOf('<Table>'), PAGE.indexOf('</Table>'));
-    expect(table).not.toMatch(/fs_path|path_or_uri/);
+    const start = PAGE.indexOf('<Table'), end = PAGE.indexOf('</Table>');
+    expect(start).toBeGreaterThan(-1);                           // guard: never compare an empty slice
+    expect(end).toBeGreaterThan(start);
+    expect(PAGE.slice(start, end)).not.toMatch(/fs_path|path_or_uri/);
+    // the detail drawer shows only the deployed file NAME, never the server path
+    expect(PAGE).toMatch(/leafName\(file\.fs_path\)/);
+    expect(PAGE).not.toMatch(/\{file\.fs_path\}/);
   });
   it('row actions keep their permission gates (scan/deploy/delete → media.manage, upload → media.upload)', () => {
     expect(PAGE).toMatch(/const canUpload = can\(user, 'media\.upload'\)/);
     expect(PAGE).toMatch(/const canEdit {3}= can\(user, 'media\.manage'\)/);
     expect(PAGE).toMatch(/\{canEdit && !f\.is_deployed && \(/);
-    expect(PAGE).toMatch(/\{canEdit && \(\s*<button type="button"\s*onClick=\{e => \{ e\.stopPropagation\(\); handleDelete\(f\)/);
+    expect(PAGE).toMatch(/\{canEdit && \(\s*<button type="button"\s*onClick=\{e => \{ e\.stopPropagation\(\); setConfirm\(\{ kind: 'delete', files: \[f\] \}\)/);
     expect(PAGE).toMatch(/\{canUpload && \(\s*<button onClick=\{\(\) => setShowUpload\(true\)\} className="btn-primary"/);
+    // bulk actions: write actions only for media.manage; download for any viewer
+    expect(PAGE).toMatch(/const actions = bulkActions\(sel, \{ canEdit \}\)/);
+    expect(PAGE).toMatch(/\{actions\.deploy\.allowed && \(/);
+    expect(PAGE).toMatch(/\{actions\.category\.allowed && \(/);
+    expect(PAGE).toMatch(/\{actions\.delete\.allowed && \(/);
+    // editing in the detail drawer is gated too
+    expect(PAGE).toMatch(/\{canEdit && !editing && \(/);
+  });
+  it('delete always goes through a confirmation, and in-use files are reported (no alert/confirm popups)', () => {
+    expect(PAGE).not.toMatch(/window\.confirm\(/);
+    expect(PAGE).not.toMatch(/\balert\(/);
+    expect(PAGE).toMatch(/<ConfirmDialog/);
+    expect(PAGE).toMatch(/describeDependency\(d\)/);
+  });
+  it('player is docked (not a full-screen modal) and rows toggle it', () => {
+    expect(PAGE).toMatch(/const DockedPlayer = forwardRef/);
+    expect(PAGE).toMatch(/role="region" aria-label="Audio player"/);
+    expect(PAGE).toMatch(/className="sticky bottom-0/);
+    expect(PAGE).toMatch(/playerRef\.current\?\.toggle\(\)/);
+    expect(PAGE).toMatch(/aria-label="Seek"/);
+  });
+  it('sortable headers expose aria-sort; select-all checkbox is tri-state', () => {
+    expect(PAGE).toMatch(/aria-sort=\{active \?/);
+    expect(PAGE).toMatch(/el\.indeterminate = pageSel === 'some'/);
+  });
+  it('upload accepts multiple files with per-file status', () => {
+    expect(PAGE).toMatch(/type="file" multiple/);
+    expect(PAGE).toMatch(/aria-label="Files to upload"/);
   });
   it('Pagination: hidden for 0/1 page, labelled controls, current page marked', () => {
     expect(PAGER).toMatch(/if \(!totalPages \|\| totalPages <= 1\) return null/);
