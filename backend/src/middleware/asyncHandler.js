@@ -39,7 +39,12 @@ const PG_CODE_NAMES = {
 
 function logError(err, req) {
   const method = req?.method  || 'UNKNOWN';
-  const url    = req?.originalUrl || req?.url || 'UNKNOWN';
+  // Never write credentials carried in the query string (legacy ?token=, signed ?sig=) to logs —
+  // also when the parameter NAME is percent-encoded (e.g. ?%74oken=), which Express still decodes.
+  const rawUrl = String(req?.originalUrl || req?.url || 'UNKNOWN');
+  let decodedUrl = rawUrl;
+  try { decodedUrl = decodeURIComponent(rawUrl); } catch { /* keep raw */ }
+  const url = decodedUrl.replace(/([?&](?:token|sig)=)[^&#]*/gi, '$1<redacted>');
   const isDb   = !!(err.code && /^\d{5}$/.test(String(err.code)));
 
   const lines = [
@@ -64,7 +69,9 @@ function logError(err, req) {
     lines.push(`║  SQL       : ${sqlPreview.length > 400 ? sqlPreview.slice(0, 400) + '…' : sqlPreview}`);
   }
   if (err._params !== undefined) {
-    lines.push(`║  Params    : ${JSON.stringify(err._params ?? [])}`);
+    // password / refresh-token hashes (bcrypt "$2a$…") must not reach the logs
+    const safe = (err._params ?? []).map(v => (typeof v === 'string' && /^\$2[aby]\$/.test(v) ? '<redacted-hash>' : v));
+    lines.push(`║  Params    : ${JSON.stringify(safe)}`);
   }
 
   // Stack trace — show first 8 frames, skip node_modules

@@ -17,7 +17,7 @@ vi.mock('../../db/pool.js', () => ({
   }),
   withTransaction: vi.fn(), pool: { connect: vi.fn() },
 }));
-vi.mock('../../middleware/tenantScope.js', () => ({ effectiveTenantId: (req) => req.user?.tenantId ?? null }));
+// The REAL tenantScope is used: tenant scoping is part of what this file proves.
 
 const { listRecordings, buildRecordingFilter } = await import('../../controllers/recordingController.js');
 
@@ -58,6 +58,15 @@ describe('recordings list / total / summary consistency', () => {
     expect(buildRecordingFilter({ query: { tenant_id: '9' }, user: { role: 'ADMIN', tenantId: 3 } }).params).toEqual([3]);
     expect(buildRecordingFilter({ query: {}, user: { role: 'SUPER_ADMIN' } }).params).toEqual([]);
     expect(buildRecordingFilter({ query: { tenant_id: '9' }, user: { role: 'SUPER_ADMIN' } }).params).toEqual([9]);
+  });
+
+  it('fails closed: no tenant → 403, malformed SUPER_ADMIN tenant_id → 400 (never "all tenants")', () => {
+    for (const user of [{ role: 'ADMIN', tenantId: null }, { role: 'OPERATOR' }, { role: 'ADMIN', tenantId: '' }]) {
+      expect(() => buildRecordingFilter({ query: {}, user })).toThrow(expect.objectContaining({ status: 403 }));
+    }
+    for (const tenant_id of ['abc', '0', '-1', '1.5']) {
+      expect(() => buildRecordingFilter({ query: { tenant_id }, user: { role: 'SUPER_ADMIN' } })).toThrow(expect.objectContaining({ status: 400 }));
+    }
   });
 
   it('ignores empty filters and keeps parameters positional and in order', () => {

@@ -26,9 +26,11 @@ router.delete('/:id',             requireAuth, adminOnly, deleteRecording);
 
 // Stream/download accept a scoped, short-lived ?sig= (issued by GET /:id/access,
 // see middleware/mediaAccess.js), a Bearer header, or the deprecated ?token=.
+// The audio follows the same role rule as the list/detail (adminOrOp) for every
+// credential type, so a role that cannot open a recording cannot fetch its bytes.
 router.get('/:id/access',         requireAuth, adminOrOp, issueMediaAccess('recording'));
-router.get('/:id/stream',         requireMediaAccess('recording', 'stream'), streamRecording);
-router.get('/:id/download',       requireMediaAccess('recording', 'download'), downloadRecording);
-router.get('/:id/waveform',       requireAuthOrToken, getRecordingWaveform);
+router.get('/:id/stream',         requireMediaAccess('recording', 'stream'), adminOrOp, streamRecording);
+router.get('/:id/download',       requireMediaAccess('recording', 'download'), adminOrOp, downloadRecording);
+router.get('/:id/waveform',       requireAuthOrToken, adminOrOp, getRecordingWaveform);
 
 export default router;

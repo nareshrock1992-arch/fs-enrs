@@ -289,8 +289,14 @@ async function deployToFs(srcPath, filename) {
 let _io = null;
 export function setSocketIO(io) { _io = io; }
 
-function emitMediaEvent(event, data) {
-  if (_io) _io.emit(event, data);
+// Media events go only to the owning tenant's room and to SUPER_ADMINs — never a
+// global broadcast — and carry no server paths or uploader emails. (Not wired to
+// a socket server today: nothing calls setSocketIO, so these are no-ops.)
+const publicFile = (f) => (f ? { id: f.id, name: f.name, category: f.category, is_deployed: f.is_deployed, tenant_id: f.tenant_id ?? null } : null);
+export function emitMediaEvent(event, data, tenantId) {
+  if (!_io) return;
+  const target = tenantId ? _io.to(`tenant:${tenantId}`).to('role:SUPER_ADMIN') : _io.to('role:SUPER_ADMIN');
+  target.emit(event, data);
 }
 
 // ── List ──────────────────────────────────────────────────────────────────────
@@ -323,9 +329,9 @@ export function buildMediaFilter(req, { omit = [] } = {}) {
     params.push(value);
     clauses.push(sql.replace(/\$\?/g, `$${params.length}`));
   };
-  const tenant = req.user?.role === 'SUPER_ADMIN'
-    ? (q.tenant_id ? Number(q.tenant_id) : null)
-    : req.user?.tenantId;
+  // SUPER_ADMIN: all tenants, or one valid ?tenant_id (malformed → 400). Others: own
+  // tenant only; no valid tenant → 403 (never unscoped).
+  const tenant = effectiveTenantId(req);
   const deployed = qs(q.deployed);
   add('tenant',   tenant,         'm.tenant_id = $?::int');
   add('category', qs(q.category), 'm.category = $?::text');
@@ -434,11 +440,13 @@ export const uploadMedia = asyncHandler(async (req, res) => {
   // Step 1 — extract metadata before any DB work
   const meta = await extractAudioMetadata(srcPath);
 
-  // Step 2 — check for duplicate by checksum
+  // Step 2 — check for duplicate by checksum, within what this tenant can see (its own
+  // files + shared ones). Matching another tenant's file would reveal its name and id.
   if (meta.checksum) {
     const { rows: [dup] } = await query(
-      `SELECT id, name FROM media_files WHERE checksum = $1 AND deleted_at IS NULL LIMIT 1`,
-      [meta.checksum]
+      `SELECT id, name FROM media_files WHERE checksum = $1 AND deleted_at IS NULL
+         AND (tenant_id = $2 OR tenant_id IS NULL) LIMIT 1`,
+      [meta.checksum, uploadTenantId]
     );
     if (dup) {
       await fs.unlink(srcPath).catch(() => {});
@@ -512,7 +520,7 @@ export const uploadMedia = asyncHandler(async (req, res) => {
   );
 
   // Step 6 — WebSocket push so all open Media Library tabs update instantly
-  emitMediaEvent('media.uploaded', { file: fresh });
+  emitMediaEvent('media.uploaded', { file: publicFile(fresh) }, fresh?.tenant_id);
 
   const httpStatus = deployError ? 207 : 201;
   res.status(httpStatus).json({
@@ -609,7 +617,7 @@ export const scanMedia = asyncHandler(async (req, res) => {
   }
 
   if (imported.length > 0) {
-    emitMediaEvent('media.scanned', { imported: imported.length, files: imported });
+    emitMediaEvent('media.scanned', { imported: imported.length, files: imported.map(publicFile) }, req.user?.tenantId);
   }
 
   res.json({
@@ -656,7 +664,7 @@ export const updateMedia = asyncHandler(async (req, res) => {
      description ?? null, notes ?? null, tags ?? null]
   );
   if (!record) return res.status(404).json({ error: 'Not found' });
-  emitMediaEvent('media.updated', { file: record });
+  emitMediaEvent('media.updated', { file: publicFile(record) }, record?.tenant_id);
   res.json({ file: record });
 });
 
@@ -678,7 +686,7 @@ export const deployMedia = asyncHandler(async (req, res) => {
     const destPath = await deployMediaLocked(record, path.basename(srcPath),
       () => deployToFs(srcPath, path.basename(srcPath)));
     if (!destPath) return res.status(404).json({ error: 'Not found' });   // deleted meanwhile
-    emitMediaEvent('media.deployed', { id: record.id, fs_path: destPath });
+    emitMediaEvent('media.deployed', { id: record.id }, record.tenant_id);
     res.json({ ok: true, fs_path: destPath });
   } catch (err) {
     const mapped = mediaGuardErrorResponse(err);
@@ -818,6 +826,6 @@ export const deleteMedia = asyncHandler(async (req, res) => {
   if (result.status === 'not_found') return res.status(404).json({ error: 'Not found' });
   if (result.status === 'blocked')   return res.status(409).json(blockedDeleteBody(result));
 
-  emitMediaEvent('media.deleted', { id: result.record.id });
+  emitMediaEvent('media.deleted', { id: result.record.id }, result.record.tenant_id);
   res.status(204).end();
 });

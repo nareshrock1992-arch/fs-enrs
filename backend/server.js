@@ -40,6 +40,9 @@ import { internalAuth, internalRateLimit } from './src/middleware/internalAuth.j
 import healthRouter    from './src/infrastructure/health/router.js';
 import { validateEnvironment } from './src/infrastructure/config/validator.js';
 import { errorHandler } from './src/middleware/asyncHandler.js';
+import { requireAuthOrToken } from './src/middleware/auth.js';
+import { canViewMedia } from './src/middleware/rbac.js';
+import { serveUpload } from './src/middleware/uploadsAccess.js';
 import { checkNodeTypeApiEndpoints } from './src/nodeTypes/selfCheck.js';
 
 const app    = express();
@@ -71,8 +74,9 @@ app.use('/api', rateLimit({
   message: { error: 'Rate limit exceeded, slow down' },
 }));
 
-// ── Static uploads ────────────────────────────────────────────
-app.use('/uploads', express.static('./uploads'));
+// ── Uploaded media (authenticated + tenant-checked; was public express.static) ──
+// See src/middleware/uploadsAccess.js. Errors go to errorHandler (registered last).
+app.use('/uploads', requireAuthOrToken, canViewMedia, serveUpload);
 
 // ── Health / metrics (no auth) ────────────────────────────────────────────
 // Legacy probe — retained for backwards compatibility.

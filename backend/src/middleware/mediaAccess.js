@@ -19,7 +19,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/index.js';
 import { query } from '../db/pool.js';
-import { effectiveTenantId } from './tenantScope.js';
+import { effectiveTenantId, hasTenantContext, TENANT_CONTEXT_REQUIRED } from './tenantScope.js';
 import { requireAuthOrToken } from './auth.js';
 
 export const MEDIA_ACCESS_TTL_SEC = 3600;          // long enough to seek through a long recording
@@ -61,6 +61,9 @@ export function requireMediaAccess(resource, purpose) {
       });
       if (p.typ !== 'media-access') throw new Error('wrong token type');
       req.user = { id: p.sub ? Number(p.sub) || p.sub : null, role: p.role, tenantId: p.tid ?? null, viaMediaSignature: true };
+      // Same fail-closed rule as requireAuth: a signature for an identity without a
+      // tenant (non-SUPER_ADMIN) never reaches the tenant-scoped handler.
+      if (!hasTenantContext(req.user)) return res.status(403).json(TENANT_CONTEXT_REQUIRED);
       return next();
     } catch (err) {
       return res.status(401).json({ error: err.name === 'TokenExpiredError' ? 'Media link expired' : 'Invalid media link' });

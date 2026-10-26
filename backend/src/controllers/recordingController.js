@@ -49,9 +49,7 @@ export function buildRecordingFilter(req, { omit = [] } = {}) {
     params.push(value);
     clauses.push(sql.replace(/\$\?/g, `$${params.length}`));
   };
-  const tenant = req.user?.role === 'SUPER_ADMIN'
-    ? (q.tenant_id ? Number(q.tenant_id) : null)
-    : req.user?.tenantId;
+  const tenant = effectiveTenantId(req);   // fail-closed: see middleware/tenantScope.js
   if (tenant !== null && tenant !== undefined) add('tenant', tenant, 'r.tenant_id = $?::int');
   add('status',          q.status,          'r.status = $?::text');
   add('conference_room', q.conference_room, `r.conference_room ILIKE '%' || $?::text || '%'`);

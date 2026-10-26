@@ -36,6 +36,17 @@ export const login = asyncHandler(async (req, res) => {
   if (!user || !user.is_active)
     return res.status(401).json({ error: 'Invalid email or password' });
 
+  // Password first: account-state answers below must not be observable by someone
+  // who does not know the password (account enumeration).
+  const valid = await bcrypt.compare(password, user.password_hash);
+  if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
+
+  // Only SUPER_ADMIN is platform-wide. Any other account without a tenant is an
+  // orphan (e.g. a demoted SUPER_ADMIN, or its tenant row was deleted) and must not
+  // receive a token — its queries would otherwise be unscoped.
+  if (user.role !== 'SUPER_ADMIN' && !user.tenant_id)
+    return res.status(401).json({ error: 'Your account is not available' });
+
   // Tenant-scoped users cannot authenticate if their tenant is deactivated or deleted.
   // SUPER_ADMIN has tenant_id = NULL and is exempt from this check.
   if (user.tenant_id) {
@@ -45,9 +56,6 @@ export const login = asyncHandler(async (req, res) => {
     );
     if (!tenant) return res.status(401).json({ error: 'Your account is not available' });
   }
-
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
 
   const accessToken  = signAccess(user);
   const refreshToken = signRefresh(user.id);
@@ -91,6 +99,8 @@ export const refresh = asyncHandler(async (req, res) => {
   );
   const user = rows[0];
   if (!user || !user.is_active) return res.status(401).json({ error: 'User not found' });
+  if (user.role !== 'SUPER_ADMIN' && !user.tenant_id)
+    return res.status(401).json({ error: 'Your account is not available' });
 
   if (user.tenant_id) {
     const { rows: [tenant] } = await query(
@@ -141,6 +151,18 @@ export const changePassword = asyncHandler(async (req, res) => {
   if (!valid) return res.status(400).json({ error: 'Current password is incorrect' });
 
   const hash = await bcrypt.hash(newPassword, 12);
-  await query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [hash, req.user.id]);
+  // Rotate the refresh token: any other session holding the old one (e.g. on a
+  // device where the password was compromised) can no longer refresh; this session
+  // keeps working with the new cookie.
+  const refreshToken = signRefresh(req.user.id);
+  const refreshHash  = await bcrypt.hash(refreshToken, 8);
+  await query(`UPDATE users SET password_hash = $1, refresh_token_hash = $2, updated_at = now() WHERE id = $3`,
+    [hash, refreshHash, req.user.id]);
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    secure:   config.env === 'production',
+    sameSite: 'lax',
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+  });
   res.json({ ok: true });
 });

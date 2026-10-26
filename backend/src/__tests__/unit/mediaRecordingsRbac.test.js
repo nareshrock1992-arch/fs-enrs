@@ -67,12 +67,12 @@ const MATRIX = [
   ['put',    '/recordings/7',              REC_VIEW],
   ['post',   '/recordings/7/archive',      REC_VIEW],
   ['delete', '/recordings/7',              ADMIN],             // tightened from adminOrOp
-  // Scoped playback/download links: media follows the existing stream policy
-  // (any authenticated, tenant-scoped); recordings follow recordings.view.
-  ['get',    '/media-library/7/access',    ROLES],
-  ['get',    '/media-library/7/stream',    ROLES],
+  // Audio bytes and scoped links follow the same role rule as the list:
+  // media → media.view (no VIEWER); recordings → recordings.view.
+  ['get',    '/media-library/7/access',    VIEW_MEDIA],
+  ['get',    '/media-library/7/stream',    VIEW_MEDIA],
   ['get',    '/recordings/7/access',       REC_VIEW],
-  ['get',    '/recordings/7/stream',       ROLES],
+  ['get',    '/recordings/7/stream',       REC_VIEW],
 ];
 
 describe('Media Library + Recordings role matrix', () => {
