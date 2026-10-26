@@ -131,8 +131,15 @@ function makeDb(tables = {}) {
         return { rows };
       }
       case 'ens_campaign_active':
-        return { rows: t.ens_campaigns.filter((c) => params[1].includes(c.status) &&
-            (anyIlike(c.message_audio_url, p) || anyIlike(c.recording_file, p)))
+        return { rows: t.ens_campaigns.filter((c) => {
+            // Mirrors the SQL: live statuses, or completed inside the callback window.
+            const cfg = t.ens_configurations.find((x) => x.id === c.ens_configuration_id);
+            const anchor = c.completed_at || c.started_at || c.created_at;
+            const inWindow = c.status === 'completed' && anchor != null &&
+              new Date(anchor).getTime() + (cfg?.recording_retention_hours ?? 24) * 3600e3 > Date.now();
+            return (params[1].includes(c.status) || inWindow) &&
+              (anyIlike(c.message_audio_url, p) || anyIlike(c.recording_file, p));
+          })
           .map((c) => {
             const cfg = t.ens_configurations.find((x) => x.id === c.ens_configuration_id);
             return { id: String(c.id), ref_uuid: null, name: cfg?.name ?? `Campaign ${c.id}`, tenant_id: cfg?.tenant_id ?? null, field: c.status };
@@ -284,14 +291,45 @@ describe('deleteMediaSafely — every reference source blocks the delete', () =>
     expect(r.status).toBe('deleted');
   });
 
-  it('does NOT block on completed/cancelled campaigns, inactive configs or deleted flows', async () => {
+  it('does NOT block on completed campaigns past their callback window, cancelled campaigns, inactive configs or deleted flows', async () => {
     const db = makeDb({ media_files: [deployed()] });
-    db.t.ens_campaigns.push({ id: 1, status: 'completed', message_audio_url: URI }, { id: 2, status: 'cancelled', recording_file: URI });
+    const threeDaysAgo = new Date(Date.now() - 72 * 3600e3).toISOString();
+    db.t.ens_campaigns.push({ id: 1, status: 'completed', completed_at: threeDaysAgo, message_audio_url: URI },
+                            { id: 2, status: 'cancelled', created_at: new Date().toISOString(), recording_file: URI });
     db.t.config_versions.push({ id: 1, is_active: false, xml_content: `${SOUND}/1700000000_welcome.wav` });
     db.t.ivr_flows.push({ id: 1, flow_uuid: 'f', name: 'Old', tenant_id: 1, deleted_at: 'x', graph: playNode(URI) });
     db.t.ens_configurations.push({ id: 1, name: 'gone', tenant_id: 1, deleted_at: 'x', expiry_audio_url: URI });
     const r = await deleteMediaSafely({ id: 7, tenantId: 1 }, db.deps);
     expect(r.status).toBe('deleted');
+  });
+
+  it('BLOCKS while a completed campaign is still inside the ENS callback window (default 24 h)', async () => {
+    const db = makeDb({ media_files: [deployed()] });
+    db.t.ens_campaigns.push({ id: 5, status: 'completed', completed_at: new Date(Date.now() - 2 * 3600e3).toISOString(), message_audio_url: URI });
+    const r = await deleteMediaSafely({ id: 7, tenantId: 1 }, db.deps);
+    expect(r.status).toBe('blocked');
+    expect(r.blocking).toEqual([expect.objectContaining({ kind: 'ens_campaign_active', field: 'completed' })]);
+    expect(db.state.updates).toEqual([]);                 // no soft delete
+    expect(db.deps.fs.rename).not.toHaveBeenCalled();     // file untouched
+  });
+
+  it('honours the configuration\'s recording_retention_hours (48 h config: blocked at 30 h, not at 50 h)', async () => {
+    const at = (h) => new Date(Date.now() - h * 3600e3).toISOString();
+    const inside = makeDb({ media_files: [deployed()] });
+    inside.t.ens_configurations.push({ id: 3, name: 'Long retention', tenant_id: 1, recording_retention_hours: 48 });
+    inside.t.ens_campaigns.push({ id: 6, ens_configuration_id: 3, status: 'completed', completed_at: at(30), message_audio_url: URI });
+    expect((await deleteMediaSafely({ id: 7, tenantId: 1 }, inside.deps)).status).toBe('blocked');
+
+    const outside = makeDb({ media_files: [deployed()] });
+    outside.t.ens_configurations.push({ id: 3, name: 'Long retention', tenant_id: 1, recording_retention_hours: 48 });
+    outside.t.ens_campaigns.push({ id: 6, ens_configuration_id: 3, status: 'completed', completed_at: at(50), message_audio_url: URI });
+    expect((await deleteMediaSafely({ id: 7, tenantId: 1 }, outside.deps)).status).toBe('deleted');
+  });
+
+  it('uses started_at, then created_at, when completed_at is missing (same anchor as the callback)', async () => {
+    const db = makeDb({ media_files: [deployed()] });
+    db.t.ens_campaigns.push({ id: 8, status: 'completed', created_at: new Date(Date.now() - 3600e3).toISOString(), message_audio_url: URI });
+    expect((await deleteMediaSafely({ id: 7, tenantId: 1 }, db.deps)).status).toBe('blocked');
   });
 
   it('treats IVR templates as non-blocking warnings', async () => {

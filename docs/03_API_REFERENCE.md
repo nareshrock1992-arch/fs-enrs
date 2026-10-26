@@ -702,9 +702,25 @@ All endpoints: `requireAuth`. Controls require `adminOrSuper`.
 # Media Library (`/api/v1/media-library`)
 
 ### `GET /api/v1/media-library`
-`adminOrOp`  
-**Query:** `category=&search=&limit=&page=`  
-**DB:** `media_files`
+`requireAuth` + `canViewMedia` (SUPER_ADMIN, ADMIN, SUPERVISOR, OPERATOR; see `docs/media-rbac.md`). Tenant-scoped: SUPER_ADMIN sees all tenants, or one tenant with `tenant_id=`. Every other role sees only its own tenant, and `tenant_id` is ignored.  
+**Query:**
+- `search`: matches `name` or `description` (case-insensitive substring) or an exact `tags` element. `%` and `_` act as wildcards.
+- `category`: exact match.
+- `deployed`: `true` returns deployed files; any other non-empty value returns not-deployed (pending) files.
+- `sort`: `name|category|created_at|size_bytes|duration_sec` (default `created_at`). Any other value falls back to the default.
+- `dir`: `asc`, or anything else for `desc`. Rows with equal sort values are ordered by `id` in the same direction, so paging is deterministic.
+- `page`, `limit`: read as numbers and truncated to integers. Anything that isn't an integer ≥ 1 (missing, non-numeric, 0, negative) falls back to `page=1` / `limit=50`. `limit` is capped at **200** and `page` at 1,000,000. The response echoes the normalized values.
+
+**Response:** `{ files, total, page, limit, summary }`. `files`, `total`, `page` and `limit` are unchanged; `summary` is additive.
+- `total` equals `summary.total`. The page query and the summary use the same filter.
+- `summary` covers the **whole filtered set**, not the current page:
+  - `{ total, deployed, pending, size_bytes, duration_sec, by_category }`;
+  - soft-deleted files are excluded;
+  - files with unknown size or duration (NULL) count as 0.
+- `summary.by_category` (`{ <category>: count }`) applies every filter **except** `category`, so the counts stay useful when switching categories. Categories with no files are omitted.
+
+**Compatibility:** the IVR and ENS media pickers (`search`, `limit=30`, `deployed=true`) get the same rows, default order (`created_at DESC`) and fields as before.  
+**DB:** `media_files`. Three queries per request: page, totals, category breakdown.
 
 ### `GET /api/v1/media-library/categories`
 `adminOrOp`
@@ -722,11 +738,17 @@ All endpoints: `requireAuth`. Controls require `adminOrSuper`.
 ### `POST /api/v1/media-library/:id/deploy`
 `adminOnly` — Copy file to `FS_SOUND_DIR/enrs/`
 
+### `GET /api/v1/media-library/:id/access`
+`requireAuth`. **Query:** `purpose=stream|download` (default `stream`).
+Returns `{ sig, purpose, expires_in }` with `Cache-Control: no-store`. The `sig`
+is valid for one file and one purpose for `expires_in` seconds (3600). Returns
+404 if the file is not visible in the caller's tenant. See `docs/media-rbac.md`.
+
 ### `GET /api/v1/media-library/:id/stream`
-`requireAuthOrToken` — Audio stream (Bearer or `?token=`)
+`?sig=` (from `/access`), Bearer, or `?token=` (**deprecated**; it puts the session token in URLs). Supports a single byte `Range` (206). An unsatisfiable range returns 416.
 
 ### `GET /api/v1/media-library/:id/download`
-`requireAuthOrToken`
+`?sig=`, Bearer, or `?token=` (deprecated). `Content-Disposition: attachment` with RFC 5987 `filename*`.
 
 ### `GET /api/v1/media-library/:id/waveform`
 `requireAuthOrToken` — Returns JSON peak data for waveform visualizer
@@ -740,7 +762,8 @@ All endpoints: `requireAuth`. Controls require `adminOrSuper`.
 
 ### `GET /api/v1/recordings`
 `adminOrOp`  
-**Query:** `recording_type=ERS|ENS|IVR|MANUAL&status=&conference_room=&from=&to=`  
+**Query:** `recording_type=ERS|ENS|IVR|MANUAL&status=&conference_room=&incident_uuid=&ers_config_id=&organization_id=&tag=&search=&date_from=&date_to=&page=&limit=` (limit ≤ 100)  
+**Response:** `{ recordings, total, page, limit, summary: { by_status, by_type, all_types_total } }`. `total` and `summary` cover the whole filtered set, not just the current page. `by_type` and `all_types_total` ignore the `recording_type` filter, so type tabs can show their counts.  
 **DB:** `recordings` (renamed from `conference_recordings` in migration 026)
 
 ### `GET /api/v1/recordings/:id`
@@ -753,13 +776,16 @@ All endpoints: `requireAuth`. Controls require `adminOrSuper`.
 `adminOrOp` — Mark as archived
 
 ### `DELETE /api/v1/recordings/:id`
-`adminOrOp` — Soft-delete
+`adminOnly` — Soft-delete
+
+### `GET /api/v1/recordings/:id/access`
+`adminOrOp`. **Query:** `purpose=stream|download`. Same contract as `GET /media-library/:id/access`.
 
 ### `GET /api/v1/recordings/:id/stream`
-`requireAuthOrToken`
+`?sig=`, Bearer, or `?token=` (deprecated). Supports a single byte `Range`. An unsatisfiable range returns 416.
 
 ### `GET /api/v1/recordings/:id/download`
-`requireAuthOrToken`
+`?sig=`, Bearer, or `?token=` (deprecated). `Content-Disposition` uses RFC 5987 `filename*`.
 
 ### `GET /api/v1/recordings/:id/waveform`
 `requireAuthOrToken` — Cached in `recordings.waveform_peaks` JSONB column

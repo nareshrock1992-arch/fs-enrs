@@ -27,6 +27,11 @@ export const adminOrOp          = requireRole('SUPER_ADMIN', 'ADMIN', 'OPERATOR'
 export const canTriggerEns      = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR');
 export const canManageIncidents = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR');
 export const canViewRecordings  = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR');
+// Media Library read access (list/detail/categories). SUPERVISOR is included
+// because supervisors author IVR flows (ivr routes: ADMIN/SUPERVISOR) and the
+// IVR/ENS media pickers list the library; they could already upload
+// (adminOrSuper) but not see what they uploaded. See docs/media-rbac.md.
+export const canViewMedia       = requireRole('SUPER_ADMIN', 'ADMIN', 'OPERATOR', 'SUPERVISOR');
 export const canExportReports   = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR');
 export const anyRole            = requireRole('SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER');
 

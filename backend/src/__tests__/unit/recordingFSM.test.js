@@ -13,7 +13,7 @@
  *   - STOPPING state set before norecord command
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 // We need to exercise the exported state-management functions directly.
 // They operate on the in-memory conferenceRegistry, which is module-level state.
@@ -23,6 +23,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // without waiting.
 
 vi.useFakeTimers();
+// vitest.config.js runs every file in ONE fork (singleFork), so fake timers left
+// installed here leak into later files — e.g. eslService's retry tests then
+// time out because their setTimeout never fires. Restore when this file is done.
+afterAll(() => { vi.useRealTimers(); });
 
 // Import AFTER setting up fake timers so setTimeout in the module is already mocked.
 import {

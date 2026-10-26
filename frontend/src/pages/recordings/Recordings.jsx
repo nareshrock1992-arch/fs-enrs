@@ -7,7 +7,10 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { can } from '../../auth/permissions.js';
+import { useMediaUrl, downloadMedia } from '../../api/mediaAccess.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { SEARCH_DEBOUNCE_MS, summaryCounts } from './recordingsSummary.js';
 
 function fmtSize(bytes) {
   const n = Number(bytes);
@@ -115,7 +118,7 @@ function WaveformCanvas({ peaks, progress = 0, duration = 0, onSeek, height = 64
 
 // ── Recording Detail Sidebar ──────────────────────────────────────────────────
 
-function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
+function RecordingDetail({ rec, onClose, onArchive, onDelete, canArchive, canDelete }) {
   const [playing,   setPlaying]   = useState(false);
   const [progress,  setProgress]  = useState(0);
   const [currentT,  setCurrentT]  = useState(0);
@@ -127,6 +130,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
   const [loadErr,   setLoadErr]   = useState(null);
   const [archiving, setArchiving] = useState(false);
   const audioRef = useRef(null);
+  const { url: streamUrl, error: linkErr } = useMediaUrl('recording', rec.id, 'stream');
 
   const typeMeta = TYPE_META[rec.recording_type] || TYPE_META.MANUAL;
 
@@ -210,9 +214,9 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
               <span>{fmtT(currentT)}</span>
               <span>{fmtT(duration)}</span>
             </div>
-            {loadErr && (
-              <div className="text-[10px] text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
-                {loadErr}
+            {(loadErr || linkErr) && (
+              <div role="alert" className="text-[10px] text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
+                {loadErr || `Could not prepare playback — ${linkErr.status === 404 ? 'recording not found or no longer available' : linkErr.message}`}
               </div>
             )}
             <div className="flex items-center justify-center gap-5">
@@ -257,7 +261,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
             </div>
             <audio
               ref={audioRef}
-              src={api.recordings.streamUrl(rec.id)}
+              src={streamUrl || undefined}
               preload="metadata"
               onEnded={() => { setPlaying(false); setProgress(0); setCurrentT(0); }}
               onTimeUpdate={e => {
@@ -388,14 +392,15 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
 
       {/* Footer */}
       <div className="border-t border-surface-border p-3 flex gap-2 shrink-0">
-        <a
-          href={api.recordings.downloadUrl(rec.id)}
-          download={rec.recording_file || 'recording.wav'}
+        <button
+          type="button"
+          onClick={() => downloadMedia('recording', rec.id, rec.recording_file || 'recording.wav')
+            .catch(err => setLoadErr(`Download failed — ${err.message}`))}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs py-2 rounded-lg
                      bg-brand text-white hover:bg-brand/90 font-medium transition-colors">
           <Download size={12} /> Download
-        </a>
-        {canEdit && rec.status === 'COMPLETED' && (
+        </button>
+        {canArchive && rec.status === 'COMPLETED' && (
           <button
             onClick={async () => {
               setArchiving(true);
@@ -408,7 +413,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canEdit }) {
             <Archive size={12} /> Archive
           </button>
         )}
-        {canEdit && (
+        {canDelete && (
           <button
             onClick={onDelete}
             className="flex items-center gap-1 text-xs px-3 py-2 rounded-lg
@@ -432,28 +437,50 @@ export default function Recordings() {
   const [typeFilter,   setTypeFilter]   = useState('');
   const [selected,     setSelected]     = useState(null);
   const [detail,       setDetail]       = useState(null);
+  const [summary,      setSummary]      = useState(null);
+  const [loadError,    setLoadError]    = useState(null);
 
   const user           = useAuthStore(s => s.user);
   const activeTenantId = useAuthStore(s => s.activeTenantId);
-  const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
+  // Matches the server guards (auth/permissions.js): archive is ADMIN/OPERATOR,
+  // delete is ADMIN only.
+  const canArchive = can(user, 'recordings.annotate');
+  const canDelete  = can(user, 'recordings.delete');
+
+  // Search is debounced; every request carries a sequence number and only the
+  // newest response is applied, so a slow older response can never overwrite
+  // newer results.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search]);
+  const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await api.recordings.list({
-        search:         search       || undefined,
+        search:         debouncedSearch || undefined,
         status:         statusFilter || undefined,
         recording_type: typeFilter   || undefined,
         limit: 100,
       });
+      if (seq !== requestSeq.current) return;          // a newer request is in flight
       setRecordings(res.recordings || []);
       setTotal(res.total || 0);
+      setSummary(res.summary || null);
     } catch (e) {
-      console.error(e);
+      if (seq !== requestSeq.current) return;
+      setLoadError(e?.status === 403
+        ? 'You do not have permission to view recordings.'
+        : (e?.message || 'Failed to load recordings'));
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
-  }, [search, statusFilter, typeFilter, activeTenantId]);
+  }, [debouncedSearch, statusFilter, typeFilter, activeTenantId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -486,20 +513,17 @@ export default function Recordings() {
     load();
   };
 
-  // Summary counts
-  const byType = recordings.reduce((acc, r) => {
-    acc[r.recording_type] = (acc[r.recording_type] || 0) + 1;
-    return acc;
-  }, {});
-  const active    = recordings.filter(r => r.status === 'RECORDING').length;
-  const completed = recordings.filter(r => r.status === 'COMPLETED').length;
+  // Summary counts come from the server across the whole filtered result set
+  // (never from the rows currently loaded).
+  const { byType, active, completed, allTypes } = summaryCounts(summary);
 
   return (
     <div className="space-y-6 relative">
       {detail && (
         <RecordingDetail
           rec={detail}
-          canEdit={canEdit}
+          canArchive={canArchive}
+          canDelete={canDelete}
           onClose={() => { setSelected(null); setDetail(null); }}
           onArchive={handleArchive}
           onDelete={handleDelete}
@@ -519,7 +543,7 @@ export default function Recordings() {
       {/* Module type tabs */}
       <div className="flex items-center gap-1 border-b border-surface-border pb-0 -mb-1 overflow-x-auto">
         {MODULE_TABS.map(({ key, label, Icon }) => {
-          const count = key ? (byType[key] || 0) : recordings.length;
+          const count = key ? (byType[key] || 0) : allTypes;
           const isActive = typeFilter === key;
           return (
             <button
@@ -578,7 +602,8 @@ export default function Recordings() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search room, file, notes…"
+            placeholder="Search file name or notes…"
+            aria-label="Search recordings by file name or notes"
             className="input-sm pl-8 w-full"
           />
         </div>
@@ -593,12 +618,28 @@ export default function Recordings() {
         </select>
       </div>
 
+      {/* Never present a partial page as the complete result */}
+      {!loading && !loadError && total > recordings.length && (
+        <p className="text-[11px] text-amber-500">
+          Showing the {recordings.length} most recent of {total} matching recordings. Narrow the filters to see others.
+        </p>
+      )}
+
       {/* List */}
       {loading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => (
             <div key={i} className="h-16 rounded-xl bg-surface-hover animate-pulse" />
           ))}
+        </div>
+      ) : loadError ? (
+        <div role="alert" className="card py-10 text-center">
+          <AlertCircle size={28} className="mx-auto text-red-400 mb-3" />
+          <p className="text-sm font-semibold text-text-secondary">Could not load recordings</p>
+          <p className="text-xs text-text-muted mt-1">{loadError}</p>
+          <button onClick={load} className="btn-secondary mt-4">
+            <RefreshCw size={12} /> Retry
+          </button>
         </div>
       ) : recordings.length === 0 ? (
         <div className="card py-16 text-center">
@@ -674,15 +715,19 @@ export default function Recordings() {
                 {/* Row download */}
                 <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   {(r.status === 'COMPLETED' || r.status === 'ARCHIVED') && (
-                    <a
-                      href={api.recordings.downloadUrl(r.id)}
-                      download={r.recording_file || 'recording.wav'}
-                      onClick={e => e.stopPropagation()}
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        downloadMedia('recording', r.id, r.recording_file || 'recording.wav')
+                          .catch(err => alert('Download failed: ' + err.message));
+                      }}
                       title="Download"
+                      aria-label="Download recording"
                       className="p-1.5 rounded-lg bg-surface-hover border border-surface-border
                                  text-text-muted hover:text-brand transition-colors">
                       <Download size={11} />
-                    </a>
+                    </button>
                   )}
                 </div>
               </div>

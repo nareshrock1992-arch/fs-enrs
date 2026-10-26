@@ -16,7 +16,8 @@
  *   ens_configuration     ens_configurations.{expiry,no_pending,unauthorized}_audio_url
  *   ers_configuration     ers_configurations.{queue_announcement_audio,queue_hold_audio,queue_music_path}
  *   ens_campaign_active   ens_campaigns.{message_audio_url,recording_file}
- *                         while status ∈ queued|running|paused
+ *                         while status ∈ queued|running|paused, or completed and
+ *                         still inside the ENS callback window (recording_retention_hours)
  *   platform_config       config_versions.xml_content where is_active (deployed FS XML)
  *   ivr_template          built-in templates (ALWAYS, from code) + the legacy
  *                         public.ivr_templates table (ONLY if present) — NON-blocking
@@ -421,11 +422,20 @@ export const REFERENCE_SOURCES = [
   },
   {
     kind: 'ens_campaign_active', blocking: true, needs: 'scalar', tables: ['ens_campaigns', 'ens_configurations'],
+    // Campaigns still dispatching (queued/running/paused) AND completed campaigns
+    // still inside their ENS callback playback window. The callback
+    // (/internal/ens/campaigns/latest) keeps serving a completed campaign's audio
+    // until COALESCE(completed_at, started_at, created_at) +
+    // COALESCE(recording_retention_hours, 24) hours — the same expression is used
+    // here, so audio cannot be deleted while a recipient can still call back for it.
     sql: `SELECT c.id::text AS id, NULL AS ref_uuid,
                  COALESCE(cfg.name, 'Campaign ' || c.id) AS name, cfg.tenant_id, c.status AS field
             FROM ens_campaigns c
             LEFT JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
-           WHERE c.status = ANY($2::text[])
+           WHERE (c.status = ANY($2::text[])
+                  OR (c.status = 'completed'
+                      AND COALESCE(c.completed_at, c.started_at, c.created_at)
+                          + (COALESCE(cfg.recording_retention_hours, 24) || ' hours')::interval > now()))
              AND (c.message_audio_url ILIKE ANY($1::text[]) OR c.recording_file ILIKE ANY($1::text[]))`,
     params: (p) => [p.scalar, LIVE_CAMPAIGN_STATUSES],
   },

@@ -24,6 +24,7 @@ import { query } from '../db/pool.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { config } from '../config/index.js';
 import { fsPathService } from '../services/freeSwitchPathService.js';
+import { contentDisposition, sendFileWithRange } from '../utils/mediaHttp.js';
 import {
   deleteMediaSafely, DependencyCheckError, blockedDeleteBody, dependencyFailureBody,
   deployMediaLocked, importScannedFileLocked, mediaGuardErrorResponse,
@@ -300,68 +301,117 @@ function qs(v) {
   return (v == null || v === '' || v === 'undefined' || v === 'null') ? null : v;
 }
 
+// ── List filter ──────────────────────────────────────────────────────────────
+//
+// One WHERE definition shared by the page query, the totals and the category
+// breakdown, so the three can never disagree. Semantics are unchanged from the
+// original inline queries:
+//   - tenant: SUPER_ADMIN → ?tenant_id when given (else all tenants); everyone
+//     else → req.user.tenantId (no tenant id → unscoped, as before)
+//   - search: name / description substring (ILIKE — `%` and `_` keep their
+//     LIKE wildcard meaning) or an exact tag
+//   - deployed: 'true' → deployed; any other non-empty value → not deployed
+// `omit` drops filters by name (the category breakdown ignores `category`).
+export const MEDIA_SORT_FIELDS = ['name', 'category', 'created_at', 'size_bytes', 'duration_sec'];
+
+export function buildMediaFilter(req, { omit = [] } = {}) {
+  const q = req.query || {};
+  const clauses = ['m.deleted_at IS NULL'];
+  const params = [];
+  const add = (name, value, sql) => {
+    if (omit.includes(name) || value === null || value === undefined) return;
+    params.push(value);
+    clauses.push(sql.replace(/\$\?/g, `$${params.length}`));
+  };
+  const tenant = req.user?.role === 'SUPER_ADMIN'
+    ? (q.tenant_id ? Number(q.tenant_id) : null)
+    : req.user?.tenantId;
+  const deployed = qs(q.deployed);
+  add('tenant',   tenant,         'm.tenant_id = $?::int');
+  add('category', qs(q.category), 'm.category = $?::text');
+  add('search',   qs(q.search),   `(m.name ILIKE '%' || $?::text || '%' OR m.description ILIKE '%' || $?::text || '%' OR $?::text = ANY(m.tags))`);
+  add('deployed', deployed === null ? null : deployed === 'true', 'm.is_deployed = $?::boolean');
+  return { where: clauses.join('\n       AND '), params };
+}
+
+// Pagination normalisation (documented in docs/03_API_REFERENCE.md):
+// a value is read as a number and truncated to an integer; anything that is not
+// a finite integer ≥ 1 (missing, non-numeric, 0, negative, < 1 after
+// truncation) falls back to the default. limit is capped at MEDIA_MAX_LIMIT and
+// page at MEDIA_MAX_PAGE, so LIMIT/OFFSET are always valid integers.
+export const MEDIA_DEFAULT_LIMIT = 50;
+export const MEDIA_MAX_LIMIT     = 200;
+export const MEDIA_MAX_PAGE      = 1_000_000;
+
+export function normalizeMediaPaging(q = {}) {
+  const int = (v, dflt, max) => {
+    const n = Math.trunc(Number(v));
+    return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : dflt;
+  };
+  const page  = int(q.page, 1, MEDIA_MAX_PAGE);
+  const limit = int(q.limit, MEDIA_DEFAULT_LIMIT, MEDIA_MAX_LIMIT);
+  return { page, limit, offset: (page - 1) * limit };
+}
+
 export const listMedia = asyncHandler(async (req, res) => {
-  const search   = qs(req.query.search);
-  const category = qs(req.query.category);
-  const deployed = qs(req.query.deployed);
-  const page   = Math.max(1, Number(req.query.page)  || 1);
-  const limit  = Math.min(200, Number(req.query.limit) || 50);
-  const offset = (page - 1) * limit;
-  const sort   = ['name','category','created_at','size_bytes','duration_sec'].includes(req.query.sort)
-    ? req.query.sort : 'created_at';
-  const dir    = req.query.dir === 'asc' ? 'ASC' : 'DESC';
+  const { page, limit, offset } = normalizeMediaPaging(req.query);
+  const sort = MEDIA_SORT_FIELDS.includes(req.query.sort) ? req.query.sort : 'created_at';
+  const dir  = req.query.dir === 'asc' ? 'ASC' : 'DESC';
 
-  const { rows } = await query(
-    `SELECT
-       m.id, m.name, m.category, m.description, m.duration_sec,
-       m.sample_rate, m.channels, m.codec, m.bitrate_kbps,
-       m.size_bytes, m.checksum, m.version, m.tags, m.notes,
-       m.is_deployed, m.deployed_at, m.fs_path, m.path_or_uri,
-       m.usage_count, m.tenant_id, m.created_at, m.updated_at,
-       u.email AS uploaded_by_email,
-       o.name  AS organization_name
-     FROM media_files m
-     LEFT JOIN users         u ON u.id = m.uploaded_by_user_id
-     LEFT JOIN organizations o ON o.id = m.organization_id
-     WHERE m.deleted_at IS NULL
-       AND ($1::int  IS NULL OR m.tenant_id       = $1)
-       AND ($2::text IS NULL OR m.category         = $2)
-       AND ($3::text IS NULL OR (
-              m.name ILIKE '%' || $3 || '%'
-           OR m.description ILIKE '%' || $3 || '%'
-           OR $3 = ANY(m.tags)
-         ))
-       AND ($4::boolean IS NULL OR m.is_deployed   = $4)
-     ORDER BY m.${sort} ${dir} NULLS LAST
-     LIMIT $5 OFFSET $6`,
-    [
-      req.user?.role === 'SUPER_ADMIN'
-        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
-        : req.user?.tenantId,
-      category,
-      search,
-      deployed !== null ? deployed === 'true' : null,
-      limit, offset,
-    ]
-  );
+  const f = buildMediaFilter(req);
+  const byCat = buildMediaFilter(req, { omit: ['category'] });
+  const n = f.params.length;
 
-  const { rows: [{ total }] } = await query(
-    `SELECT COUNT(*)::int AS total FROM media_files
-     WHERE deleted_at IS NULL
-       AND ($1::int  IS NULL OR tenant_id = $1)
-       AND ($2::text IS NULL OR category  = $2)
-       AND ($3::text IS NULL OR (name ILIKE '%' || $3 || '%' OR description ILIKE '%' || $3 || '%' OR $3 = ANY(tags)))
-       AND ($4::boolean IS NULL OR is_deployed = $4)`,
-    [
-      req.user?.role === 'SUPER_ADMIN'
-        ? (req.query.tenant_id ? Number(req.query.tenant_id) : null)
-        : req.user?.tenantId,
-      category, search,
-      deployed !== null ? deployed === 'true' : null,
-    ]
-  );
+  const [{ rows }, { rows: [totals] }, { rows: catRows }] = await Promise.all([
+    query(
+      `SELECT
+         m.id, m.name, m.category, m.description, m.duration_sec,
+         m.sample_rate, m.channels, m.codec, m.bitrate_kbps,
+         m.size_bytes, m.checksum, m.version, m.tags, m.notes,
+         m.is_deployed, m.deployed_at, m.fs_path, m.path_or_uri,
+         m.usage_count, m.tenant_id, m.created_at, m.updated_at,
+         u.email AS uploaded_by_email,
+         o.name  AS organization_name
+       FROM media_files m
+       LEFT JOIN users         u ON u.id = m.uploaded_by_user_id
+       LEFT JOIN organizations o ON o.id = m.organization_id
+       WHERE ${f.where}
+       ORDER BY m.${sort} ${dir} NULLS LAST, m.id ${dir}
+       LIMIT $${n + 1} OFFSET $${n + 2}`,
+      [...f.params, limit, offset],
+    ),
+    // Totals over the whole filtered set (not the page). Unknown size/duration
+    // (NULL) contribute 0.
+    query(
+      `SELECT COUNT(*)::int                                      AS total,
+              COUNT(*) FILTER (WHERE m.is_deployed)::int         AS deployed,
+              COUNT(*) FILTER (WHERE NOT m.is_deployed)::int     AS pending,
+              COALESCE(SUM(m.size_bytes), 0)::bigint             AS size_bytes,
+              COALESCE(SUM(m.duration_sec), 0)::numeric          AS duration_sec
+       FROM media_files m
+       WHERE ${f.where}`,
+      f.params,
+    ),
+    query(
+      `SELECT m.category, COUNT(*)::int AS n
+       FROM media_files m
+       WHERE ${byCat.where}
+       GROUP BY m.category`,
+      byCat.params,
+    ),
+  ]);
 
-  res.json({ files: rows, total, page, limit });
+  const t = totals || {};
+  const summary = {
+    total:        Number(t.total) || 0,
+    deployed:     Number(t.deployed) || 0,
+    pending:      Number(t.pending) || 0,
+    size_bytes:   Number(t.size_bytes) || 0,                       // pg returns BIGINT as a string
+    duration_sec: Math.round((Number(t.duration_sec) || 0) * 100) / 100,
+    by_category:  Object.fromEntries(catRows.map(r => [r.category, Number(r.n) || 0])),
+  };
+
+  res.json({ files: rows, total: summary.total, page, limit, summary });
 });
 
 // ── Categories ────────────────────────────────────────────────────────────────
@@ -641,20 +691,13 @@ export const deployMedia = asyncHandler(async (req, res) => {
 
 export const streamMedia = asyncHandler(async (req, res) => {
   const mediaId = req.params.id;
-  console.log(`[media-stream] request — id=${mediaId}`);
-
   const tenantId = effectiveTenantId(req);
   const { rows: [record] } = await query(
     `SELECT * FROM media_files WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
     [mediaId, tenantId]
   );
-  if (!record) {
-    console.warn(`[media-stream] id=${mediaId} — DB record not found`);
-    return res.status(404).json({ error: 'Not found' });
-  }
-
-  console.log(`[media-stream] id=${record.id} name="${record.name}" is_deployed=${record.is_deployed} fs_path="${record.fs_path || '(null)'}" path_or_uri="${record.path_or_uri || '(null)'}"`);
+  if (!record) return res.status(404).json({ error: 'Not found' });
 
   // Prefer deployed FS path; fall back to uploads path (always streamable).
   // fs_path is set on deploy; path_or_uri is set on upload (always the staging copy).
@@ -662,53 +705,21 @@ export const streamMedia = asyncHandler(async (req, res) => {
   let filePath = null;
   for (const p of candidates) {
     const resolved = path.isAbsolute(p) ? p : path.resolve(p);
-    try {
-      await fs.access(resolved);
-      filePath = resolved;
-      console.log(`[media-stream] id=${record.id} — resolved path: "${filePath}"`);
-      break;
-    } catch {
-      console.warn(`[media-stream] id=${record.id} — not accessible: "${resolved}"`);
-    }
+    try { await fs.access(resolved); filePath = resolved; break; } catch { /* try the next candidate */ }
   }
 
+  // Server paths go to the log only — never to the client.
   if (!filePath) {
-    console.error(`[media-stream] id=${record.id} — file not found on disk. tried: ${candidates.join(', ')} | CWD=${process.cwd()}`);
-    return res.status(404).json({
-      error: 'File not found on disk',
-      tried: candidates,
-    });
+    console.error(`[media-stream] id=${record.id} — file not found on disk. tried: ${candidates.join(', ')}`);
+    return res.status(404).json({ error: 'File not found on disk' });
   }
 
-  const stat = await fs.stat(filePath);
-  const size = stat.size;
-  const ext  = path.extname(filePath).toLowerCase();
-  const mime = MIME_MAP[ext] || 'audio/wav';
-
-  console.log(`[media-stream] id=${record.id} name="${record.name}" path="${filePath}" ext="${ext}" mime=${mime} bytes=${size}`);
-
-  const range = req.headers.range;
-  if (range) {
-    const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(startStr, 10);
-    const end   = endStr ? parseInt(endStr, 10) : size - 1;
-    const chunk = end - start + 1;
-    res.status(206).set({
-      'Content-Range':  `bytes ${start}-${end}/${size}`,
-      'Accept-Ranges':  'bytes',
-      'Content-Length': chunk,
-      'Content-Type':   mime,
-    });
-    createReadStream(filePath, { start, end }).pipe(res);
-  } else {
-    res.set({
-      'Content-Type':        mime,
-      'Content-Length':      size,
-      'Accept-Ranges':       'bytes',
-      'Content-Disposition': `inline; filename="${path.basename(filePath)}"`,
-    });
-    createReadStream(filePath).pipe(res);
-  }
+  const { size } = await fs.stat(filePath);
+  const mime = MIME_MAP[path.extname(filePath).toLowerCase()] || 'audio/wav';
+  return sendFileWithRange(req, res, {
+    filePath, size, mime,
+    disposition: contentDisposition('inline', path.basename(filePath)),
+  });
 });
 
 // ── Download ──────────────────────────────────────────────────────────────────
@@ -730,12 +741,15 @@ export const downloadMedia = asyncHandler(async (req, res) => {
   }
   if (!filePath) {
     console.warn(`[media-download] id=${record.id} — file not found. tried: ${candidates.join(', ')}`);
-    return res.status(404).json({ error: 'File not found on disk', tried: candidates });
+    return res.status(404).json({ error: 'File not found on disk' });
   }
 
-  res.setHeader('Content-Disposition', `attachment; filename="${record.name}"`);
-  res.setHeader('Content-Type', MIME_MAP[path.extname(filePath).toLowerCase()] || 'application/octet-stream');
-  createReadStream(filePath).pipe(res);
+  const { size } = await fs.stat(filePath);
+  return sendFileWithRange(req, res, {
+    filePath, size,
+    mime: MIME_MAP[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+    disposition: contentDisposition('attachment', record.name),
+  });
 });
 
 // ── Waveform peaks ────────────────────────────────────────────────────────────

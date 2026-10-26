@@ -3,11 +3,23 @@ import {
   Library, Upload, Trash2, Play, Pause, CheckCircle,
   AlertCircle, Clock, Search, Tag, RefreshCw, HardDrive, X,
   Download, SkipBack, SkipForward, Volume2, VolumeX,
-  Info, Radio, FileAudio, Layers, BarChart2, Eye
+  Info, Radio, FileAudio, Layers, BarChart2,
+  ArrowUp, ArrowDown, ArrowUpDown, Lock
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { can } from '../../auth/permissions.js';
+import { useMediaUrl, downloadMedia } from '../../api/mediaAccess.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { Table, Th, Td, Tr } from '../../components/ui/Table.jsx';
+import { SkeletonTable } from '../../components/ui/Skeleton.jsx';
+import Pagination from '../../components/ui/Pagination.jsx';
+import {
+  initialListState, buildListQuery, applyListChange, toggleSort, totalPages, clampPage,
+  pageAfterDelete, summaryToKpis, describeLoadError, emptyStateKind, createRequestGate,
+  hasActiveFilters, clearFilters, refreshDetail,
+  fmtBytes, fmtTotalDuration, DEPLOY_FILTERS, SEARCH_DEBOUNCE_MS,
+} from './mediaLibraryState.js';
 
 const CATEGORIES = [
   'system_prompt','emergency_prompt','ivr_prompt','tts_generated',
@@ -129,6 +141,7 @@ function AudioPlayer({ file, onClose }) {
   const [peaks,    setPeaks]    = useState(file.waveform_peaks || null);
   const [loadErr,  setLoadErr]  = useState(null);
   const audioRef = useRef(null);
+  const { url: streamUrl, error: linkErr, refresh: refreshStreamUrl } = useMediaUrl('media', file.id, 'stream');
 
   // Load waveform if not already cached on the record
   useEffect(() => {
@@ -151,9 +164,10 @@ function AudioPlayer({ file, onClose }) {
         .then(() => setPlaying(true))
         .catch(async () => {
           setPlaying(false);
-          // Diagnose: HEAD the stream URL to get the real server error
+          // Diagnose with a freshly signed link (the old one may simply have expired)
           try {
-            const url = api.mediaLibrary.streamUrl(file.id);
+            const url = await refreshStreamUrl();
+            if (!url) throw new Error('no link');
             const probe = await fetch(url, { method: 'HEAD' });
             if (!probe.ok) {
               const body = await fetch(url).then(r => r.json()).catch(() => null);
@@ -237,10 +251,10 @@ function AudioPlayer({ file, onClose }) {
           </div>
 
           {/* Error */}
-          {loadErr && (
-            <div className="flex items-center gap-2 text-[10px] text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
+          {(loadErr || linkErr) && (
+            <div role="alert" className="flex items-center gap-2 text-[10px] text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
               <AlertCircle size={11} className="shrink-0" />
-              {loadErr}
+              {loadErr || `Could not prepare playback — ${linkErr.status === 404 ? 'file not found or no longer available' : linkErr.message}`}
             </div>
           )}
 
@@ -300,14 +314,14 @@ function AudioPlayer({ file, onClose }) {
             </div>
 
             {/* Download */}
-            <a
-              href={api.mediaLibrary.downloadUrl(file.id)}
-              download={file.name}
+            <button
+              type="button"
+              onClick={() => downloadMedia('media', file.id, file.name).catch(err => setLoadErr(`Download failed — ${err.message}`))}
               className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg
                          bg-surface-panel border border-surface-border text-text-muted
                          hover:text-brand hover:border-brand/30 transition-colors">
               <Download size={11} /> Download
-            </a>
+            </button>
           </div>
         </div>
 
@@ -322,7 +336,7 @@ function AudioPlayer({ file, onClose }) {
 
         <audio
           ref={audioRef}
-          src={api.mediaLibrary.streamUrl(file.id)}
+          src={streamUrl || undefined}
           preload="metadata"
           onEnded={() => { setPlaying(false); setProgress(0); setCurrentT(0); }}
           onTimeUpdate={e => {
@@ -544,11 +558,12 @@ function FileDetail({ file, onClose, onDeploy, onDelete, onPlay, deploying, dele
                        hover:bg-brand/90 transition-colors font-medium">
             <Play size={11} /> Play
           </button>
-          <a href={api.mediaLibrary.downloadUrl(file.id)} download={file.name}
+          <button type="button"
+            onClick={() => downloadMedia('media', file.id, file.name).catch(err => alert('Download failed: ' + err.message))}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-surface-hover
                        border border-surface-border text-text-muted hover:text-brand transition-colors">
             <Download size={11} /> Download
-          </a>
+          </button>
           {canEdit && !file.is_deployed && (
             <button onClick={onDeploy} disabled={deploying}
               className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
@@ -702,50 +717,96 @@ class MediaLibraryBoundary extends Component {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+// Sortable column header — only fields the server accepts in ?sort= (SORT_FIELDS).
+function SortTh({ field, label, list, onSort, className = '' }) {
+  const active = list.sort === field;
+  const dirLabel = active ? (list.dir === 'asc' ? 'ascending' : 'descending') : 'not sorted';
+  return (
+    <Th className={className}>
+      <button type="button" onClick={() => onSort(field)}
+        aria-label={`Sort by ${label} (${dirLabel})`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wide hover:text-brand transition-colors
+          ${active ? 'text-brand' : ''}`}>
+        {label}
+        {active ? (list.dir === 'asc' ? <ArrowUp size={10} /> : <ArrowDown size={10} />)
+                : <ArrowUpDown size={10} className="opacity-40" />}
+      </button>
+    </Th>
+  );
+}
+
 function MediaLibraryInner() {
-  const [files,      setFiles]      = useState([]);
-  const [total,      setTotal]      = useState(0);
-  const [categories, setCategories] = useState([]);
-  const [search,     setSearch]     = useState('');
-  const [catFilter,  setCatFilter]  = useState('');
-  const [loading,    setLoading]    = useState(true);
-  const [loadError,  setLoadError]  = useState(null);
-  const [scanning,   setScanning]   = useState(false);
-  const [scanResult, setScanResult] = useState(null);
-  const [showUpload, setShowUpload] = useState(false);
-  const [player,     setPlayer]     = useState(null);
-  const [detail,     setDetail]     = useState(null);
-  const [deploying,  setDeploying]  = useState({});
-  const [deleting,   setDeleting]   = useState({});
+  // Server-side list state: filters, sort and page (see mediaLibraryState.js).
+  const [list,        setList]        = useState(initialListState);
+  const [searchInput, setSearchInput] = useState('');
+  const [files,       setFiles]       = useState([]);
+  const [total,       setTotal]       = useState(0);
+  const [summary,     setSummary]     = useState(null);
+  const [categories,  setCategories]  = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [loadError,   setLoadError]   = useState(null);   // { kind, message, retryable }
+  const [scanning,    setScanning]    = useState(false);
+  const [scanResult,  setScanResult]  = useState(null);
+  const [showUpload,  setShowUpload]  = useState(false);
+  const [player,      setPlayer]      = useState(null);
+  const [detail,      setDetail]      = useState(null);
+  const [deploying,   setDeploying]   = useState({});
+  const [deleting,    setDeleting]    = useState({});
+  const gate = useRef(createRequestGate());
 
   const user           = useAuthStore(s => s.user);
   const activeTenantId = useAuthStore(s => s.activeTenantId);
-  const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
+  // Matches the server guards (auth/permissions.js): upload is ADMIN/SUPERVISOR,
+  // scan/deploy/delete are ADMIN only — no buttons that would only return 403.
+  const canUpload = can(user, 'media.upload');
+  const canEdit   = can(user, 'media.manage');
 
+  // Load one page. Only the newest request may apply its response, so a slow
+  // earlier response can never overwrite a newer search / filter / page / sort.
   const load = useCallback(async () => {
+    const ticket = gate.current.next();
     setLoading(true);
     setLoadError(null);
     try {
-      const [filesRes, catRes] = await Promise.all([
-        api.mediaLibrary.list({
-          search:   search   || undefined,
-          category: catFilter || undefined,
-          limit: 200,
-        }),
-        api.mediaLibrary.categories(),
-      ]);
-      setFiles(filesRes.files || []);
-      setTotal(filesRes.total || 0);
-      setCategories(catRes.categories || []);
+      const res = await api.mediaLibrary.list(buildListQuery(list));
+      if (!gate.current.isCurrent(ticket)) return;
+      const t = Number(res.total) || 0;
+      // The result set shrank under us (e.g. deleted elsewhere): go to the last valid page.
+      const valid = clampPage(list.page, t, list.limit);
+      if (valid !== list.page) { setList(s => ({ ...s, page: valid })); return; }
+      setFiles(res.files || []);
+      setTotal(t);
+      setSummary(res.summary || null);
+      // Keep an open detail panel in step with the reloaded row (e.g. after deploy).
+      setDetail(d => refreshDetail(d, res.files));
     } catch (e) {
+      if (!gate.current.isCurrent(ticket)) return;
       console.error(e);
-      setLoadError(e.message || 'Failed to load media library');
+      setLoadError(describeLoadError(e));
     } finally {
-      setLoading(false);
+      if (gate.current.isCurrent(ticket)) setLoading(false);
     }
-  }, [search, catFilter, activeTenantId]);
+  }, [list, activeTenantId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // A different tenant is a different result set: start again at page 1.
+  useEffect(() => { setList(s => applyListChange(s, { page: 1 })); }, [activeTenantId]);
+
+  // Category options are a static server list; failures just leave the filter empty.
+  useEffect(() => {
+    api.mediaLibrary.categories()
+      .then(r => setCategories(r.categories || []))
+      .catch(() => setCategories([]));
+  }, [activeTenantId]);
+
+  // Debounced search → list state (resets to page 1).
+  useEffect(() => {
+    const h = setTimeout(() => setList(s => applyListChange(s, { search: searchInput.trim() })), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(h);
+  }, [searchInput]);
+
+  const change = (patch) => setList(s => applyListChange(s, patch));
 
   const handleScan = async () => {
     setScanning(true);
@@ -779,7 +840,15 @@ function MediaLibraryInner() {
     try {
       await api.mediaLibrary.remove(file.id);
       if (detail?.id === file.id) setDetail(null);
-      load();
+      // Deleting the last row of a page steps back to the previous valid page. A file
+      // deleted from the detail panel may not be on this page — then just reload
+      // (load() still clamps the page if the result set shrank).
+      const onPage = files.some(f => f.id === file.id);
+      const next = onPage
+        ? pageAfterDelete({ page: list.page, total, limit: list.limit, rowsOnPage: files.length })
+        : list.page;
+      if (next !== list.page) setList(s => ({ ...s, page: next }));
+      else load();
     } catch (e) {
       alert('Delete failed: ' + e.message);
     } finally {
@@ -787,14 +856,22 @@ function MediaLibraryInner() {
     }
   };
 
-  // Stats
-  const deployed = files.filter(f => f.is_deployed).length;
-  const pending  = files.filter(f => !f.is_deployed).length;
+  // New uploads are newest — show page 1 so the file is visible (filters are kept).
+  const handleUploaded = () => {
+    if (list.page !== 1) setList(s => applyListChange(s, { page: 1 }));
+    else load();
+  };
+
+  const kpi   = summaryToKpis(summary);
+  const filtered = hasActiveFilters(list);
+  const pages = totalPages(total, list.limit);
+  const forbidden = loadError?.kind === 'forbidden';
+  const firstLoad = loading && !summary && files.length === 0;
 
   return (
     <div className="space-y-6 relative">
       {player && <AudioPlayer file={player} onClose={() => setPlayer(null)} />}
-      {showUpload && <UploadModal onClose={() => setShowUpload(false)} onSuccess={load} />}
+      {showUpload && <UploadModal onClose={() => setShowUpload(false)} onSuccess={handleUploaded} />}
       {detail && (
         <FileDetail
           file={detail}
@@ -810,7 +887,9 @@ function MediaLibraryInner() {
 
       <PageHeader
         title="Media Library"
-        description={`${total} file${total !== 1 ? 's' : ''} · ${deployed} deployed · ${pending} pending`}
+        description={summary
+          ? `${kpi.total} file${kpi.total !== 1 ? 's' : ''} · ${kpi.deployed} deployed · ${kpi.pending} pending`
+          : 'Audio prompts and recordings'}
         icon={Library}
       >
         {canEdit && (
@@ -819,7 +898,7 @@ function MediaLibraryInner() {
             {scanning ? 'Scanning…' : 'Scan FS'}
           </button>
         )}
-        {canEdit && (
+        {canUpload && (
           <button onClick={() => setShowUpload(true)} className="btn-primary">
             <Upload size={13} /> Upload
           </button>
@@ -842,29 +921,42 @@ function MediaLibraryInner() {
         </div>
       )}
 
-      {/* API error banner */}
+      {/* Load errors: 403 (no retry — retrying cannot help) vs recoverable failures */}
       {loadError && (
-        <div className="flex items-start gap-2 px-4 py-3 rounded-xl border text-[11px]
+        <div role="alert" className="flex items-start gap-2 px-4 py-3 rounded-xl border text-[11px]
                         bg-red-500/5 border-red-500/20 text-red-400">
-          <AlertCircle size={13} className="mt-0.5 shrink-0" />
-          <span className="flex-1">Failed to load: {loadError}</span>
-          <button onClick={load} className="underline opacity-70 hover:opacity-100 transition-opacity">
-            Retry
-          </button>
+          {forbidden ? <Lock size={13} className="mt-0.5 shrink-0" /> : <AlertCircle size={13} className="mt-0.5 shrink-0" />}
+          <span className="flex-1">{forbidden ? loadError.message : `Failed to load: ${loadError.message}`}</span>
+          {loadError.retryable && (
+            <button onClick={load} className="underline opacity-70 hover:opacity-100 transition-opacity">
+              Retry
+            </button>
+          )}
         </div>
       )}
 
-      {/* Stats row */}
-      {!loading && total > 0 && (
-        <div className="grid grid-cols-4 gap-3">
+      {/* KPIs — server summary for the current filters (never counted from the loaded page) */}
+      {summary && !forbidden && filtered && (
+        <div className="flex items-center gap-2 text-[11px] text-text-muted -mb-3">
+          <Info size={12} className="shrink-0" />
+          <span>Totals below are for the current search and filters, not the whole library.</span>
+          <button onClick={() => { setSearchInput(''); setList(s => clearFilters(s)); }} className="text-brand hover:underline font-medium">
+            Clear filters
+          </button>
+        </div>
+      )}
+      {summary && !forbidden && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" aria-label="Media library totals for the current filters">
           {[
-            { label: 'Total Files', value: total,    icon: Library,   color: 'text-brand' },
-            { label: 'Deployed',    value: deployed,  icon: CheckCircle, color: 'text-green-500' },
-            { label: 'Pending',     value: pending,   icon: Clock,     color: 'text-amber-500' },
-            { label: 'Categories',  value: categories.length, icon: Tag, color: 'text-purple-400' },
+            { label: 'Files',             value: kpi.total,                         icon: Library,     color: 'text-brand' },
+            { label: 'Deployed',          value: kpi.deployed,                      icon: CheckCircle, color: 'text-green-500' },
+            { label: 'Pending',           value: kpi.pending,                       icon: Clock,       color: 'text-amber-500' },
+            { label: 'Total size',        value: fmtBytes(kpi.sizeBytes),           icon: HardDrive,   color: 'text-blue-400' },
+            { label: 'Total duration',    value: fmtTotalDuration(kpi.durationSec), icon: BarChart2,   color: 'text-cyan-400' },
+            { label: 'Categories in use', value: kpi.categoriesInUse,               icon: Tag,         color: 'text-purple-400' },
           ].map(({ label, value, icon: Icon, color }) => (
             <div key={label} className="card !p-3 flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-lg bg-surface-hover flex items-center justify-center shrink-0`}>
+              <div className="w-8 h-8 rounded-lg bg-surface-hover flex items-center justify-center shrink-0">
                 <Icon size={14} className={color} />
               </div>
               <div className="min-w-0">
@@ -881,159 +973,199 @@ function MediaLibraryInner() {
         <div className="relative flex-1 min-w-[200px] max-w-xs">
           <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
             placeholder="Search by name, description or tag…"
+            aria-label="Search media by name, description or tag"
             className="input-sm pl-8 w-full"
           />
         </div>
         <select
-          value={catFilter}
-          onChange={e => setCatFilter(e.target.value)}
+          value={list.category}
+          onChange={e => change({ category: e.target.value })}
+          aria-label="Filter by category"
           className="input-sm">
-          <option value="">All categories</option>
-          {categories.map(c => <option key={c} value={c}>{CAT_LABELS[c] || c}</option>)}
+          <option value="">All categories{summary ? ` (${kpi.allCategoriesTotal})` : ''}</option>
+          {categories.map(c => (
+            <option key={c} value={c}>
+              {CAT_LABELS[c] || c}{summary ? ` (${kpi.byCategory[c] || 0})` : ''}
+            </option>
+          ))}
+        </select>
+        <select
+          value={list.deployed}
+          onChange={e => change({ deployed: e.target.value })}
+          aria-label="Filter by deployment status"
+          className="input-sm">
+          {DEPLOY_FILTERS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <select
+          value={list.limit}
+          onChange={e => change({ limit: Number(e.target.value) })}
+          aria-label="Rows per page"
+          className="input-sm">
+          {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} / page</option>)}
         </select>
         <button onClick={load}
           className="btn-icon"
-          title="Refresh">
+          title="Refresh"
+          aria-label="Refresh">
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      {/* File list */}
-      {loading ? (
-        <div className="space-y-2">
-          {[1, 2, 3, 4, 5].map(i => (
-            <div key={i} className="h-16 rounded-xl bg-surface-hover animate-pulse" />
-          ))}
-        </div>
-      ) : files.length === 0 ? (
+      {/* File table */}
+      {forbidden ? null : firstLoad ? (
+        <SkeletonTable rows={6} cols={6} />
+      ) : !loadError && files.length === 0 ? (
         <div className="card text-center py-16">
           <Library size={36} className="mx-auto text-text-muted/20 mb-3" />
-          <p className="text-sm font-semibold text-text-secondary">No media files</p>
-          <p className="text-xs text-text-muted mt-1">
-            {search || catFilter ? 'No results match your filter' : 'Upload or scan SIPCommunication to import files'}
-          </p>
-          {canEdit && !search && !catFilter && (
-            <div className="mt-4 flex items-center justify-center gap-3">
-              <button onClick={handleScan} disabled={scanning}
-                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg
-                           bg-surface border border-surface-border text-text-muted
-                           hover:text-brand hover:border-brand/30 transition-colors">
-                <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan SIPCommunication'}
+          {emptyStateKind(list) === 'no-matches' ? (
+            <>
+              <p className="text-sm font-semibold text-text-secondary">No matching media</p>
+              <p className="text-xs text-text-muted mt-1">No files match the current search or filters.</p>
+              <button onClick={() => { setSearchInput(''); setList(s => clearFilters(s)); }}
+                className="mt-4 text-xs text-brand hover:underline font-medium">
+                Clear filters
               </button>
-              <button onClick={() => setShowUpload(true)}
-                className="text-xs text-brand hover:underline font-medium">
-                Upload a file
-              </button>
-            </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-text-secondary">No media files</p>
+              <p className="text-xs text-text-muted mt-1">Upload or scan SIPCommunication to import files</p>
+              {(canEdit || canUpload) && (
+                <div className="mt-4 flex items-center justify-center gap-3">
+                  {canEdit && (
+                    <button onClick={handleScan} disabled={scanning}
+                      className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg
+                                 bg-surface border border-surface-border text-text-muted
+                                 hover:text-brand hover:border-brand/30 transition-colors">
+                      <HardDrive size={12} /> {scanning ? 'Scanning…' : 'Scan SIPCommunication'}
+                    </button>
+                  )}
+                  {canUpload && (
+                    <button onClick={() => setShowUpload(true)}
+                      className="text-xs text-brand hover:underline font-medium">
+                      Upload a file
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
-      ) : (
-        <div className="space-y-1.5">
-          {files.map(f => {
-            const isActive = detail?.id === f.id;
-            return (
-              <div
-                key={f.id}
-                onClick={() => setDetail(isActive ? null : f)}
-                className={[
-                  'group flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-all',
-                  isActive
-                    ? 'border-brand/40 bg-brand/5 shadow-sm'
-                    : 'border-surface-border bg-surface hover:border-surface-hover hover:bg-surface-hover/50',
-                ].join(' ')}
-              >
-                {/* Icon */}
-                <div className="w-9 h-9 rounded-xl bg-brand/10 border border-brand/15
-                                flex items-center justify-center shrink-0">
-                  <FileAudio size={14} className="text-brand" />
-                </div>
-
-                {/* Main info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-text-primary truncate max-w-xs">
-                      {f.name}
-                    </span>
-                    {f.is_deployed ? (
-                      <span className="flex items-center gap-1 text-[9px] px-1.5 py-px rounded-full
-                                       bg-green-500/12 text-green-500 border border-green-500/20 font-bold">
-                        <CheckCircle size={7} /> Deployed
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-[9px] px-1.5 py-px rounded-full
-                                       bg-amber-500/12 text-amber-500 border border-amber-500/20 font-bold">
-                        <Clock size={7} /> Pending
-                      </span>
-                    )}
-                    {f.category && (
-                      <span className={`text-[9px] px-1.5 py-px rounded border font-medium
-                        ${CAT_COLORS[f.category] || CAT_COLORS.general}`}>
-                        {CAT_LABELS[f.category] || f.category}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 mt-0.5 text-[10px] text-text-muted tabular-nums flex-wrap">
-                    {f.codec && <span className="uppercase font-mono">{f.codec}</span>}
-                    {f.sample_rate && <span>{(Number(f.sample_rate)/1000).toFixed(1)}kHz</span>}
-                    {f.channels ? <span>{Number(f.channels) === 1 ? 'Mono' : 'Stereo'}</span> : null}
-                    {f.duration_sec ? <span>{fmtDuration(f.duration_sec)}</span> : null}
-                    <span>{fmtSize(f.size_bytes)}</span>
-                    <span className="hidden sm:inline">{fmtTime(f.created_at)}</span>
-                  </div>
-                </div>
-
-                {/* Quick actions */}
-                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={e => { e.stopPropagation(); setPlayer(f); }}
-                    title="Play"
-                    className="p-1.5 rounded-lg bg-surface-hover border border-surface-border
-                               text-text-muted hover:text-brand transition-colors">
-                    <Play size={11} />
-                  </button>
-                  <a
-                    href={api.mediaLibrary.downloadUrl(f.id)}
-                    download={f.name}
-                    onClick={e => e.stopPropagation()}
-                    title="Download"
-                    className="p-1.5 rounded-lg bg-surface-hover border border-surface-border
-                               text-text-muted hover:text-brand transition-colors">
-                    <Download size={11} />
-                  </a>
-                  {canEdit && !f.is_deployed && (
-                    <button
-                      onClick={e => { e.stopPropagation(); handleDeploy(f.id); }}
-                      disabled={deploying[f.id]}
-                      title="Deploy to SIPCommunication"
-                      className="p-1.5 rounded-lg bg-green-500/10 border border-green-500/20
-                                 text-green-500 hover:bg-green-500/20 disabled:opacity-50 transition-colors">
-                      {deploying[f.id]
-                        ? <RefreshCw size={11} className="animate-spin" />
-                        : <HardDrive size={11} />}
-                    </button>
-                  )}
-                  {canEdit && (
-                    <button
-                      onClick={e => { e.stopPropagation(); handleDelete(f); }}
-                      disabled={deleting[f.id]}
-                      title="Delete"
-                      className="p-1.5 rounded-lg text-text-muted hover:text-red-400
-                                 hover:bg-red-500/10 disabled:opacity-50 transition-colors">
-                      <Trash2 size={11} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Detail chevron */}
-                <Eye size={12} className={`shrink-0 transition-colors ${isActive ? 'text-brand' : 'text-text-muted/30 group-hover:text-text-muted'}`} />
-              </div>
-            );
-          })}
+      ) : files.length > 0 ? (
+        <div className={loading ? 'opacity-60 transition-opacity' : ''} aria-busy={loading}>
+          <Table>
+            <thead>
+              <tr>
+                <SortTh field="name"         label="Name"     list={list} onSort={f => setList(s => toggleSort(s, f))} />
+                <SortTh field="category"     label="Category" list={list} onSort={f => setList(s => toggleSort(s, f))} className="hidden md:table-cell" />
+                <Th>Status</Th>
+                <SortTh field="duration_sec" label="Duration" list={list} onSort={f => setList(s => toggleSort(s, f))} className="hidden sm:table-cell" />
+                <SortTh field="size_bytes"   label="Size"     list={list} onSort={f => setList(s => toggleSort(s, f))} className="hidden sm:table-cell" />
+                <SortTh field="created_at"   label="Uploaded" list={list} onSort={f => setList(s => toggleSort(s, f))} className="hidden lg:table-cell" />
+                <Th className="text-right">Actions</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {files.map(f => {
+                const isActive = detail?.id === f.id;
+                return (
+                  <Tr key={f.id} onClick={() => setDetail(isActive ? null : f)} className={isActive ? 'bg-brand/5' : ''}>
+                    <Td>
+                      <button type="button"
+                        onClick={e => { e.stopPropagation(); setDetail(isActive ? null : f); }}
+                        aria-label={`Show details for ${f.name}`}
+                        aria-expanded={isActive}
+                        className="flex items-center gap-2 text-left min-w-0 max-w-xs">
+                        <FileAudio size={13} className="text-brand shrink-0" />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-text-primary truncate">{f.name}</span>
+                          <span className="block text-[10px] text-text-muted tabular-nums">
+                            {[f.codec && f.codec.toUpperCase(),
+                              f.sample_rate && `${(Number(f.sample_rate) / 1000).toFixed(1)}kHz`,
+                              f.channels ? (Number(f.channels) === 1 ? 'Mono' : 'Stereo') : null]
+                              .filter(Boolean).join(' · ')}
+                          </span>
+                        </span>
+                      </button>
+                    </Td>
+                    <Td className="hidden md:table-cell">
+                      {f.category && (
+                        <span className={`text-[9px] px-1.5 py-px rounded border font-medium
+                          ${CAT_COLORS[f.category] || CAT_COLORS.general}`}>
+                          {CAT_LABELS[f.category] || f.category}
+                        </span>
+                      )}
+                    </Td>
+                    <Td>
+                      {f.is_deployed ? (
+                        <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-px rounded-full
+                                         bg-green-500/12 text-green-500 border border-green-500/20 font-bold">
+                          <CheckCircle size={7} /> Deployed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-px rounded-full
+                                         bg-amber-500/12 text-amber-500 border border-amber-500/20 font-bold">
+                          <Clock size={7} /> Pending
+                        </span>
+                      )}
+                    </Td>
+                    <Td className="hidden sm:table-cell tabular-nums text-xs">{f.duration_sec ? fmtDuration(f.duration_sec) : '—'}</Td>
+                    <Td className="hidden sm:table-cell tabular-nums text-xs">{fmtSize(f.size_bytes)}</Td>
+                    <Td className="hidden lg:table-cell text-xs text-text-muted">{fmtTime(f.created_at)}</Td>
+                    <Td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button type="button"
+                          onClick={e => { e.stopPropagation(); setPlayer(f); }}
+                          title="Play" aria-label={`Play ${f.name}`}
+                          className="p-1.5 rounded-lg bg-surface-hover border border-surface-border
+                                     text-text-muted hover:text-brand transition-colors">
+                          <Play size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={e => { e.stopPropagation(); downloadMedia('media', f.id, f.name).catch(err => alert('Download failed: ' + err.message)); }}
+                          title="Download"
+                          aria-label={`Download ${f.name}`}
+                          className="p-1.5 rounded-lg bg-surface-hover border border-surface-border
+                                     text-text-muted hover:text-brand transition-colors">
+                          <Download size={11} />
+                        </button>
+                        {canEdit && !f.is_deployed && (
+                          <button type="button"
+                            onClick={e => { e.stopPropagation(); handleDeploy(f.id); }}
+                            disabled={deploying[f.id]}
+                            title="Deploy to SIPCommunication" aria-label={`Deploy ${f.name}`}
+                            className="p-1.5 rounded-lg bg-green-500/10 border border-green-500/20
+                                       text-green-500 hover:bg-green-500/20 disabled:opacity-50 transition-colors">
+                            {deploying[f.id]
+                              ? <RefreshCw size={11} className="animate-spin" />
+                              : <HardDrive size={11} />}
+                          </button>
+                        )}
+                        {canEdit && (
+                          <button type="button"
+                            onClick={e => { e.stopPropagation(); handleDelete(f); }}
+                            disabled={deleting[f.id]}
+                            title="Delete" aria-label={`Delete ${f.name}`}
+                            className="p-1.5 rounded-lg text-text-muted hover:text-red-400
+                                       hover:bg-red-500/10 disabled:opacity-50 transition-colors">
+                            <Trash2 size={11} />
+                          </button>
+                        )}
+                      </div>
+                    </Td>
+                  </Tr>
+                );
+              })}
+            </tbody>
+          </Table>
+          <Pagination page={list.page} totalPages={pages} total={total} limit={list.limit}
+            disabled={loading} onPage={p => change({ page: p })} />
         </div>
-      )}
+      ) : null}
 
       {/* Sidebar spacer when detail panel is open */}
       {detail && <div className="h-1" />}

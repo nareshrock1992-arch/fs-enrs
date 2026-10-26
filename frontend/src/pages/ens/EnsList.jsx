@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useAuthStore } from '../../store/authStore.js';
 import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Users, User, ChevronDown, Search, Play, Check, X } from 'lucide-react';
 import { api } from '../../api/client.js';
+import { useMediaUrl } from '../../api/mediaAccess.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import Badge from '../../components/ui/Badge.jsx';
@@ -37,6 +38,7 @@ function MediaPickerField({ value, onChange }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [previewId, setPreviewId] = useState(null);
+  const { url: previewUrl } = useMediaUrl('media', previewId, 'stream');
   const audioRef = useRef(null);
   const timerRef = useRef(null);
   const displayName = value ? value.replace(/^\/media\//, '') : '';
@@ -130,8 +132,8 @@ function MediaPickerField({ value, onChange }) {
               );
             })}
           </div>
-          {previewId && (
-            <audio ref={audioRef} autoPlay src={api.mediaLibrary.streamUrl(previewId)}
+          {previewId && previewUrl && (
+            <audio ref={audioRef} autoPlay src={previewUrl}
               onEnded={() => setPreviewId(null)} className="hidden" />
           )}
         </div>

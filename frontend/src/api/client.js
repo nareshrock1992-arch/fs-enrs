@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_URL || '/api/v1';
+export const BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
 function getToken() {
   return localStorage.getItem('enrs_token');
@@ -284,12 +284,10 @@ export const api = {
     update:      (id,d) => request('PUT',    `/media-library/${id}`, d),
     deploy:      (id)   => request('POST',   `/media-library/${id}/deploy`),
     remove:      (id)   => request('DELETE', `/media-library/${id}`),
-    // Token-bearing URLs for <audio src> and <a download> — browser can't set Authorization header.
-    // BASE already includes the sub-path prefix (/enrs/api/v1 in prod, /api/v1 in dev),
-    // so these URLs resolve correctly regardless of the nginx deployment path.
-    streamUrl:   (id)   => `${BASE}/media-library/${id}/stream?token=${getToken() || ''}`,
-    downloadUrl: (id)   => `${BASE}/media-library/${id}/download?token=${getToken() || ''}`,
-    waveformUrl: (id)   => `${BASE}/media-library/${id}/waveform?token=${getToken() || ''}`,
+    // <audio src> / <a download> cannot send an Authorization header, so the UI asks for a
+    // short-lived signature scoped to one file + purpose (see api/mediaAccess.js) instead of
+    // putting the session token in the URL.
+    access:      (id, purpose = 'stream') => request('GET', `/media-library/${id}/access?purpose=${purpose}`),
     waveform:    (id)   => request('GET',    `/media-library/${id}/waveform`),
   },
 
@@ -306,9 +304,7 @@ export const api = {
     update:      (id,d) => request('PUT',    `/recordings/${id}`, d),
     archive:     (id)   => request('POST',   `/recordings/${id}/archive`),
     remove:      (id)   => request('DELETE', `/recordings/${id}`),
-    // Token-bearing URLs for <audio src> and <a download> — same sub-path fix as mediaLibrary.
-    streamUrl:   (id)   => `${BASE}/recordings/${id}/stream?token=${getToken() || ''}`,
-    downloadUrl: (id)   => `${BASE}/recordings/${id}/download?token=${getToken() || ''}`,
+    access:      (id, purpose = 'stream') => request('GET', `/recordings/${id}/access?purpose=${purpose}`),
     waveform:    (id)   => request('GET',    `/recordings/${id}/waveform`),
   },
 

@@ -5,7 +5,8 @@
 
 import { Router } from 'express';
 import { requireAuth, requireAuthOrToken } from '../../middleware/auth.js';
-import { adminOrOp } from '../../middleware/rbac.js';
+import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
+import { requireMediaAccess, issueMediaAccess } from '../../middleware/mediaAccess.js';
 import {
   listRecordings, getRecording,
   streamRecording, downloadRecording, getRecordingWaveform,
@@ -19,11 +20,15 @@ router.get('/',                   requireAuth, adminOrOp, listRecordings);
 router.get('/:id',                requireAuth, adminOrOp, getRecording);
 router.put('/:id',                requireAuth, adminOrOp, updateRecording);
 router.post('/:id/archive',       requireAuth, adminOrOp, archiveRecording);
-router.delete('/:id',             requireAuth, adminOrOp, deleteRecording);
+// Deletion is admin-only: the UI never offered it to operators, and an operator
+// could otherwise remove ERS/ENS evidence through the API. See docs/media-rbac.md.
+router.delete('/:id',             requireAuth, adminOnly, deleteRecording);
 
-// Streaming routes accept ?token= for <audio src> compatibility
-router.get('/:id/stream',         requireAuthOrToken, streamRecording);
-router.get('/:id/download',       requireAuthOrToken, downloadRecording);
+// Stream/download accept a scoped, short-lived ?sig= (issued by GET /:id/access,
+// see middleware/mediaAccess.js), a Bearer header, or the deprecated ?token=.
+router.get('/:id/access',         requireAuth, adminOrOp, issueMediaAccess('recording'));
+router.get('/:id/stream',         requireMediaAccess('recording', 'stream'), streamRecording);
+router.get('/:id/download',       requireMediaAccess('recording', 'download'), downloadRecording);
 router.get('/:id/waveform',       requireAuthOrToken, getRecordingWaveform);
 
 export default router;

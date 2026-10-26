@@ -5,7 +5,8 @@
 
 import { Router } from 'express';
 import { requireAuth, requireAuthOrToken } from '../../middleware/auth.js';
-import { adminOnly, adminOrOp, adminOrSuper } from '../../middleware/rbac.js';
+import { adminOnly, adminOrSuper, canViewMedia } from '../../middleware/rbac.js';
+import { requireMediaAccess, issueMediaAccess } from '../../middleware/mediaAccess.js';
 import {
   listMedia, listCategories, uploadMedia, uploadMiddleware,
   scanMedia, getMedia, updateMedia, deployMedia,
@@ -14,16 +15,18 @@ import {
 
 const router = Router();
 
-// Streaming routes accept ?token= for <audio src> compatibility — do NOT add
-// requireAuth here; requireAuthOrToken handles both Bearer and ?token= forms.
-router.get('/:id/stream',         requireAuthOrToken, streamMedia);
-router.get('/:id/download',       requireAuthOrToken, downloadMedia);
+// Stream/download accept a scoped, short-lived ?sig= (issued by GET /:id/access,
+// see middleware/mediaAccess.js), a Bearer header, or the deprecated ?token=.
+// Do NOT add requireAuth here — <audio src> cannot send headers.
+router.get('/:id/access',         requireAuth, issueMediaAccess('media'));
+router.get('/:id/stream',         requireMediaAccess('media', 'stream'), streamMedia);
+router.get('/:id/download',       requireMediaAccess('media', 'download'), downloadMedia);
 router.get('/:id/waveform',       requireAuthOrToken, getWaveform);
 
 // All other routes require a full Bearer session.
-router.get('/categories',         requireAuth, adminOrOp, listCategories);
-router.get('/',                   requireAuth, adminOrOp, listMedia);
-router.get('/:id',                requireAuth, adminOrOp, getMedia);
+router.get('/categories',         requireAuth, canViewMedia, listCategories);
+router.get('/',                   requireAuth, canViewMedia, listMedia);
+router.get('/:id',                requireAuth, canViewMedia, getMedia);
 router.post('/scan',              requireAuth, adminOnly, scanMedia);
 router.post('/upload',            requireAuth, adminOrSuper, uploadMiddleware, uploadMedia);
 router.put('/:id',                requireAuth, adminOnly, updateMedia);

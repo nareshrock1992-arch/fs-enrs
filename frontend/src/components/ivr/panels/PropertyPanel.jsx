@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { api } from '../../../api/client.js';
+import { useMediaUrl } from '../../../api/mediaAccess.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
 import { nodeStyle } from '../canvas/nodeStyle.js';
@@ -280,6 +281,7 @@ function MediaPickerField({ value, onChange }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [previewId, setPreviewId] = useState(null);
+  const { url: previewUrl } = useMediaUrl('media', previewId, 'stream');
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
@@ -425,11 +427,11 @@ function MediaPickerField({ value, onChange }) {
           </div>
 
           {/* Hidden audio element for preview */}
-          {previewId && (
+          {previewId && previewUrl && (
             <audio
               ref={audioRef}
               autoPlay
-              src={api.mediaLibrary.streamUrl(previewId)}
+              src={previewUrl}
               onEnded={() => setPreviewId(null)}
               className="hidden"
             />
