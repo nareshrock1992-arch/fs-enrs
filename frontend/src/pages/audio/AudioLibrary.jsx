@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Music, Upload, Trash2, Play, Square, CheckCircle, AlertCircle,
@@ -6,6 +7,7 @@ import {
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const CATEGORIES = ['general', 'greeting', 'menu', 'instruction', 'confirmation', 'error', 'music', 'other'];
 
@@ -127,8 +129,8 @@ function UploadModal({ onClose, onSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-      <div className="bg-surface border border-surface-border rounded-xl shadow-2xl w-full max-w-lg">
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-surface border border-surface-border rounded-xl shadow-lg w-full max-w-lg">
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
           <h2 className="text-sm font-bold text-text-primary flex items-center gap-2">
             <Upload size={15} className="text-brand" /> Upload Audio File
@@ -303,20 +305,20 @@ export default function AudioLibrary() {
       await api.deployment.deployAudio(id);
       load();
     } catch (e) {
-      alert('Deploy failed: ' + e.message);
+      notify('Deploy failed: ' + e.message);
     } finally {
       setDeploying(d => ({ ...d, [id]: false }));
     }
   };
 
   const handleDelete = async (file) => {
-    if (!window.confirm(`Delete "${file.name}"?`)) return;
+    if (!(await confirmAction({ title: 'Delete audio file', message: `Delete "${file.name}"?`, confirmLabel: 'Delete' }))) return;
     setDeleting(d => ({ ...d, [file.id]: true }));
     try {
       await api.deployment.deleteAudio(file.id);
       load();
     } catch (e) {
-      alert('Delete failed: ' + e.message);
+      notify('Delete failed: ' + e.message);
     } finally {
       setDeleting(d => ({ ...d, [file.id]: false }));
     }

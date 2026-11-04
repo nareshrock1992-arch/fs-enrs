@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { createLatestGuard, ersSummary, ensSummary, loadErrorMessage, csvCell, csvLine } from '../pages/reports/reportState.js';
+import { createLatestGuard, ersSummary, ensSummary, loadErrorMessage, csvCell, csvLine, filterParams, outcomeSummary } from '../pages/reports/reportState.js';
 import { can, visibleNav } from '../auth/permissions.js';
+import { NAV as REAL_NAV, activeNavTarget } from '../components/layout/navigation.js';
 
 describe('latest-request guard (stale responses never overwrite newer ones)', () => {
   it('only the most recent token is current', () => {
@@ -83,5 +84,47 @@ describe('navigation matches server permissions', () => {
     expect(labels('ADMIN')).toContain('Users');
     expect(labels('ADMIN')).not.toContain('Tenants');
     expect(labels('SUPER_ADMIN')).toContain('Tenants');
+  });
+});
+
+describe('the real application menu', () => {
+  const links = (role) => visibleNav(REAL_NAV, { role }).flatMap(n => (n.children ? n.children.map(c => c.to) : [n.to]));
+
+  it('platform pages are offered to SUPER_ADMIN only (the server answers 403 to others)', () => {
+    for (const role of ['ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER']) {
+      for (const to of ['/tenants', '/audit', '/config/vars']) expect(links(role)).not.toContain(to);
+    }
+    expect(links('SUPER_ADMIN')).toEqual(expect.arrayContaining(['/tenants', '/audit', '/config/vars', '/users', '/settings']));
+  });
+  it('administration pages are offered to ADMIN and SUPER_ADMIN only', () => {
+    for (const role of ['SUPERVISOR', 'OPERATOR', 'VIEWER']) for (const to of ['/users', '/settings', '/settings/gateways']) expect(links(role)).not.toContain(to);
+    expect(links('ADMIN')).toEqual(expect.arrayContaining(['/users', '/settings', '/settings/gateways']));
+  });
+  it('reports and recordings follow their capabilities', () => {
+    expect(links('VIEWER')).not.toContain('/reports/ers');
+    expect(links('SUPERVISOR')).not.toContain('/recordings');
+    expect(links('OPERATOR')).toEqual(expect.arrayContaining(['/reports/ers', '/reports/ens', '/reports/contact-usage', '/recordings']));
+  });
+  it('every link appears once, and nested paths highlight the most specific entry', () => {
+    const all = links('SUPER_ADMIN');
+    expect(new Set(all).size).toBe(all.length);
+    expect(activeNavTarget(REAL_NAV, '/ens/campaigns')).toBe('/ens/campaigns');
+    expect(activeNavTarget(REAL_NAV, '/ens')).toBe('/ens');
+    expect(activeNavTarget(REAL_NAV, '/ivr/0f1e2d3c')).toBe('/ivr');
+    expect(activeNavTarget(REAL_NAV, '/settings/gateways')).toBe('/settings/gateways');
+    expect(activeNavTarget(REAL_NAV, '/')).toBe('/');
+    expect(activeNavTarget(REAL_NAV, '/nowhere')).toBeNull();
+  });
+});
+
+describe('export filters and recipient outcomes', () => {
+  it('sends only the filters that are set', () => {
+    expect(filterParams({ from: '2026-10-01', to: '', status: undefined })).toEqual({ from: '2026-10-01' });
+    expect(filterParams()).toEqual({});
+  });
+  it('lists non-zero outcomes in a fixed order; no data means no claim', () => {
+    expect(outcomeSummary({ answered: 3, busy: 0, no_answer: 2, failed: '1', recipients: 6 }).map(o => `${o.count} ${o.label}`))
+      .toEqual(['3 answered', '2 no answer', '1 failed']);
+    expect(outcomeSummary(null)).toEqual([]);
   });
 });

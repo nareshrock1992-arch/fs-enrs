@@ -29,7 +29,7 @@
 
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
+import { adminOnly, adminOrOp, superAdminOnly } from '../../middleware/rbac.js';
 import {
   listAudio, scanAudio, listCategories, uploadAudio, audioUploadMiddleware,
   deployAudio, streamAudio, deleteAudio,
@@ -56,14 +56,15 @@ router.get('/flows',                  adminOrOp, listFlowStatus);
 router.get('/flows/:uuid/preview',    adminOrOp, previewDeploy);
 router.post('/flows/:uuid/deploy',    adminOnly, triggerDeploy);
 router.get('/flows/:uuid/history',    adminOrOp, deployHistory);
-router.post('/redeploy-all',          adminOnly, triggerRedeployAll);
+// Platform-wide: these act on every tenant's flows and on the shared dialplan.
+router.post('/redeploy-all',          superAdminOnly, triggerRedeployAll);
 
 // ── Diagnostics ───────────────────────────────────────────────────────────────
 
 router.get('/diagnostics',            adminOrOp, getDiagnostics);
-router.post('/diagnostics/reloadxml', adminOnly, triggerReloadXml);
+router.post('/diagnostics/reloadxml', superAdminOnly, triggerReloadXml);
 router.get('/diagnostics/paths',      adminOrOp, getPaths);
 router.get('/diagnostics/esl',        adminOrOp, getEslStatus);
-router.post('/diagnostics/disable-legacy-extension', adminOnly, disableLegacyExtensionRoute);
+router.post('/diagnostics/disable-legacy-extension', superAdminOnly, disableLegacyExtensionRoute);
 
 export default router;

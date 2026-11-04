@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback } from 'react';
 import {
   Rocket, CheckCircle, XCircle, AlertTriangle, Clock, RefreshCw,
@@ -7,6 +8,7 @@ import {
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 // ── Status Chips ──────────────────────────────────────────────────────────────
 
@@ -161,6 +163,8 @@ function FlowRow({ flow, onDeploy, deploying }) {
 // ── Diagnostics Panel ─────────────────────────────────────────────────────────
 
 function DiagnosticsPanel() {
+  // reloadxml and the legacy-extension fix act on the shared dialplan: platform administrators only.
+  const isPlatformAdmin = useAuthStore(s => s.user?.role === 'SUPER_ADMIN');
   const [result,     setResult]     = useState(null);
   const [loading,    setLoading]    = useState(false);
   const [paths,      setPaths]      = useState(null);
@@ -187,26 +191,25 @@ function DiagnosticsPanel() {
   const doReloadXml = async () => {
     try {
       await api.deployment.reloadXml();
-      alert('reloadxml executed successfully');
+      notify('reloadxml executed successfully', 'success');
     } catch (e) {
-      alert('reloadxml failed: ' + e.message);
+      notify('reloadxml failed: ' + e.message);
     }
   };
 
   const disableConflict = async (conflict) => {
-    const ok = confirm(
+    const ok = await confirmAction({ title: 'Disable legacy extension', confirmLabel: 'Disable', variant: 'warning', message:
       `Disable legacy extension "${conflict.extension_name}" in ${conflict.file}?\n\n` +
       `This comments out (does not delete) the block that matches number "${conflict.number}" ` +
       `via expression "${conflict.expression}". It can be re-enabled by editing the file and ` +
-      `removing the comment wrapper.`
-    );
+      `removing the comment wrapper.` });
     if (!ok) return;
     setDisabling(`${conflict.file}::${conflict.extension_name}`);
     try {
       await api.deployment.disableLegacyExtension(conflict.file, conflict.extension_name);
       await run();
     } catch (e) {
-      alert('Failed to disable extension: ' + e.message);
+      notify('Failed to disable extension: ' + e.message);
     } finally {
       setDisabling(null);
     }
@@ -231,13 +234,13 @@ function DiagnosticsPanel() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
+          {isPlatformAdmin && (<button
             onClick={doReloadXml}
             className="text-xs px-3 py-1.5 rounded-lg border border-surface-border
                        text-text-muted hover:text-brand hover:border-brand transition-colors flex items-center gap-1.5"
           >
             <RefreshCw size={11} /> reloadxml
-          </button>
+          </button>)}
           <button
             onClick={run}
             disabled={loading}
@@ -320,7 +323,7 @@ function DiagnosticsPanel() {
                 </div>
                 <button
                   onClick={() => disableConflict(c)}
-                  disabled={disabling === key}
+                  disabled={!isPlatformAdmin || disabling === key}
                   className="text-[10px] px-2.5 py-1.5 rounded-lg border border-amber-500/30
                              text-amber-500 hover:bg-amber-500/10 transition-colors shrink-0
                              disabled:opacity-50"
@@ -381,7 +384,7 @@ export default function DeploymentDashboard() {
   useEffect(() => { loadFlows(); }, [loadFlows]);
 
   const handleDeploy = async (uuid) => {
-    if (!canEdit) return alert('Admin access required');
+    if (!canEdit) return notify('Admin access required');
     setDeploying(d => ({ ...d, [uuid]: true }));
     setReport(null);
     try {

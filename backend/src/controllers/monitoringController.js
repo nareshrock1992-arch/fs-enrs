@@ -24,6 +24,8 @@ import {
   eslStatus, syncConferenceFromXml,
 } from '../services/eslService.js';
 import { effectiveTenantId } from '../middleware/tenantScope.js';
+import { isEslText, isEslToken } from '../middleware/conferenceAccess.js';
+import { findConferenceOwners, canAccessConference } from '../services/conferenceOwnership.js';
 
 // Schedule a post-command xml_list verification 300 ms after the HTTP response.
 // Runs conference xml_list, compares against the in-memory registry, and emits
@@ -52,6 +54,16 @@ export const getConferences = asyncHandler(async (req, res) => {
     snapshot = getConferenceSnapshot();
   }
 
+  // The snapshot holds every tenant's rooms and members: tenant users only get their own.
+  // SUPER_ADMIN focused on one tenant sees that tenant plus rooms that have no owner,
+  // so an ownerless conference is never out of reach.
+  const tenantId = effectiveTenantId(req);
+  if (tenantId != null && snapshot.length > 0) {
+    const owners = await findConferenceOwners(snapshot.map(c => c.name).filter(Boolean));
+    const superAdmin = req.user?.role === 'SUPER_ADMIN';
+    snapshot = snapshot.filter(c => canAccessConference(owners, c.name, tenantId) || (superAdmin && !owners.has(c.name)));
+  }
+
   const rooms = snapshot.map(c => c.name).filter(Boolean);
   let incidentMap = {};
 
@@ -77,7 +89,7 @@ export const getConferences = asyncHandler(async (req, res) => {
          AND i.deleted_at IS NULL
          AND ($2::int IS NULL OR i.tenant_id = $2)
          AND i.conference_room = ANY($1)`,
-      [rooms, effectiveTenantId(req)]
+      [rooms, tenantId]
     );
     for (const r of rows) incidentMap[r.conference_room] = r;
   }
@@ -199,6 +211,19 @@ export const startRecording = asyncHandler(async (req, res) => {
   const ts     = Date.now();
   const recDir = fsPathService.getRecordingDirForType(recType);
   const prefix = recType === 'ERS' ? `ers_${room}` : `conf_${room}`;
+  // A caller-supplied path may only name a file directly inside the recording directory:
+  // this command makes SIPCommunication write to that path.
+  if (req.body?.path && (!isEslToken(req.body.path)
+      || !/\.wav$/i.test(req.body.path)
+      || path.posix.dirname(path.posix.resolve(req.body.path)) !== path.posix.resolve(recDir))) {
+    return res.status(400).json({ error: 'path must be a .wav file inside the recording directory' });
+  }
+  // Only a new file: an existing name could be another recording, or a symlink out of the
+  // directory (lstat does not follow links, so a dangling link is caught too).
+  if (req.body?.path) {
+    const taken = await fsp.lstat(req.body.path).then(() => true, (e) => e.code !== 'ENOENT');
+    if (taken) return res.status(409).json({ error: 'A file with this name already exists' });
+  }
   const recPath = req.body?.path || path.posix.join(recDir, `${prefix}_${ts}.wav`);
 
   // Create the directory on the backend host.
@@ -256,6 +281,7 @@ export const stopRecording = asyncHandler(async (req, res) => {
   if (!recPath) {
     return res.status(400).json({ error: 'No active recording path known for this conference' });
   }
+  if (!isEslToken(recPath)) return res.status(400).json({ error: 'path is not valid' });
 
   // Transition to STOPPING immediately so the UI shows "Stopping…" not "Active".
   setConferenceRecordingStopping(room);
@@ -303,21 +329,21 @@ export const stopRecording = asyncHandler(async (req, res) => {
 
 export const playAudio = asyncHandler(async (req, res) => {
   const { audio_path } = req.body;
-  if (!audio_path) return res.status(400).json({ error: 'audio_path required' });
+  if (!isEslToken(audio_path)) return res.status(400).json({ error: 'audio_path required (one file path, no spaces)' });
   await confPlay(req.params.room, audio_path);
   res.json({ ok: true });
 });
 
 export const sayText = asyncHandler(async (req, res) => {
   const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'text required' });
+  if (!isEslText(text)) return res.status(400).json({ error: 'text required (one line, at most 1000 characters)' });
   await confSay(req.params.room, text);
   res.json({ ok: true });
 });
 
 export const inviteParticipant = asyncHandler(async (req, res) => {
   const { dial_string } = req.body;
-  if (!dial_string) return res.status(400).json({ error: 'dial_string required' });
+  if (!isEslToken(dial_string)) return res.status(400).json({ error: 'dial_string required (no spaces)' });
   await confInvite(req.params.room, dial_string);
   res.json({ ok: true });
 });
@@ -361,7 +387,9 @@ export const undeafMember = asyncHandler(async (req, res) => {
 
 export const setVolume = asyncHandler(async (req, res) => {
   const { direction, level } = req.body;
-  if (!direction || level == null) return res.status(400).json({ error: 'direction and level required' });
+  if (!['in', 'out'].includes(direction) || !/^-?\d{1,5}$/.test(String(level ?? ''))) {
+    return res.status(400).json({ error: 'direction (in or out) and a whole-number level are required' });
+  }
   if (direction === 'in') {
     await confVolumeIn(req.params.room, req.params.memberId, level);
   } else {
@@ -373,7 +401,7 @@ export const setVolume = asyncHandler(async (req, res) => {
 
 export const setEnergy = asyncHandler(async (req, res) => {
   const { level } = req.body;
-  if (level == null) return res.status(400).json({ error: 'level required' });
+  if (!/^-?\d{1,5}$/.test(String(level ?? ''))) return res.status(400).json({ error: 'a whole-number level is required' });
   await confEnergy(req.params.room, req.params.memberId, level);
   res.json({ ok: true });
   scheduleSync(req.params.room);
@@ -387,7 +415,9 @@ export const setFloor = asyncHandler(async (req, res) => {
 
 export const transferMember = asyncHandler(async (req, res) => {
   const { extension, dialplan = 'XML', context = 'default' } = req.body;
-  if (!extension) return res.status(400).json({ error: 'extension required' });
+  if (![extension, dialplan, context].every(isEslToken)) {
+    return res.status(400).json({ error: 'extension required (no spaces)' });
+  }
   await confTransfer(req.params.room, req.params.memberId, extension, dialplan, context);
   res.json({ ok: true });
 });

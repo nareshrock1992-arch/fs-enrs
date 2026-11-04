@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback } from 'react';
 import {
   ShieldAlert, Phone, Radio, Activity, AlertCircle,
@@ -9,6 +10,7 @@ import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 // ── Static maps ───────────────────────────────────────────────────────────────
 
@@ -204,8 +206,8 @@ function TriggerModal({ service, onClose, onSuccess }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-panel border border-surface-border rounded-xl w-full max-w-md mx-4 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-surface-panel border border-surface-border rounded-xl w-full max-w-md mx-4 shadow-lg">
         <div className="p-5 border-b border-surface-border flex items-center gap-3">
           <ServiceIcon icon={service.icon || 'bell'} color={service.color || 'red'} />
           <div>
@@ -443,8 +445,8 @@ export default function ServiceRegistry() {
   }
 
   async function onDelete(service) {
-    if (!confirm(`Delete service number "${service.trigger_number} — ${service.service_name || service.service_type}"?`)) return;
-    try { await api.services.remove(service.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete service number', message: `Delete service number "${service.trigger_number} — ${service.service_name || service.service_type}"?`, confirmLabel: 'Delete' }))) return;
+    try { await api.services.remove(service.id); load(); } catch (e) { notify(e.message); }
   }
 
   return (

@@ -118,7 +118,8 @@ describe('record_message Lua handler', () => {
   it('T9: stores recorded file path in session variable after recording', () => {
     const lua = getRecordEntry().luaHandler;
     expect(lua).toContain('node.variable_name or "recorded_file_path"');
-    expect(lua).toContain('s:setVariable(var_name, fpath)');
+    // Written through set_var, which refuses protected channel variables (IVR-13).
+    expect(lua).toContain('set_var(s, var_name, fpath)');
   });
 
   it('T10: does not proceed to next node when recording is too short', () => {

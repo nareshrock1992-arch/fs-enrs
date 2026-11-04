@@ -284,7 +284,9 @@ export async function deployFlow(flowUuid, { deployedBy, tenantId }) {
       const graph = typeof flow.published_graph === 'string'
         ? JSON.parse(flow.published_graph)
         : flow.published_graph;
-      const result = await validateGraph(graph, tenantId);
+      // The version was published already: rules added after it was published are
+      // reported as warnings, not a refusal (validateGraph alreadyPublished).
+      const result = await validateGraph(graph, tenantId, { alreadyPublished: true });
       if (!result.valid) {
         throw new Error('Graph validation failed: ' + result.errors.join('; '));
       }

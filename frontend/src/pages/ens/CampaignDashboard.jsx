@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useAuthStore } from '../../store/authStore.js';
 import {
@@ -7,6 +8,8 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
+import { campaignCounts } from './campaignCounts.js';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -48,28 +51,25 @@ function pct(num, total) {
 // ── Progress Bar ──────────────────────────────────────────────────────────────
 
 function CampaignProgress({ c }) {
-  const done     = (c.completed_count || 0) + (c.failed_count || 0) + (c.expired_count || 0) + (c.skipped_count || 0);
-  const answered = c.answered_count || 0;
-  const total    = c.total_destinations || 1;
-  const donePct  = pct(done, total);
-  const dialPct  = pct(c.dialing_count || 0, total);
+  const k = campaignCounts(c);
+  const total = k.total || 1;
+  const unreached = k.busy + k.noAnswer + k.failed + k.expired + k.skipped;
 
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between text-[11px] text-text-muted">
-        <span>{done} / {total} processed</span>
-        <span>{donePct}%</span>
+        <span>{k.done} / {k.total} recipients finished</span>
+        <span>{pct(k.done, total)}%</span>
       </div>
-      <div className="h-2 bg-surface-raised rounded-full overflow-hidden flex">
-        <div className="bg-green-500 transition-all duration-500" style={{ width: `${pct(answered, total)}%` }} />
-        <div className="bg-yellow-400 transition-all duration-500" style={{ width: `${dialPct}%` }} />
-        <div className="bg-red-500/60 transition-all duration-500" style={{ width: `${pct(c.failed_count || 0, total)}%` }} />
+      <div className="h-2 bg-surface-raised rounded-full overflow-hidden flex" aria-hidden="true">
+        <div className="bg-success transition-all duration-500" style={{ width: `${pct(k.answered, total)}%` }} />
+        <div className="bg-danger/60 transition-all duration-500" style={{ width: `${pct(unreached, total)}%` }} />
+        <div className="bg-warning/70 transition-all duration-500" style={{ width: `${pct(k.pending, total)}%` }} />
       </div>
-      <div className="flex gap-3 text-[10px]">
-        <span className="text-green-400">■ Answered: {answered}</span>
-        <span className="text-yellow-400">■ Dialing: {c.dialing_count || 0}</span>
-        <span className="text-blue-400">■ Queued: {c.queued_count || 0}</span>
-        <span className="text-red-400">■ Failed: {c.failed_count || 0}</span>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+        <span className="text-success">■ Answered: {k.answered}</span>
+        <span className="text-danger">■ Not reached: {unreached}</span>
+        <span className="text-warning">■ Pending: {k.pending}</span>
       </div>
     </div>
   );
@@ -140,7 +140,7 @@ function DestinationPanel({ campaignId }) {
       });
       setDests(data.destinations || []);
       setTotal(data.total || 0);
-    } catch {}
+    } catch (e) { notify(`Recipients could not be loaded: ${e.message}`); }
     setLoading(false);
   }, [campaignId, statusFilter, page]);
 
@@ -215,7 +215,7 @@ function CampaignRow({ c, onAction, onRefresh }) {
   async function act(fn) {
     setActing(true);
     try { await fn(); onRefresh(); }
-    catch (e) { alert(e.message); }
+    catch (e) { notify(e.message); }
     finally { setActing(false); }
   }
 
@@ -297,8 +297,8 @@ function CampaignRow({ c, onAction, onRefresh }) {
               )}
               <button
                 disabled={acting}
-                onClick={() => {
-                  if (window.confirm('Cancel this campaign?')) act(() => api.campaigns.cancel(c.id));
+                onClick={async () => {
+                  if (await confirmAction({ title: 'Cancel campaign', message: 'Cancel this campaign? Recipients not yet called are skipped; calls in progress finish.', confirmLabel: 'Cancel campaign', cancelLabel: 'Keep running' })) act(() => api.campaigns.cancel(c.id));
                 }}
                 className="btn-ghost p-1.5 text-red-400 hover:text-red-300"
                 title="Cancel"
@@ -311,16 +311,16 @@ function CampaignRow({ c, onAction, onRefresh }) {
 
         {/* Stats grid (always visible) */}
         <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 mt-4">
-          {[
-            { label: 'Total',     value: c.total_destinations, icon: Users },
-            { label: 'Answered',  value: c.answered_count,     icon: CheckCircle },
-            { label: 'Completed', value: c.completed_count,    icon: CheckCircle },
-            { label: 'Busy',      value: c.busy_count,         icon: PhoneOff,   warn: true },
-            { label: 'No Ans',    value: c.no_answer_count,    icon: PhoneMissed, warn: true },
-            { label: 'Failed',    value: c.failed_count,       icon: AlertCircle, warn: true },
-            { label: 'Retried',   value: c.retried_count,      icon: RefreshCw },
-            { label: 'Peak CC',   value: c.peak_concurrent,    icon: BarChart2 },
-          ].map(s => (
+          {(({ total, answered, pending, busy, noAnswer, failed, retries }) => [
+            { label: 'Recipients', value: total,    icon: Users },
+            { label: 'Answered',   value: answered, icon: CheckCircle },
+            { label: 'Pending',    value: pending,  icon: Clock },
+            { label: 'Busy',       value: busy,     icon: PhoneOff,   warn: true },
+            { label: 'No answer',  value: noAnswer, icon: PhoneMissed, warn: true },
+            { label: 'Failed',     value: failed,   icon: AlertCircle, warn: true },
+            { label: 'Retries',    value: retries,  icon: RefreshCw },
+            { label: 'Peak calls', value: c.peak_concurrent, icon: BarChart2 },
+          ])(campaignCounts(c)).map(s => (
             <div key={s.label} className="text-center">
               <p className="text-[10px] text-text-muted">{s.label}</p>
               <p className={`text-sm font-bold font-mono ${s.warn && (s.value || 0) > 0 ? 'text-red-400' : 'text-text-primary'}`}>
@@ -428,7 +428,8 @@ export default function CampaignDashboard() {
           { label: 'Total Campaigns', value: total,           icon: Bell },
           { label: 'Active',          value: activeCampaigns, icon: Activity, warn: activeCampaigns > 0 },
           { label: 'Running',         value: campaigns.filter(c => c.status === 'running').length,   icon: Play },
-          { label: 'Completed Today', value: campaigns.filter(c => c.status === 'completed').length, icon: CheckCircle },
+          // Of the campaigns loaded on this page; it counted every completed one, any day.
+          { label: 'Completed today', value: campaigns.filter(c => c.status === 'completed' && c.completed_at && new Date(c.completed_at).toDateString() === new Date().toDateString()).length, icon: CheckCircle },
         ].map(s => (
           <div key={s.label} className="bg-surface-panel border border-surface-border rounded-xl p-4">
             <div className="flex items-start justify-between">

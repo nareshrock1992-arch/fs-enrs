@@ -4,6 +4,7 @@ import { guardedQuery } from '../services/mediaDependencyService.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
+import { isEslToken } from '../middleware/conferenceAccess.js';
 
 const str    = (max) => z.string().max(max).optional().nullable();
 
@@ -783,7 +784,7 @@ export const cancelQueuedIncident = asyncHandler(async (req, res) => {
 
     try {
       const { emitInternal } = await import('../services/socketService.js');
-      emitInternal('enrs::ers_incident_ended', { incident_uuid: uuid, ended_at: new Date().toISOString(), status: 'CANCELLED' });
+      emitInternal('enrs::ers_incident_ended', { incident_uuid: uuid, ended_at: new Date().toISOString(), status: 'CANCELLED' }, incident.tenant_id);
     } catch (err) {
       console.warn('[ers] cancelQueuedIncident socket emit failed:', err.message);
     }
@@ -795,24 +796,9 @@ export const cancelQueuedIncident = asyncHandler(async (req, res) => {
 
 // ── Conference control — live member list ─────────────────────────────────────
 
-// Verify a conference room belongs to an active incident owned by the caller's tenant.
-async function verifyConferenceRoom(room, tenantId) {
-  if (tenantId === null) return; // SUPER_ADMIN
-  const { rows: [inc] } = await query(
-    `SELECT i.id FROM ers_incidents i
-     JOIN ers_configurations e ON e.id = i.ers_configuration_id
-     WHERE i.conference_room = $1 AND i.deleted_at IS NULL
-       AND e.tenant_id = $2
-     LIMIT 1`,
-    [room, tenantId]
-  );
-  if (!inc) throw Object.assign(new Error('Conference room not found or not accessible'), { status: 404 });
-}
 
 export const getConferenceMembers = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  const confTenantId = effectiveTenantId(req);
-  await verifyConferenceRoom(room, confTenantId);
   const members = await confList(room);
   // Enrich with DB responder data where possible
   const numbers = members.map(m => m.callerNum).filter(Boolean);
@@ -853,9 +839,8 @@ export const getConferenceMembers = asyncHandler(async (req, res) => {
 
 export const kickConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { member_id } = req.body;
-  if (!member_id) return res.status(400).json({ error: 'member_id required' });
+  if (!/^\d{1,10}$/.test(String(member_id ?? ''))) return res.status(400).json({ error: 'member_id must be a number' });
   await confKick(room, member_id);
   res.json({ ok: true, room, member_id });
 });
@@ -864,9 +849,8 @@ export const kickConferenceMember = asyncHandler(async (req, res) => {
 
 export const muteConferenceMember = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { member_id, muted } = req.body;
-  if (!member_id) return res.status(400).json({ error: 'member_id required' });
+  if (!/^\d{1,10}$/.test(String(member_id ?? ''))) return res.status(400).json({ error: 'member_id must be a number' });
   if (muted) {
     await confMute(room, member_id);
   } else {
@@ -879,9 +863,8 @@ export const muteConferenceMember = asyncHandler(async (req, res) => {
 
 export const playConferenceAudio = asyncHandler(async (req, res) => {
   const { room } = req.params;
-  await verifyConferenceRoom(room, effectiveTenantId(req));
   const { audio_path } = req.body;
-  if (!audio_path) return res.status(400).json({ error: 'audio_path required' });
+  if (!isEslToken(audio_path)) return res.status(400).json({ error: 'audio_path required (one file path, no spaces)' });
   await confPlay(room, audio_path);
   res.json({ ok: true, room, audio_path });
 });

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
+import { ensConfigTenant, ensNotificationTenant } from '../../services/eventTenant.js';
 import { createCampaign, createCampaignByConfigId } from '../../services/campaignEngine.js';
 import { logger } from '../../infrastructure/index.js';
 
@@ -222,27 +223,54 @@ export const startCampaign = asyncHandler(async (req, res) => {
 //  1. This route is protected by INTERNAL_API_KEY (internalAuth middleware).
 //     No JWT-authenticated user can reach it; only FreeSWITCH can.
 //
-//  2. The configuration_id this endpoint receives is embedded in a published
-//     IVR flow.  At publish time, ivrGraphValidator validates every ENS node's
-//     configuration_id against the IVR flow's own tenant_id
-//     (ivrGraphValidator.js — `WHERE id = ANY($1) AND tenant_id = $2`).
-//     A cross-tenant configuration_id cannot survive IVR flow publication.
+//  2. A configuration_id written into an ENS node is checked against the flow's
+//     tenant at publish time (ivrGraphValidator.js).
 //
-//  3. The Lua executor has no access to a user JWT and therefore cannot supply
-//     a tenant_id that would be meaningful for tenant-scoped lookup.  Inventing
-//     one would require IVR-flow-to-tenant mapping changes in Lua and the
-//     internal API contract — a larger change than the risk warrants.
+//  3. CORRECTION (2026-11-02, IVR-12): the ID can instead come from a session
+//     variable (ens_config_var), set by set_variable, a gather, or a REST response.
+//     Publish never sees that value, so a flow could start another tenant's blast.
+//     The executor now sends ivr_number — the number the call was routed on,
+//     captured before any node runs — and when that number is registered to a
+//     tenant, the configuration must belong to the same tenant.
 //
-//  4. The remaining residual risk (compromised INTERNAL_API_KEY) is the same
-//     for all internal endpoints and is mitigated operationally (key rotation,
-//     firewall rules, nginx deny on WAN).
-//
-// Do NOT add a tenantId guard here without verifying that the IVR executor
-// can supply a reliable tenant context and that the Lua contract is updated.
+//  4. A request without ivr_number comes from an executor generated before this
+//     change, and a routed number that is not an active registered number (a
+//     deactivated number whose dialplan is still deployed, a legacy or transferred
+//     route) cannot be attributed to a tenant. Both are still accepted, with a
+//     warning, so no existing emergency blast stops working; set
+//     ENS_REQUIRE_IVR_NUMBER=true to refuse them.
 export const startCampaignByConfig = asyncHandler(async (req, res) => {
   const configId = parseInt(req.body.configuration_id, 10);
   if (!configId || configId <= 0) {
     return res.status(400).json({ success: false, error: 'configuration_id required' });
+  }
+
+  const ivrNumber = typeof req.body.ivr_number === 'string' ? req.body.ivr_number.trim() : '';
+  if (ivrNumber) {
+    const { rows: [scope] } = await query(
+      `SELECT ec.tenant_id AS config_tenant,
+              COALESCE((SELECT array_agg(DISTINCT en.tenant_id) FROM emergency_numbers en
+                         WHERE en.number = $2 AND en.deleted_at IS NULL AND en.is_active = true), '{}') AS number_tenants
+         FROM ens_configurations ec
+        WHERE ec.id = $1 AND ec.deleted_at IS NULL`,
+      [configId, ivrNumber]
+    );
+    const numberTenants = (scope?.number_tenants || []).filter((t) => t != null).map(Number);
+    if (scope && numberTenants.length && !numberTenants.includes(Number(scope.config_tenant))) {
+      logger.warn({ module: 'ens-internal', configuration_id: configId }, 'start-by-config refused: configuration does not belong to the tenant of the dialled number');
+      return res.status(403).json({ success: false, error: 'configuration not available for this number' });
+    }
+    if (scope && !numberTenants.length) {
+      if (process.env.ENS_REQUIRE_IVR_NUMBER === 'true') {
+        return res.status(403).json({ success: false, error: 'configuration not available for this number' });
+      }
+      logger.warn({ module: 'ens-internal', configuration_id: configId }, 'start-by-config: routed number is not an active registered number; tenant not checked');
+    }
+    // No configuration row: unchanged — createCampaignByConfigId reports it as before.
+  } else if (process.env.ENS_REQUIRE_IVR_NUMBER === 'true') {
+    return res.status(400).json({ success: false, error: 'ivr_number required' });
+  } else {
+    logger.warn({ module: 'ens-internal', configuration_id: configId }, 'start-by-config without ivr_number (executor predates the tenant check; redeploy it)');
   }
 
   let campaign;
@@ -273,6 +301,24 @@ export const startCampaignByConfig = asyncHandler(async (req, res) => {
 export const ensLookup = asyncHandler(async (req, res) => {
   const number = String(req.query.number || '').trim();
   if (!number) return res.status(400).json({ success: false, error: 'number param required' });
+
+  // ivr_number (sent by the IVR executor): the number the call was routed on. A flow can
+  // change destination_number; if it points at an ENS number of ANOTHER tenant, answer as
+  // if the number were not configured. Same tenant, or no ivr_number (standalone Lua
+  // scripts, older executors), or an unregistered routed number: unchanged behaviour.
+  const ivrNumber = String(req.query.ivr_number || '').trim();
+  if (ivrNumber && ivrNumber !== number) {
+    const { rows: owners } = await query(
+      `SELECT number, tenant_id FROM emergency_numbers
+        WHERE number = ANY($1) AND deleted_at IS NULL AND is_active = true`,
+      [[number, ivrNumber]]
+    );
+    const t = (n) => owners.find((o) => o.number === n)?.tenant_id;
+    if (t(number) != null && t(ivrNumber) != null && Number(t(number)) !== Number(t(ivrNumber))) {
+      logger.warn({ module: 'ens-internal' }, 'ENS lookup refused: dialled ENS number belongs to another tenant than the routed IVR number');
+      return res.status(404).json({ success: false, error: 'ENS number not found' });
+    }
+  }
 
   const { rows } = await query(
     `SELECT ec.id AS configuration_id, ec.name,
@@ -433,7 +479,7 @@ export const ensCreateNotification = asyncHandler(async (req, res) => {
     notification_id:   notif.id,
     configuration_id:  d.configuration_id,
     total_targets:     contacts.length,
-  });
+  }, ensConfigTenant(d.configuration_id));
 
   res.status(201).json({
     notification_uuid: notif.notification_uuid,
@@ -517,7 +563,7 @@ export const ensUpdateDelivery = asyncHandler(async (req, res) => {
     notification_uuid: uuid,
     contact_number:    d.contact_number,
     status:            d.status,
-  });
+  }, ensNotificationTenant(uuid));
 
   res.json({ ok: true });
 });
@@ -543,7 +589,7 @@ export const ensCompleteNotification = asyncHandler(async (req, res) => {
     total_answered:    rows[0].total_answered,
     total_no_answer:   rows[0].total_no_answer,
     total_targets:     rows[0].total_targets,
-  });
+  }, ensNotificationTenant(uuid));
 
   res.json({ ok: true });
 });
@@ -801,7 +847,7 @@ export const ensLogCallback = asyncHandler(async (req, res) => {
   emitInternal('enrs::ens_callback', {
     notification_uuid: d.notification_uuid,
     caller_number:     d.caller_number,
-  });
+  }, ensNotificationTenant(d.notification_uuid));
 
   res.json({ ok: true });
 });

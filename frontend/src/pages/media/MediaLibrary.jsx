@@ -266,7 +266,7 @@ const DockedPlayer = forwardRef(function DockedPlayer(
   return (
     <div role="region" aria-label="Audio player"
       className="sticky bottom-0 z-30 -mx-4 md:-mx-6 -mb-4 md:-mb-6 mt-4 border-t border-surface-border
-                 bg-surface-panel/95 backdrop-blur px-4 md:px-6 py-2 shadow-[0_-6px_18px_rgba(0,0,0,0.12)]">
+                 bg-surface-panel px-4 md:px-6 py-2">
       <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         {/* Now playing */}
         <div className="flex items-center gap-2 min-w-0 w-full lg:w-60 shrink-0">
@@ -442,8 +442,8 @@ function UploadModal({ onClose, onSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Upload media files">
-      <div className="bg-surface-panel border border-surface-border rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Upload media files">
+      <div className="bg-surface-panel border border-surface-border rounded-xl shadow-lg w-full max-w-xl max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
           <h2 className="text-sm font-bold text-text-primary flex items-center gap-2">
             <Upload size={14} className="text-brand" /> Upload Media Files
@@ -582,7 +582,7 @@ function FileDetail({ file, onClose, onDeploy, onDelete, onPlay, onSaved, deploy
   const field = 'w-full bg-surface-panel border border-surface-border rounded-lg px-2.5 py-1.5 text-xs text-text-primary focus:outline-none focus:border-brand transition-colors';
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-surface-panel border-l border-surface-border shadow-2xl flex flex-col"
+    <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-surface-panel border-l border-surface-border shadow-lg flex flex-col"
       role="dialog" aria-label={`Details for ${file.name}`}>
       <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-border shrink-0">
         <FileAudio size={14} className="text-brand" />
@@ -736,8 +736,8 @@ function ResultDialog({ result, onClose }) {
   }, [onClose]);
   const { label, done, inUse, failed } = result;
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`${label} results`}>
-      <div className="bg-surface-panel border border-surface-border rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col">
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`${label} results`}>
+      <div className="bg-surface-panel border border-surface-border rounded-xl shadow-lg w-full max-w-lg max-h-[85vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-surface-border">
           <h2 className="text-sm font-bold text-text-primary">{label}</h2>
           <button onClick={onClose} aria-label="Close" className="text-text-muted hover:text-text-primary"><X size={15} /></button>

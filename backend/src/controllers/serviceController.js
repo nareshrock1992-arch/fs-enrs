@@ -14,7 +14,8 @@ import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantSc
 const emptyToNull = z.preprocess(v => (v === '' ? null : v), z.string().nullable().optional());
 
 const ServiceSchema = z.object({
-  number:               z.string().min(1).max(32),
+  // Dial digits, or a SIP user part. Reaches the dialplan, so no pattern characters.
+  number:               z.string().regex(/^[+0-9*#A-Za-z_-]{1,32}$/, 'Number may contain digits, letters, + * # _ and - only'),
   type:                 z.enum(['ENS', 'ERS', 'IVR', 'REJOIN', 'OPEN_ACCESS']),
   organization_id:      z.number().int().positive().optional().nullable(),
   ens_configuration_id: z.number().int().positive().optional().nullable(),

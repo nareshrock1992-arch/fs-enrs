@@ -5,6 +5,7 @@
  * Only one section can be open at a time (accordion behaviour).
  * Panel is always visible; width is set by MonitoringCenter grid.
  */
+import { notify } from '../../../components/ui/Toast.jsx';
 import { useState, lazy, Suspense, memo } from 'react';
 import {
   Radio, Square, AlertCircle, RefreshCw,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api }            from '../../../api/client.js';
 import { getConferenceType } from '../config/widgetRegistry.js';
+import { confirmAction } from '../../../components/ui/ConfirmDialog.jsx';
 
 const StatisticsWidget = lazy(() => import('../widgets/standard/StatisticsWidget.jsx')
   .then(m => ({ default: m.StatisticsWidget })));
@@ -112,7 +114,7 @@ export const RightDetailsPanel = memo(function RightDetailsPanel({
     if (!conf?.name) return;
     setBusy(b => ({ ...b, [key]: true }));
     try { await fn(conf.name, ...args); }
-    catch (e) { alert('Command failed: ' + (e.message || 'Unknown error')); }
+    catch (e) { notify('Command failed: ' + (e.message || 'Unknown error')); }
     finally   { setBusy(b => ({ ...b, [key]: false })); }
   }
 
@@ -241,10 +243,12 @@ export const RightDetailsPanel = memo(function RightDetailsPanel({
           <ControlBtn
             danger
             disabled={!conf}
-            onClick={() => {
-              if (window.confirm(
-                `Terminate "${conf?.name}"?\n\nAll ${members.length} participant(s) will be disconnected immediately.`
-              )) act('terminate', api.monitoring.terminate);
+            onClick={async () => {
+              if (await confirmAction({
+                title: 'Terminate conference',
+                message: `Terminate "${conf?.name}"? All ${members.length} participant(s) will be disconnected immediately.`,
+                confirmLabel: 'Terminate',
+              })) act('terminate', api.monitoring.terminate);
             }}>
             <Trash2 size={13} />
             Terminate Conference

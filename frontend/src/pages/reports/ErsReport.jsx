@@ -12,7 +12,8 @@ import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
-import { createLatestGuard, ersSummary, loadErrorMessage } from './reportState.js';
+import ExportButton from '../../components/ui/ExportButton.jsx';
+import { createLatestGuard, ersSummary, filterParams, loadErrorMessage } from './reportState.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -609,6 +610,11 @@ export default function ErsReport() {
         icon={Siren}
         badge={total > 0 ? { label: `${total} incidents`, variant: 'info' } : undefined}
       />
+
+      <div className="flex justify-end">
+        <ExportButton run={() => api.reports.ersExport(filterParams(filters))}
+          filename={`ers-incidents-${new Date().toISOString().slice(0, 10)}.xlsx`} />
+      </div>
 
       <FilterBar
         filters={filters}

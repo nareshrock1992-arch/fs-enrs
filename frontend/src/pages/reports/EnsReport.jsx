@@ -10,7 +10,8 @@ import { useAuthStore } from '../../store/authStore.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
-import { createLatestGuard, ensSummary, loadErrorMessage } from './reportState.js';
+import ExportButton from '../../components/ui/ExportButton.jsx';
+import { createLatestGuard, ensSummary, filterParams, loadErrorMessage, outcomeSummary } from './reportState.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,10 @@ const DetailPanel = memo(function DetailPanel({ campaignId }) {
             {t.label}
           </button>
         ))}
+        <span className="ml-auto pl-3">
+          <ExportButton run={() => api.reports.ensCampaignExport(campaignId)} label="Export campaign"
+            filename={`ens-campaign-${String(campaignId).slice(0, 8)}.xlsx`} />
+        </span>
       </div>
 
       <div className="px-4 pb-5 pt-3">
@@ -324,7 +329,9 @@ function CampaignCard({ campaign, expanded, onToggle }) {
               <p className="text-xs font-semibold text-text-primary tabular-nums">
                 {campaign.answered_count}/{campaign.total_destinations}
               </p>
-              <p className="text-[10px] text-text-muted">answered</p>
+              <p className="text-[10px] text-text-muted">
+                {outcomeSummary(campaign.outcomes).map(o => `${o.count} ${o.label}`).join(' · ') || 'answered'}
+              </p>
               {answerPct !== null && (
                 <div className="w-16 progress-bar-track mt-1">
                   <div
@@ -525,6 +532,11 @@ export default function EnsReport() {
         icon={Bell}
         badge={total > 0 ? { label: `${total} campaigns`, variant: 'info' } : undefined}
       />
+
+      <div className="flex justify-end">
+        <ExportButton run={() => api.reports.ensCampaignsExport(filterParams(filters))}
+          filename={`ens-campaigns-${new Date().toISOString().slice(0, 10)}.xlsx`} />
+      </div>
 
       <FilterBar filters={filters} onChange={setFilters} onSearch={() => load(1)} loading={loading} />
 

@@ -6,6 +6,7 @@ import { superAdminOrAdmin } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { effectiveTenantId, validateTargetTenant } from '../../middleware/tenantScope.js';
 import { query } from '../../db/pool.js';
+import { passwordSchema } from '../../validators/passwordPolicy.js';
 
 const router = Router();
 router.use(requireAuth, superAdminOrAdmin);
@@ -18,16 +19,12 @@ const scopeOf = (req) => effectiveTenantId(req);
 // SUPER_ADMIN row ever carried a tenant_id (data drift). $2 is the tenant scope.
 const NOT_SUPER_ADMIN_FOR_TENANT_ADMINS = `AND ($2::int IS NULL OR role <> 'SUPER_ADMIN')`;
 
-const PASSWORD_REGEX = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z\d])/;
-
 const UserSchema = z.object({
   email:     z.string().email().max(255),
   full_name: z.string().min(2).max(128),
   // SUPER_ADMIN may assign any role; ADMIN may assign everything except SUPER_ADMIN.
   role:      z.enum(['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER']).default('OPERATOR'),
-  password:  z.string().min(8).regex(PASSWORD_REGEX, {
-    message: 'Must contain uppercase, lowercase, digit, and special character',
-  }).optional(),
+  password:  passwordSchema.optional(),
   is_active: z.boolean().default(true),
   tenant_id: z.coerce.number().int().positive().optional(),
 });

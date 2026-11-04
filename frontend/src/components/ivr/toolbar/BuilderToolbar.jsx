@@ -1,3 +1,4 @@
+import { notify } from '../../ui/Toast.jsx';
 import { useState } from 'react';
 import { CheckCircle2, Upload, History, Phone, AlertTriangle, Loader2, Save, FlaskConical, Pencil, ListChecks, ArrowLeft } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
@@ -69,7 +70,7 @@ export default function BuilderToolbar({
       const r = await api.ivr.update(flow.flow_uuid, { is_test_flow: !flow.is_test_flow });
       onFlowChange?.(r.flow);
     } catch (e) {
-      alert(e.message);
+      notify(e.message);
     } finally {
       setSavingTestFlag(false);
     }
@@ -131,8 +132,8 @@ export default function BuilderToolbar({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-surface-border
-                      bg-surface-panel shrink-0 min-w-0 overflow-x-auto">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 border-b border-surface-border
+                      bg-surface-panel shrink-0 min-w-0">
         {/* Back + breadcrumb (merged from the former separate top bar) */}
         {onBack && (
           <button onClick={onBack} title="Back to IVR Flows" aria-label="Back to IVR Flows"
@@ -144,7 +145,7 @@ export default function BuilderToolbar({
         <span className="text-[11px] text-text-muted shrink-0 hidden sm:inline">IVR Flows /</span>
 
         {/* Flow name + rename */}
-        <div className="flex items-center gap-1.5 flex-1 min-w-0 group">
+        <div className="flex items-center gap-1.5 flex-1 min-w-[10rem] group">
           <div className="min-w-0">
             <p className="text-[13px] font-semibold text-text-primary truncate leading-tight">
               {flow?.name || 'IVR Flow'}

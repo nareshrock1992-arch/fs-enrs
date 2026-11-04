@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
 import { adminOnly, adminOrOp } from '../../middleware/rbac.js';
+import { requireConferenceAccess, auditConferenceAction } from '../../middleware/conferenceAccess.js';
 import * as ctrl from '../../controllers/ersController.js';
 
 const router = Router();
@@ -30,6 +31,7 @@ router.post('/incidents/:uuid/cancel',      adminOrOp, ctrl.cancelQueuedIncident
 router.get('/queue', adminOrOp, ctrl.getQueue);
 
 // Conference controls (supervisor actions)
+router.use('/conference/:room', requireConferenceAccess, auditConferenceAction);
 router.get('/conference/:room/members',  adminOrOp, ctrl.getConferenceMembers);
 router.post('/conference/:room/kick',    adminOrOp, ctrl.kickConferenceMember);
 router.post('/conference/:room/mute',    adminOrOp, ctrl.muteConferenceMember);

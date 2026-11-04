@@ -97,6 +97,43 @@ async function resolveTierResponders(configId, tier) {
   return contactRows;
 }
 
+// Caller identity variables for a responder leg. Exported for tests: the values come
+// from the caller and are placed inside an originate {...} block.
+export function callerIdentityVars(callerIdentity) {
+  // Caller display name: null means no name was available (no directory match
+  // and no SIP display name). In that case the name vars are omitted entirely
+  // so FreeSWITCH presents the number alone — injecting an empty string or
+  // the number-as-name would produce garbled or rejected SIP From headers.
+  // The name is caller-controlled. Quote, backslash and brace could end the quoted
+  // value or the {...} block; with every brace removed "${" cannot form either, so "$"
+  // itself is kept (names such as "Joe $mith" are presented as before).
+  const safeName = callerIdentity.name ? callerIdentity.name.replace(/['\\{}]/g, '') : null;
+
+  // Keep only characters legal in an unquoted FreeSWITCH channel variable and a
+  // SIP URI user part: digits, +, -, .  Numbers may arrive as 05XXXXXXXX,
+  // +91XXXXXXXXXX, +9665XXXXXXXX, or a bare extension — formatting chars
+  // (spaces, parentheses) are stripped so no format breaks the originate string.
+  // A number with none of those characters falls back to the raw value, as before
+  // (e.g. "anonymous", "restricted") — but only when the raw value is a single plain
+  // token. It is unquoted here, so "x,execute_on_answer=..." would have set another
+  // variable on every responder leg; such a value is left out instead (IVR-17). An
+  // empty number is passed as empty, exactly as before.
+  const raw = String(callerIdentity.number ?? '');
+  const cleaned = raw.replace(/[^\d+\-.]/g, '');
+  const safeNumber = cleaned || (raw === '' || /^[A-Za-z0-9+._@-]{1,64}$/.test(raw) ? raw : null);
+
+  return [
+    // Caller identity passthrough — the INITIATOR's real name/number on
+    // every responder's phone, not the system's. Name vars are conditional:
+    // omitted when no caller name is available (mobile/PSTN callers without
+    // a SIP display name). Number vars are always present, unless the number could inject.
+    safeName !== null ? `origination_caller_id_name='${safeName}'` : null,
+    safeNumber !== null ? `origination_caller_id_number=${safeNumber}` : null,
+    safeName !== null ? `effective_caller_id_name='${safeName}'` : null,
+    safeNumber !== null ? `effective_caller_id_number=${safeNumber}` : null,
+  ].filter(Boolean);
+}
+
 async function originateLeg({ contact, room, conferenceProfile, tenantId, callerIdentity, configGatewayId, configGatewayName }) {
   // Gateway precedence: per-contact gateway_id (resolved inside dialResolver) wins first.
   // Below that: configGatewayName (gateway_override) wins over configGatewayId (sip_gateway_id).
@@ -117,27 +154,8 @@ async function originateLeg({ contact, room, conferenceProfile, tenantId, caller
   // then the global FS_SIP_DOMAIN env var. PAI is omitted when neither is set.
   const sipDomain = gateway?.sip_domain || config.freeswitch.sipDomain || '';
 
-  // Caller display name: null means no name was available (no directory match
-  // and no SIP display name). In that case the name vars are omitted entirely
-  // so FreeSWITCH presents the number alone — injecting an empty string or
-  // the number-as-name would produce garbled or rejected SIP From headers.
-  const safeName = callerIdentity.name ? callerIdentity.name.replace(/['\\\}]/g, '') : null;
-
-  // Keep only characters legal in an unquoted FreeSWITCH channel variable and a
-  // SIP URI user part: digits, +, -, .  Numbers may arrive as 05XXXXXXXX,
-  // +91XXXXXXXXXX, +9665XXXXXXXX, or a bare extension — formatting chars
-  // (spaces, parentheses) are stripped so no format breaks the originate string.
-  const safeNumber = callerIdentity.number.replace(/[^\d+\-.]/g, '') || callerIdentity.number;
-
   const vars = [
-    // Caller identity passthrough — the INITIATOR's real name/number on
-    // every responder's phone, not the system's. Name vars are conditional:
-    // omitted when no caller name is available (mobile/PSTN callers without
-    // a SIP display name). Number vars are always present.
-    safeName !== null ? `origination_caller_id_name='${safeName}'` : null,
-    `origination_caller_id_number=${safeNumber}`,
-    safeName !== null ? `effective_caller_id_name='${safeName}'` : null,
-    `effective_caller_id_number=${safeNumber}`,
+    ...callerIdentityVars(callerIdentity),
     // sip_cid_type=pid (FS-CC pattern): instructs Sofia to auto-generate a named
     // P-Asserted-Identity header — "Name" <sip:number@domain> — from
     // effective_caller_id_name/number already set above. A bare-URI PAI
@@ -283,7 +301,7 @@ export function startRingAll({ incidentId, incidentUuid, configId, tier, room, c
         }
       }
 
-      emitInternal('enrs::ers_ring_ended', { incident_uuid: incidentUuid, room, tier });
+      emitInternal('enrs::ers_ring_ended', { incident_uuid: incidentUuid, room, tier }, tenantId);
     } catch (err) {
       console.error('[ers-ring] ring loop error:', err.message);
     } finally {

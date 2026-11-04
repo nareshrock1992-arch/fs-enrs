@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { authenticateSocket, deauthenticateSocket } from '../api/socket.js';
 
 const TOKEN_KEY         = 'enrs_token';
 const USER_KEY          = 'enrs_user';
@@ -39,10 +40,13 @@ export const useAuthStore = create((set) => ({
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     // Clear any previously selected tenant on fresh login
     localStorage.removeItem(ACTIVE_TENANT_KEY);
+    // Live events are per identity: a socket opened before sign-in has no rooms yet.
+    authenticateSocket(token);
     set({ token, user, activeTenantId: null, activeTenantName: null });
   },
 
   logout: () => {
+    deauthenticateSocket();
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(ACTIVE_TENANT_KEY);

@@ -307,7 +307,7 @@ describe('Socket.IO authentication', () => {
     expect(s.join).not.toHaveBeenCalled();
     expect(s.emit.mock.calls.map(c => c[1])).toEqual(['No token', 'Invalid token']);
   });
-  it('emitInternal never broadcasts globally: tenant room + SUPER_ADMIN, or authenticated sockets only', async () => {
+  it('emitInternal never broadcasts globally: tenant room + SUPER_ADMIN, or SUPER_ADMIN alone when the tenant is unknown', async () => {
     const http = await import('http');
     const io = initSocket(http.createServer());
     const targets = [];
@@ -316,7 +316,7 @@ describe('Socket.IO authentication', () => {
     const globalEmit = vi.spyOn(io, 'emit');
     emitInternal('x.evt', { a: 1 }, 10);
     emitInternal('y.evt', { b: 2 });
-    expect(targets).toEqual([['tenant:10', 'role:SUPER_ADMIN'], ['authenticated']]);
+    expect(targets).toEqual([['tenant:10', 'role:SUPER_ADMIN'], ['role:SUPER_ADMIN']]);
     expect(globalEmit).not.toHaveBeenCalled();
     io.close();
   });

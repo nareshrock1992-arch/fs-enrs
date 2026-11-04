@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../../db/pool.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 import { emitInternal } from '../../services/socketService.js';
+import { ersConfigTenant, ersIncidentTenant, ersQueueTenant } from '../../services/eventTenant.js';
 import { getConferenceMemberCount } from '../../services/eslService.js';
 import { startRingAll, lookupCallerIdentity } from '../../services/ersRingService.js';
 import { resolveConferenceRoom, getConferenceProfile } from '../../services/conferenceManager.js';
@@ -345,7 +346,7 @@ export const ersCreateIncident = asyncHandler(async (req, res) => {
     conference_room:  d.conference_room,
     group_type:       d.group_type,
     status:           d.status,
-  });
+  }, ersConfigTenant(d.configuration_id));
 
   res.status(201).json({
     incident_id:   incident.id,
@@ -558,7 +559,7 @@ export const ersUpdateResponder = asyncHandler(async (req, res) => {
     joined_at:        d.joined_at,
     joined_via:       d.joined_via,
     role:             d.role,
-  });
+  }, ersIncidentTenant(uuid));
 
   res.json({ ok: true });
 });
@@ -756,7 +757,7 @@ export const ersLogObserver = asyncHandler(async (req, res) => {
     incident_uuid:   uuid,
     observer_number: d.observer_number,
     joined_via:      d.joined_via,
-  });
+  }, ersIncidentTenant(uuid));
 
   res.json({ ok: true });
 });
@@ -1167,7 +1168,7 @@ export const ersOverflowEnqueue = asyncHandler(async (req, res) => {
     action:           'enqueued',
     queue_id:         result.queueRow.id,
     position:         result.queueRow.position,
-  });
+  }, ersQueueTenant(result.queueRow.id));
 
   res.status(201).json({
     success:       true,
@@ -1204,7 +1205,7 @@ export const ersOverflowCancel = asyncHandler(async (req, res) => {
     );
   });
 
-  emitInternal('enrs::ers_queue_changed', { action: 'cancelled', queue_id: queueId });
+  emitInternal('enrs::ers_queue_changed', { action: 'cancelled', queue_id: queueId }, ersQueueTenant(queueId));
   res.json({ success: true });
 });
 
@@ -1316,7 +1317,7 @@ export const ersOverflowPoll = asyncHandler(async (req, res) => {
     action:           'promoted',
     queue_id:         entry.id,
     tier:             freedTier,
-  });
+  }, ersQueueTenant(entry.id));
 
   res.json({
     success:         true,

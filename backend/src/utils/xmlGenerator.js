@@ -27,6 +27,12 @@
  * assume one or the other, both layouts are legitimate FreeSWITCH configs.
  */
 
+// A bound number is a literal. Unescaped, a number such as .* would be a pattern that
+// captures every call on the platform, including other tenants' emergency numbers.
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function escapeXml(s) {
   return String(s ?? '')
     .replace(/&/g,  '&amp;')
@@ -75,7 +81,7 @@ export function generateDialplanXml(bindings = [], { nested, testMode } = {}) {
     }
     lines.push(
       `    <extension name="enrs_ivr_${escapeXml(b.number)}" continue="false">`,
-      `      <condition field="destination_number" expression="^${escapeXml(b.number)}$">`,
+      `      <condition field="destination_number" expression="^${escapeXml(escapeRegex(b.number))}$">`,
       `        <action application="set" data="enrs_flow_uuid=${b.flow_uuid}"/>`,
     );
     if (isTestFlow) {

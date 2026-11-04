@@ -1,5 +1,18 @@
 export const BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
+// Query string from a filter object. Unset filters (undefined / null) are left out: URLSearchParams turns
+// undefined into the text "undefined", and the ENS Campaigns "All" tab sent
+// ?status=undefined, which matched no campaign, so the list was always empty.
+export function qs(q) {
+  if (q instanceof URLSearchParams) return q;
+  const out = new URLSearchParams();
+  for (const [k, v] of Object.entries(q || {})) {
+    if (v === undefined || v === null) continue;   // '' is still sent, as before
+    out.append(k, String(v));
+  }
+  return out;
+}
+
 function getToken() {
   return localStorage.getItem('enrs_token');
 }
@@ -62,6 +75,7 @@ async function request(method, path, body, opts = {}) {
     }
   }
 
+  if (opts.blob && res.ok) return res.blob();
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { data, status: res.status });
   return data;
@@ -80,8 +94,12 @@ export const api = {
   dashChart:   (p) => request('GET', `/dashboard/chart?period=${p || 'week'}`),
 
   // Tenants (SUPER_ADMIN only)
+  audit: {
+    list: (q) => request('GET', `/audit?${qs(q || {})}`),
+  },
+
   tenants: {
-    list:   (q)      => request('GET',   `/tenants?${new URLSearchParams({ limit: 1000, ...(q || {}) })}`),
+    list:   (q)      => request('GET',   `/tenants?${qs({ limit: 1000, ...(q || {}) })}`),
     get:    (id)     => request('GET',   `/tenants/${id}`),
     create: (d)      => request('POST',  '/tenants', d),
     update: (id, d)  => request('PATCH', `/tenants/${id}`, d),
@@ -89,7 +107,7 @@ export const api = {
 
   // Users
   users: {
-    list:   (q)      => request('GET',    `/users?${new URLSearchParams({ ...(q || {}) })}`),
+    list:   (q)      => request('GET',    `/users?${qs({ ...(q || {}) })}`),
     get:    (id)     => request('GET',    `/users/${id}`),
     create: (d)      => request('POST',   '/users', d),
     update: (id, d)  => request('PUT',    `/users/${id}`, d),
@@ -98,7 +116,7 @@ export const api = {
 
   // Organizations
   orgs: {
-    list:   (q)      => request('GET',    `/organizations?${new URLSearchParams({ limit: 1000, ...(q || {}) })}`),
+    list:   (q)      => request('GET',    `/organizations?${qs({ limit: 1000, ...(q || {}) })}`),
     get:    (id)     => request('GET',    `/organizations/${id}`),
     create: (d)      => request('POST',   '/organizations', d),
     update: (id, d)  => request('PUT',    `/organizations/${id}`, d),
@@ -123,7 +141,7 @@ export const api = {
 
   // Contacts
   contacts: {
-    list:       (q)      => request('GET',    `/contacts?${new URLSearchParams({ limit: 1000, ...(q || {}) })}`),
+    list:       (q)      => request('GET',    `/contacts?${qs({ limit: 1000, ...(q || {}) })}`),
     get:        (id)     => request('GET',    `/contacts/${id}`),
     create:     (d)      => request('POST',   '/contacts', d),
     update:     (id, d)  => request('PUT',    `/contacts/${id}`, d),
@@ -138,7 +156,7 @@ export const api = {
 
   // Responder Groups
   groups: {
-    list:         (q)         => request('GET',    `/groups?${new URLSearchParams({ limit: 1000, ...(q || {}) })}`),
+    list:         (q)         => request('GET',    `/groups?${qs({ limit: 1000, ...(q || {}) })}`),
     get:          (id)        => request('GET',    `/groups/${id}`),
     create:       (d)         => request('POST',   '/groups', d),
     update:       (id, d)     => request('PUT',    `/groups/${id}`, d),
@@ -149,19 +167,19 @@ export const api = {
 
   // ENS
   ens: {
-    list:       (q)      => request('GET',    `/ens/configurations?${new URLSearchParams(q || {})}`),
+    list:       (q)      => request('GET',    `/ens/configurations?${qs(q || {})}`),
     get:        (id)     => request('GET',    `/ens/configurations/${id}`),
     create:     (d)      => request('POST',   '/ens/configurations', d),
     update:     (id, d)  => request('PUT',    `/ens/configurations/${id}`, d),
     toggle:     (id)     => request('PATCH',  `/ens/configurations/${id}/toggle`),
     remove:     (id)     => request('DELETE', `/ens/configurations/${id}`),
-    notifications: (q)   => request('GET',    `/ens/notifications?${new URLSearchParams(q || {})}`),
+    notifications: (q)   => request('GET',    `/ens/notifications?${qs(q || {})}`),
     trigger:    (d)      => request('POST',   '/ens/notifications', d),
   },
 
   // ERS
   ers: {
-    list:       (q)      => request('GET',    `/ers/configurations?${new URLSearchParams(q || {})}`),
+    list:       (q)      => request('GET',    `/ers/configurations?${qs(q || {})}`),
     get:        (id)     => request('GET',    `/ers/configurations/${id}`),
     create:     (d)      => request('POST',   '/ers/configurations', d),
     update:     (id, d)  => request('PUT',    `/ers/configurations/${id}`, d),
@@ -169,7 +187,7 @@ export const api = {
     remove:     (id)     => request('DELETE', `/ers/configurations/${id}`),
     tierGroups:       (id)   => request('GET', `/ers/configurations/${id}/tier-groups`),
     updateTierGroups: (id, d) => request('PUT', `/ers/configurations/${id}/tier-groups`, d),
-    incidents:        (q)    => request('GET',  `/ers/incidents?${new URLSearchParams(q || {})}`),
+    incidents:        (q)    => request('GET',  `/ers/incidents?${qs(q || {})}`),
     incident:         (uuid) => request('GET',  `/ers/incidents/${uuid}/detail`),
     queue:            ()     => request('GET',  '/ers/queue'),
     completeIncident: (uuid, body) => request('POST', `/ers/incidents/${uuid}/complete`, body || {}),
@@ -182,7 +200,7 @@ export const api = {
 
   // Service Registry (emergency numbers — full CRUD)
   services: {
-    list:   (q)      => request('GET',    `/services?${new URLSearchParams(q || {})}`),
+    list:   (q)      => request('GET',    `/services?${qs(q || {})}`),
     get:    (id)     => request('GET',    `/services/${id}`),
     create: (d)      => request('POST',   '/services', d),
     update: (id, d)  => request('PUT',    `/services/${id}`, d),
@@ -191,9 +209,9 @@ export const api = {
 
   // ENS Campaigns
   campaigns: {
-    list:         (q)      => request('GET',  `/campaigns?${new URLSearchParams(q || {})}`),
+    list:         (q)      => request('GET',  `/campaigns?${qs(q || {})}`),
     get:          (id)     => request('GET',  `/campaigns/${id}`),
-    destinations: (id, q)  => request('GET',  `/campaigns/${id}/destinations?${new URLSearchParams(q || {})}`),
+    destinations: (id, q)  => request('GET',  `/campaigns/${id}/destinations?${qs(q || {})}`),
     trigger:      (d)      => request('POST', '/campaigns', d),
     pause:        (id)     => request('POST', `/campaigns/${id}/pause`),
     resume:       (id)     => request('POST', `/campaigns/${id}/resume`),
@@ -204,17 +222,21 @@ export const api = {
   // Reports
   reports: {
     // Legacy endpoints (kept for backward-compat with old pages)
-    notifications: (q) => request('GET', `/reports/notifications?${new URLSearchParams(q || {})}`),
+    notifications: (q) => request('GET', `/reports/notifications?${qs(q || {})}`),
     contactUsage:  ()  => request('GET', '/reports/contact-usage'),
-    ensBroadcasts: (q) => request('GET', `/reports/ens-broadcasts?${new URLSearchParams(q || {})}`),
+    ensBroadcasts: (q) => request('GET', `/reports/ens-broadcasts?${qs(q || {})}`),
     // Unified paginated report endpoints
-    ers:           (q) => request('GET', `/reports/ers?${new URLSearchParams(q || {})}`),
+    ers:           (q) => request('GET', `/reports/ers?${qs(q || {})}`),
     ersDetail:     (uuid) => request('GET', `/reports/ers/${uuid}`),
-    ens:              (q)    => request('GET', `/reports/ens?${new URLSearchParams(q || {})}`),
+    ens:              (q)    => request('GET', `/reports/ens?${qs(q || {})}`),
     ensDetail:        (uuid) => request('GET', `/reports/ens/${uuid}`),
     // Campaign engine report (ens_campaigns / ens_campaign_destinations)
-    ensCampaigns:     (q)    => request('GET', `/reports/ens-campaigns?${new URLSearchParams(q || {})}`),
+    ensCampaigns:     (q)    => request('GET', `/reports/ens-campaigns?${qs(q || {})}`),
     ensCampaignDetail:(id)   => request('GET', `/reports/ens-campaigns/${id}`),
+    // Excel exports (returned as a Blob; the session token is sent as for any API call)
+    ensCampaignsExport: (q) => request('GET', `/reports/ens-campaigns/export?${qs(q || {})}`, undefined, { blob: true }),
+    ensCampaignExport:  (id) => request('GET', `/reports/ens-campaigns/${id}/export`, undefined, { blob: true }),
+    ersExport:          (q) => request('GET', `/reports/ers/export?${qs(q || {})}`, undefined, { blob: true }),
   },
 
   // Settings
@@ -239,7 +261,7 @@ export const api = {
 
   // IVR flows
   ivr: {
-    list:     (q)           => request('GET',    `/ivr/flows?${new URLSearchParams(q || {})}`),
+    list:     (q)           => request('GET',    `/ivr/flows?${qs(q || {})}`),
     get:      (uuid)        => request('GET',    `/ivr/flows/${uuid}`),
     create:   (d)           => request('POST',   '/ivr/flows', d),
     update:   (uuid, d)     => request('PUT',    `/ivr/flows/${uuid}`, d),
@@ -257,7 +279,7 @@ export const api = {
 
   // Media
   media: {
-    list:   (q)   => request('GET',    `/media?${new URLSearchParams(q || {})}`),
+    list:   (q)   => request('GET',    `/media?${qs(q || {})}`),
     upload: (orgId, type, file) => {
       const fd = new FormData();
       fd.append('file', file);
@@ -271,7 +293,7 @@ export const api = {
   // Media Library (enterprise replacement for Audio Library)
   mediaLibrary: {
     list: (q) => {
-      const p = new URLSearchParams();
+      const p = qs();
       Object.entries(q || {}).forEach(([k, v]) => {
         if (v != null && v !== '' && v !== 'undefined') p.set(k, v);
       });
@@ -294,7 +316,7 @@ export const api = {
   // Conference Recording Management
   recordings: {
     list: (q) => {
-      const p = new URLSearchParams();
+      const p = qs();
       Object.entries(q || {}).forEach(([k, v]) => {
         if (v != null && v !== '' && v !== 'undefined') p.set(k, v);
       });
@@ -310,7 +332,7 @@ export const api = {
 
   // Legacy deployment audio (kept for IVR Builder backward-compat)
   deployment: {
-    listAudio:      (q)       => request('GET',    `/deployment/audio?${new URLSearchParams(q || {})}`),
+    listAudio:      (q)       => request('GET',    `/deployment/audio?${qs(q || {})}`),
     scanAudio:      ()        => request('POST',   '/deployment/audio/scan'),
     listCategories: ()        => request('GET',    '/deployment/audio/categories'),
     uploadAudio:    (formData) => request('POST',  '/deployment/audio/upload', formData),
@@ -364,9 +386,9 @@ export const api = {
     preview:       (id, changes, checksum)         => request('POST', `/platform/config/${id}/preview`, { changes, expectedChecksum: checksum ?? undefined }),
     deploy:        (id, changes, reason, checksum) => request('POST', `/platform/config/${id}/deploy`, { changes, reason, expectedChecksum: checksum ?? undefined }),
     rollback:      (id, versionId, reason)  => request('POST', `/platform/config/${id}/rollback/${versionId}`, { reason }),
-    history:       (id, params)             => request('GET',  `/platform/config/${id}/history?${new URLSearchParams(params ?? {})}`),
+    history:       (id, params)             => request('GET',  `/platform/config/${id}/history?${qs(params ?? {})}`),
     diff:          (id, v1, v2)             => request('GET',  `/platform/config/${id}/history/${v1}/diff/${v2}`),
     audit:         (id)                     => request('GET',  `/platform/config/${id}/audit`),
-    auditGlobal:   (params)                 => request('GET',  `/platform/config/audit?${new URLSearchParams(params ?? {})}`),
+    auditGlobal:   (params)                 => request('GET',  `/platform/config/audit?${qs(params ?? {})}`),
   },
 };

@@ -1,3 +1,4 @@
+import { notify } from '../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback, useReducer } from 'react';
 import {
   Bell, ShieldAlert, Users, Building2,
@@ -244,7 +245,7 @@ export default function Dashboard() {
           label: fmtBucket(row.bucket, period),
         }))
       );
-    } catch {}
+    } catch (e) { notify(`Activity chart could not be loaded: ${e.message}`); }
   }, [period]);
 
   useEffect(() => { seed(); }, [seed]);
@@ -317,7 +318,7 @@ export default function Dashboard() {
       </PageHeader>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <StatCard
           label="Active Incidents"
           value={Object.keys(activeIncidents).length}

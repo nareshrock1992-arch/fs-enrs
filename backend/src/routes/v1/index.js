@@ -23,6 +23,7 @@ import mediaLibraryRoutes from './mediaLibrary.js';
 import recordingRoutes    from './recordings.js';
 import platformConfigRoutes from './platformConfig.js';
 import tenantRoutes         from './tenants.js';
+import auditRoutes          from './audit.js';
 
 const router = Router();
 
@@ -51,5 +52,6 @@ router.use('/media-library', mediaLibraryRoutes);
 router.use('/recordings',    recordingRoutes);
 router.use('/platform/config', platformConfigRoutes);
 router.use('/tenants',         tenantRoutes);
+router.use('/audit',           auditRoutes);
 
 export default router;

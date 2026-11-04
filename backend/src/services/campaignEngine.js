@@ -20,6 +20,7 @@ import { query, withTransaction } from '../db/pool.js';
 import { guardMedia } from './mediaDependencyService.js';
 import { originateCampaignCall } from './eslService.js';
 import { emitInternal } from './socketService.js';
+import { campaignTenant } from './eventTenant.js';
 import { config } from '../config/index.js';
 import { logger } from '../infrastructure/index.js';
 import { synthesize, PiperError } from './piperClient.js';
@@ -424,7 +425,7 @@ export async function processCampaign(campaign) {
       [campaign.id]
     );
     if (started) {
-      emitInternal('enrs::campaign_started', { campaign_id: campaign.id });
+      emitInternal('enrs::campaign_started', { campaign_id: campaign.id }, campaignTenant(campaign.id));
       campaign.status = 'running';
     }
   }
@@ -563,7 +564,7 @@ export async function processCampaign(campaign) {
     campaign_id: campaign.id,
     dialing: dialing + destinations.length,
     ready: ready - destinations.length,
-  });
+  }, campaignTenant(campaign.id));
 }
 
 async function originateDestination(campaign, dest, callUuid, gatewayName, clid, playbackFile, messageText) {
@@ -589,8 +590,13 @@ async function originateDestination(campaign, dest, callUuid, gatewayName, clid,
     messageText:  messageText   || null,
     timeout:      ORIGINATE_TIMEOUT,
   }).catch(e => {
-    handleDestFailed(dest.id, campaign.id, 'ORIGINATE_ERROR', e.message)
-      .catch(err => logger.error({ module: 'campaignEngine', destId: dest.id, err }, 'handleDestFailed error after originate rejection'));
+    // Same outcome as before (failed, cause ORIGINATE_ERROR, no retry) — but only while the
+    // attempt is still dialing. The originate result can arrive AFTER CHANNEL_HANGUP has
+    // already scheduled a retry (e.g. "-ERR USER_BUSY" once the call ends); it used to mark
+    // the recipient failed and overwrite that retry. An answered attempt is left to its
+    // hangup event, which records it as delivered.
+    settleAttempt(callUuid, 'ORIGINATE_ERROR', e.message, { fromOriginate: true })
+      .catch(err => logger.error({ module: 'campaignEngine', destId: dest.id, err }, 'settle error after originate rejection'));
   });
 }
 
@@ -619,30 +625,77 @@ export async function onCallAnswer(callUuid) {
   emitInternal('enrs::campaign_call_answered', {
     campaign_id: dest.campaign_id,
     call_uuid:   callUuid,
-  });
+  }, campaignTenant(dest.campaign_id));
 }
 
 export async function onCallHangup(callUuid, cause) {
+  return settleAttempt(callUuid, cause, null);
+}
+
+// A failed attempt produces two events: CHANNEL_HANGUP (cause USER_BUSY, NO_ANSWER, ...)
+// and then the originate result "-ERR <same cause>". On the real switch the hangup always
+// arrived first (Cycle 5 staging), but the two were settled at the same moment and the
+// originate path, one query shorter, often won: the recipient was failed even though the
+// hangup had scheduled the configured retry. So the hangup is noted the moment its event
+// arrives (before any await) and, when there is one, it alone settles the attempt. The
+// originate result settles an attempt only when no channel was created and no hangup
+// follows (e.g. "-ERR SUBSCRIBER_ABSENT"): failed, ORIGINATE_ERROR, no retry, as before.
+const hangupSeen = new Map();             // call UUID → when its CHANNEL_HANGUP arrived
+const ORIGINATE_RESULT_GRACE_MS = 2000;   // wait for a hangup that arrives after the result
+const HANGUP_SEEN_TTL_MS = 10 * 60_000;
+function noteHangup(callUuid) {
+  hangupSeen.set(callUuid, Date.now());
+  if (hangupSeen.size > 1000) {
+    const cutoff = Date.now() - HANGUP_SEEN_TTL_MS;
+    for (const [uuid, at] of hangupSeen) if (at < cutoff) hangupSeen.delete(uuid);
+  }
+}
+
+// Settle one dial attempt exactly once. Every destination update below is a
+// compare-and-set on (id, call_uuid, in-flight status), and counters move only when
+// it succeeds, so a repeated hangup event, a hangup plus an originate rejection, or an
+// event that arrives after crash recovery re-queued the row changes nothing twice.
+export async function settleAttempt(callUuid, cause, errorMsg, { fromOriginate = false } = {}) {
+  if (!callUuid) return;
+  if (!fromOriginate) {
+    noteHangup(callUuid);
+  } else {
+    if (!hangupSeen.has(callUuid)) await new Promise((r) => setTimeout(r, ORIGINATE_RESULT_GRACE_MS));
+    if (hangupSeen.has(callUuid)) return;   // the hangup settles this attempt
+  }
   const { rows: [dest] } = await query(
-    `SELECT id, campaign_id, answered_at, attempt_count, max_attempts, status
-     FROM ens_campaign_destinations WHERE call_uuid = $1`,
+    `SELECT d.id, d.campaign_id, d.answered_at, d.attempt_count, d.max_attempts, d.status,
+            c.status AS campaign_status
+     FROM ens_campaign_destinations d
+     JOIN ens_campaigns c ON c.id = d.campaign_id
+     WHERE d.call_uuid = $1 AND d.status IN ('dialing','answered')`,
     [callUuid]
   );
-  if (!dest) return; // not a campaign call
+  if (!dest) return; // not a campaign call, or already settled
 
   const state       = getOrCreateState(dest.campaign_id);
   const wasAnswered = dest.answered_at != null || dest.status === 'answered';
+  if (fromOriginate && wasAnswered) return;   // delivered; the hangup event completes it
+  // A retry is scheduled only while the campaign can still dial (queued / running /
+  // paused, as before). After cancel or expiry the recipient gets the status that cancel
+  // ('skipped') or expiry ('expired') gives to recipients still queued at that moment,
+  // instead of a 'queued' row in a finished campaign that nothing will ever dial.
+  const campaignActive = ['queued', 'running', 'paused'].includes(dest.campaign_status);
+  const IN_FLIGHT = `id = $1 AND call_uuid = $2 AND status IN ('dialing','answered')`;
+  const retryable = RETRYABLE_CAUSES.has(cause) && dest.attempt_count < dest.max_attempts;
 
   if (wasAnswered) {
     // Successfully delivered.
     // dialing_count was already decremented in onCallAnswer (dialing→answered),
     // so it must NOT be decremented again here (answered→completed).
-    await query(
+    const { rows: [done] } = await query(
       `UPDATE ens_campaign_destinations
-       SET status = 'completed', hangup_cause = $2, completed_at = now(), updated_at = now()
-       WHERE id = $1`,
-      [dest.id, cause]
+       SET status = 'completed', hangup_cause = $3, completed_at = now(), updated_at = now()
+       WHERE ${IN_FLIGHT}
+       RETURNING id`,
+      [dest.id, callUuid, cause]
     );
+    if (!done) return;
     await query(
       `UPDATE ens_campaigns
        SET completed_count = completed_count + 1,
@@ -651,7 +704,26 @@ export async function onCallHangup(callUuid, cause) {
       [dest.campaign_id]
     );
     state.callTotal  = (state.callTotal  || 0) + 1;
-  } else if (RETRYABLE_CAUSES.has(cause) && dest.attempt_count < dest.max_attempts) {
+  } else if (retryable && !campaignActive) {
+    const finalStatus = dest.campaign_status === 'cancelled' ? 'skipped' : 'expired';
+    const { rows: [closed] } = await query(
+      `UPDATE ens_campaign_destinations
+       SET status = $4, hangup_cause = $3, call_uuid = null, updated_at = now()
+       WHERE ${IN_FLIGHT}
+       RETURNING id`,
+      [dest.id, callUuid, cause, finalStatus]
+    );
+    if (!closed) return;
+    const busyCol = BUSY_CAUSES.has(cause) ? 'busy_count' : 'no_answer_count';
+    await query(
+      `UPDATE ens_campaigns
+       SET ${busyCol}     = ${busyCol} + 1,
+           dialing_count  = GREATEST(0, dialing_count - 1),
+           updated_at     = now()
+       WHERE id = $1`,
+      [dest.campaign_id]
+    );
+  } else if (retryable) {
     // Schedule retry
     const { rows: [c] } = await query(
       `SELECT retry_interval_sec FROM ens_campaigns WHERE id = $1`,
@@ -659,14 +731,16 @@ export async function onCallHangup(callUuid, cause) {
     );
     const delay = c?.retry_interval_sec || 300;
 
-    await query(
+    const { rows: [requeued] } = await query(
       `UPDATE ens_campaign_destinations
-       SET status = 'queued', hangup_cause = $2,
-           next_attempt_at = now() + ($3 || ' seconds')::interval,
+       SET status = 'queued', hangup_cause = $3,
+           next_attempt_at = now() + ($4 || ' seconds')::interval,
            call_uuid = null, updated_at = now()
-       WHERE id = $1`,
-      [dest.id, cause, delay]
+       WHERE ${IN_FLIGHT}
+       RETURNING id`,
+      [dest.id, callUuid, cause, delay]
     );
+    if (!requeued) return;
     const busyCol = BUSY_CAUSES.has(cause) ? 'busy_count' : 'no_answer_count';
     await query(
       `UPDATE ens_campaigns
@@ -681,7 +755,8 @@ export async function onCallHangup(callUuid, cause) {
     if (BUSY_CAUSES.has(cause)) state.busyTotal = (state.busyTotal || 0) + 1;
     state.callTotal = (state.callTotal || 0) + 1;
   } else {
-    await handleDestFailed(dest.id, dest.campaign_id, cause, null);
+    const failed = await handleDestFailed(dest.id, dest.campaign_id, cause, errorMsg, callUuid);
+    if (!failed) return;
   }
 
   emitInternal('enrs::campaign_call_hangup', {
@@ -689,17 +764,21 @@ export async function onCallHangup(callUuid, cause) {
     call_uuid:   callUuid,
     cause,
     was_answered: wasAnswered,
-  });
+  }, campaignTenant(dest.campaign_id));
 }
 
-async function handleDestFailed(destId, campaignId, cause, errorMsg) {
-  await query(
+// Final failure of the attempt identified by callUuid. Returns false when another path
+// already settled it (nothing is changed or counted then).
+async function handleDestFailed(destId, campaignId, cause, errorMsg, callUuid) {
+  const { rows: [row] } = await query(
     `UPDATE ens_campaign_destinations
-     SET status = 'failed', hangup_cause = $2, error_message = $3,
+     SET status = 'failed', hangup_cause = $3, error_message = $4,
          completed_at = now(), call_uuid = null, updated_at = now()
-     WHERE id = $1`,
-    [destId, cause, errorMsg]
+     WHERE id = $1 AND call_uuid = $2 AND status IN ('dialing','answered')
+     RETURNING id`,
+    [destId, callUuid, cause, errorMsg]
   );
+  if (!row) return false;
   await query(
     `UPDATE ens_campaigns
      SET failed_count  = failed_count + 1,
@@ -708,6 +787,7 @@ async function handleDestFailed(destId, campaignId, cause, errorMsg) {
      WHERE id = $1`,
     [campaignId]
   );
+  return true;
 }
 
 // ── Campaign lifecycle helpers ────────────────────────────────────────────────
@@ -723,7 +803,7 @@ async function completeCampaign(campaignId) {
   );
   if (c) {
     campaignState.delete(campaignId);
-    emitInternal('enrs::campaign_completed', { campaign_id: campaignId, stats: c });
+    emitInternal('enrs::campaign_completed', { campaign_id: campaignId, stats: c }, campaignTenant(campaignId));
     logger.info({ module: 'campaignEngine', campaignId }, 'Campaign completed');
   }
 }
@@ -743,7 +823,7 @@ async function expireCampaign(campaignId) {
     [campaignId]
   );
   campaignState.delete(campaignId);
-  emitInternal('enrs::campaign_expired', { campaign_id: campaignId });
+  emitInternal('enrs::campaign_expired', { campaign_id: campaignId }, campaignTenant(campaignId));
   logger.info({ module: 'campaignEngine', campaignId }, 'Campaign expired');
 }
 
@@ -983,7 +1063,7 @@ export async function pauseCampaign(campaignId) {
     [campaignId]
   );
   if (!row) throw Object.assign(new Error('Campaign not found or not running'), { status: 404 });
-  emitInternal('enrs::campaign_paused', { campaign_id: campaignId });
+  emitInternal('enrs::campaign_paused', { campaign_id: campaignId }, campaignTenant(campaignId));
   return row;
 }
 
@@ -996,7 +1076,7 @@ export async function resumeCampaign(campaignId) {
     [campaignId]
   );
   if (!row) throw Object.assign(new Error('Campaign not found or not paused'), { status: 404 });
-  emitInternal('enrs::campaign_resumed', { campaign_id: campaignId });
+  emitInternal('enrs::campaign_resumed', { campaign_id: campaignId }, campaignTenant(campaignId));
   return row;
 }
 
@@ -1017,7 +1097,7 @@ export async function cancelCampaign(campaignId) {
   );
   if (!row) throw Object.assign(new Error('Campaign not found or already finished'), { status: 404 });
   campaignState.delete(campaignId);
-  emitInternal('enrs::campaign_cancelled', { campaign_id: campaignId });
+  emitInternal('enrs::campaign_cancelled', { campaign_id: campaignId }, campaignTenant(campaignId));
   return row;
 }
 

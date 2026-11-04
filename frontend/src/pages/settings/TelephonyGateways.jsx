@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, UploadCloud, CheckCircle, XCircle, Star, Network } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -5,6 +6,7 @@ import { useAuthStore } from '../../store/authStore.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const EMPTY = {
   name: '', type: 'generic_sip', host: '', port: 5060,
@@ -28,7 +30,7 @@ export default function TelephonyGateways() {
     try {
       const r = await api.gateways.list();
       setRows(r.gateways || []);
-    } catch {}
+    } catch (e) { notify(e.message); }
   }
   useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -63,19 +65,19 @@ export default function TelephonyGateways() {
   }
 
   async function del(r) {
-    if (!confirm(`Delete gateway "${r.name}"? Calls using it will fall back to internal dialing.`)) return;
-    try { await api.gateways.remove(r.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete gateway', message: `Delete gateway "${r.name}"? Calls using it will fall back to internal dialing.`, confirmLabel: 'Delete' }))) return;
+    try { await api.gateways.remove(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   async function deploy(r) {
     setDeploying(r.id);
     try {
       const result = await api.gateways.deploy(r.id);
-      alert(result.status === 'success'
+      notify(result.status === 'success'
         ? `Deployed and verified — ${r.name} is registering with SIPCommunication.`
         : `Deployed but verification failed: ${result.verify_detail || result.reload_error || 'unknown error'}`);
       load();
-    } catch (e) { alert(e.message); } finally { setDeploying(null); }
+    } catch (e) { notify(e.message); } finally { setDeploying(null); }
   }
 
   return (
@@ -111,8 +113,8 @@ export default function TelephonyGateways() {
                   <button onClick={() => deploy(r)} disabled={deploying === r.id} className="btn-ghost p-1.5" title="Deploy to SIPCommunication">
                     <UploadCloud size={13} />
                   </button>
-                  <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(r)} className="btn-ghost p-1.5" aria-label={`Edit ${r.name}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${r.name}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

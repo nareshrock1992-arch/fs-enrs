@@ -47,3 +47,18 @@ export function csvCell(v) {
   return /[",\r\n]/.test(s) || s !== s.trim() ? `"${s.replace(/"/g, '""')}"` : s;
 }
 export const csvLine = (cells) => cells.map(csvCell).join(',');
+
+// Only the filters the user set, for list and export requests alike.
+export function filterParams(filters = {}) {
+  return Object.fromEntries(['from', 'to', 'status'].filter((k) => filters[k]).map((k) => [k, filters[k]]));
+}
+
+// Each recipient once, by final outcome (server: reports.js CAMPAIGN_OUTCOMES_JOIN).
+export const OUTCOME_LABELS = [
+  ['answered', 'answered'], ['busy', 'busy'], ['no_answer', 'no answer'], ['failed', 'failed'],
+  ['expired', 'expired'], ['skipped', 'skipped'], ['pending', 'pending'],
+];
+export function outcomeSummary(outcomes) {
+  if (!outcomes) return [];
+  return OUTCOME_LABELS.filter(([k]) => Number(outcomes[k]) > 0).map(([k, label]) => ({ key: k, label, count: Number(outcomes[k]) }));
+}

@@ -10,6 +10,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { readFileSync } from 'fs';
+import { URL } from 'url';
 
 let calls = [];
 const AUDIT = [
@@ -24,6 +26,9 @@ vi.mock('../../db/pool.js', () => ({
       const scoped = /ec\.tenant_id = \$3/.test(s);
       return { rows: AUDIT.filter(a => !scoped || p[2] == null || a.cfgTenant === p[2]).map(({ details, created_at }) => ({ details, created_at })) };
     }
+    if (/INSERT INTO audit_logs/.test(s)) return { rows: [] };
+    if (/COUNT\(DISTINCT c\.id\)::INT AS campaigns/.test(s)) return { rows: [globalThis.__exportSize] };
+    if (/COUNT\(\*\)::INT AS incidents/.test(s)) return { rows: [{ incidents: 1, details: globalThis.__exportSize.recipients }] };
     if (/COUNT\(\*\)::INT AS total/.test(s)) return { rows: [{ total: 0, active: 0, completed: 0, responders: 0, answered: 0, running: 0, destinations: 0 }] };
     return { rows: [] };
   }),
@@ -33,7 +38,7 @@ vi.mock('../../db/pool.js', () => ({
 const { config } = await import('../../config/index.js');
 const { errorHandler } = await import('../../middleware/asyncHandler.js');
 const reportsRouter = (await import('../../routes/v1/reports.js')).default;
-const { parseReportQuery, roomWindowEnd } = await import('../../routes/v1/reports.js');
+const { parseReportQuery, roomWindowEnd, BUSY_CAUSE_LIST, NO_ANSWER_CAUSE_LIST } = await import('../../routes/v1/reports.js');
 
 const app = express();
 app.use('/reports', reportsRouter);
@@ -88,6 +93,66 @@ describe('tenant scoping', () => {
         expect(c.p, p).toContain(10);
       }
     }
+  });
+});
+
+describe('Excel exports', () => {
+  const U = '3f2b8c1e-9a4d-4e2f-8b1a-0c9d8e7f6a5b';
+  beforeEach(() => { globalThis.__exportSize = { campaigns: 1, recipients: 2 }; });
+  const binary = (r) => r.buffer(true).parse((res, cb) => { const c = []; res.on('data', d => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
+
+  it('returns a real .xlsx with no-store, and records who exported what', async () => {
+    const r = await binary(request(app).get('/reports/ers/export?from=2026-10-01').set(as(OP10)));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toContain('spreadsheetml.sheet');
+    expect(r.headers['cache-control']).toBe('private, no-store');
+    expect(r.body.readUInt32LE(0)).toBe(0x04034b50);
+    expect(r.body.toString('latin1')).toContain('xl/worksheets/sheet4.xml');
+    const audit = calls.find(c => /report_exported/.test(c.s));
+    expect(audit.p[1]).toBe('ers-incidents');
+    expect(JSON.parse(audit.p[2]).filters.from).toBe('2026-10-01');
+  });
+  it('every export query is tenant-scoped with the token tenant; a forged ?tenant_id changes nothing', async () => {
+    for (const p of ['/reports/ens-campaigns/export?tenant_id=20', `/reports/ens-campaigns/${U}/export?tenant_id=20`, '/reports/ers/export?tenant_id=20']) {
+      calls = [];
+      expect((await binary(request(app).get(p).set(as(A10)))).status, p).toBe(200);
+      // current_setting reads no tenant data
+      const selects = calls.filter(c => /^\s*SELECT/.test(c.s) && !/current_setting/.test(c.s));
+      expect(selects.length, p).toBeGreaterThanOrEqual(3);
+      for (const c of selects) {
+        expect(c.s, p).toMatch(/tenant_id = \$1/);
+        expect(c.p[0], p).toBe(10);
+      }
+    }
+  });
+  it('role gate, tenant context and validation apply as on the lists', async () => {
+    for (const t of [SUP10, VIEW10, ORPHAN]) expect((await request(app).get('/reports/ers/export').set(as(t))).status).toBe(403);
+    expect((await request(app).get('/reports/ens-campaigns/export')).status).toBe(401);
+    calls = [];
+    expect((await request(app).get('/reports/ers/export?from=bad').set(as(A10))).status).toBe(400);
+    expect((await request(app).get('/reports/ens-campaigns/abc/export').set(as(A10))).status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+  it('another tenant\'s (or an unknown) campaign is a 404', async () => {
+    globalThis.__exportSize = { campaigns: 0, recipients: 0 };
+    expect((await request(app).get(`/reports/ens-campaigns/${U}/export`).set(as(A10))).status).toBe(404);
+  });
+  it('a selection over the row cap is refused before any detail query', async () => {
+    globalThis.__exportSize = { campaigns: 1, recipients: 50_000 };
+    calls = [];
+    const r = await request(app).get('/reports/ens-campaigns/export').set(as(A10));
+    expect(r.status).toBe(413);
+    expect(r.body.max_rows).toBe(50_000);
+    expect(calls).toHaveLength(1);
+    expect((await request(app).get('/reports/ers/export').set(as(A10))).status).toBe(413);
+  });
+  it('outcome cause lists stay in step with the campaign engine', () => {
+    const src = readFileSync(new URL('../../services/campaignEngine.js', import.meta.url), 'utf8');
+    const set = (name) => [...src.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\)`))[1].replace(/\/\/.*$/gm, '').matchAll(/'([A-Z_]+)'/g)].map(m => m[1]);
+    expect(BUSY_CAUSE_LIST.slice().sort()).toEqual(set('BUSY_CAUSES').sort());
+    // every retryable cause is classified, except a routing failure, which reports as "failed"
+    const classified = new Set([...BUSY_CAUSE_LIST, ...NO_ANSWER_CAUSE_LIST, 'NO_ROUTE_DESTINATION']);
+    expect(set('RETRYABLE_CAUSES').filter(c => !classified.has(c))).toEqual([]);
   });
 });
 

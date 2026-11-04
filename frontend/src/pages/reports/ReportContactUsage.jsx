@@ -1,7 +1,9 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Download, Users } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { csvLine } from './reportState.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 
@@ -10,21 +12,21 @@ export default function ReportContactUsage() {
   const [rows, setRows] = useState([]);
 
   async function load() {
-    try { setRows((await api.reports.contactUsage()).contacts || []); } catch {}
+    try { setRows((await api.reports.contactUsage()).contacts || []); } catch (e) { notify(e.message); }
   }
   useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function exportCsv() {
     const h = ['Name', 'Mobile Number', 'Organization', 'ENS Direct Configs', 'ENS Group Configs', 'ERS Incidents'];
-    const lines = [h.join(','), ...rows.map(r =>
-      [
-        `"${r.first_name} ${r.last_name}"`,
+    const lines = [csvLine(h), ...rows.map(r =>
+      csvLine([
+        `${r.first_name} ${r.last_name}`,
         r.mobile_number || '',
-        `"${r.organization || ''}"`,
+        r.organization || '',
         r.ens_direct_configs ?? 0,
         r.ens_group_configs  ?? 0,
         r.ers_incidents      ?? 0,
-      ].join(',')
+      ])
     )];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);

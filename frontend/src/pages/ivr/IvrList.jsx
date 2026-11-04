@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -8,6 +9,7 @@ import PageHeader from '../../components/ui/PageHeader.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 function fmt(iso) {
   if (!iso) return '—';
@@ -77,7 +79,7 @@ export default function IvrList() {
     if (!canEdit) return;
     api.ivr.listTemplates()
       .then(r => setTemplates(r.templates || []))
-      .catch(() => {});
+      .catch((e) => notify(`Templates could not be loaded: ${e.message}`));
   }, [canEdit]);
 
   // Organizations for the Create modal selector (create-path only). The default
@@ -92,7 +94,7 @@ export default function IvrList() {
         const sys = list.find(o => o.is_system);
         setCreateOrgId(sys ? sys.id : (list[0]?.id ?? ''));
       })
-      .catch(() => {});
+      .catch((e) => notify(`Organizations could not be loaded: ${e.message}`));
   }, [canEdit]);
 
   // ── Create flow ──────────────────────────────────────────────────────────────
@@ -177,12 +179,12 @@ export default function IvrList() {
   // ── Delete flow ──────────────────────────────────────────────────────────────
 
   async function deleteFlow(flow) {
-    if (!window.confirm(`Delete "${flow.name}"? This will unbind all numbers.`)) return;
+    if (!(await confirmAction({ title: 'Delete IVR flow', message: `Delete "${flow.name}"? This will unbind all numbers.`, confirmLabel: 'Delete' }))) return;
     try {
       await api.ivr.delete(flow.flow_uuid);
       load();
     } catch (e) {
-      alert(e.message);
+      notify(e.message);
     }
   }
 

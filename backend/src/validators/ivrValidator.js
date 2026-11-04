@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isProtectedVarName } from '../utils/ivrProtectedVars.js';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -403,7 +404,57 @@ export const AnyNodeSchemaDraft = z.discriminatedUnion('type', [
   QueueWaitNodeSchema.extend(BASE_NODE_FIELDS),         // ZodObject ✓
 ]);
 
-export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
+// Publish-time rules for values that reach SIPCommunication commands. These are not in
+// the per-type schemas, so a draft that breaks them still saves and the designer shows
+// the error at Validate / Publish. Kept as narrow as the risk: anything that could work
+// before still publishes, except the inline dialplan (runs arbitrary applications, also
+// when named as the destination's dialplan word) and protected variable names.
+// Already-published flows are listed by scripts/ivr-compat-report.js; Deploy of such a
+// version reports these rules as warnings instead (validateGraph alreadyPublished).
+const WHITESPACE_RE = /\s/;
+
+function checkSecurityRules(node, ctx) {
+  const issue = (path, message) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  const writes = [];
+  if (node.type === 'set_variable') writes.push(['variable', node.variable]);
+  if (node.type === 'gather') writes.push(['variable_name', node.variable_name]);
+  if (node.type === 'record_message') writes.push(['variable_name', node.variable_name]);
+  if (node.type === 'rest_api' && node.response_mappings) {
+    let mappings;
+    try { mappings = JSON.parse(node.response_mappings); } catch { mappings = null; }
+    if (Array.isArray(mappings)) {
+      for (const m of mappings) if (m && typeof m.variable_name === 'string') writes.push(['response_mappings', m.variable_name]);
+    }
+  }
+  for (const [field, name] of writes) {
+    if (name !== undefined && isProtectedVarName(name)) {
+      issue(field, `"${name}" is a protected channel variable (SIPCommunication runs its value as a command, or it is the call UUID) — choose another name`);
+    }
+  }
+  if (node.type === 'transfer') {
+    if (String(node.dialplan ?? 'XML').trim().toLowerCase() === 'inline') {
+      issue('dialplan', '"inline" is not allowed — it runs arbitrary applications; use XML (the default)');
+    }
+    // The transfer argument is "<destination> <dialplan> <context>", split on whitespace, so a
+    // destination written as "1001 XML public" picks its own dialplan and context. That keeps
+    // working; only naming "inline" that way is refused, as it would bypass the rule above.
+    const words = String(node.destination ?? '').split(WHITESPACE_RE).filter(Boolean);
+    if (words.length > 1 && words[1].toLowerCase() === 'inline') {
+      issue('destination', '"inline" is not allowed as the dialplan word of the destination — it runs arbitrary applications');
+    }
+  }
+}
+
+// The same rules as plain messages, for the compatibility report on stored flows.
+export function nodeSecurityIssues(node) {
+  const out = [];
+  checkSecurityRules(node || {}, { addIssue: ({ path, message }) => out.push(`${path?.[0] ?? 'node'}: ${message}`) });
+  return out;
+}
+
+// The per-node rules that applied before the security rules above. A version published
+// earlier passed these, so Deploy re-checks it with them (see validateGraph).
+function nodeRules(node, ctx) {
   if (node.type === 'gather') {
     const minD = node.min_digits ?? 1;
     const maxD = node.max_digits ?? 1;
@@ -536,13 +587,19 @@ export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'record_prompt_source_type=audio requires record_prompt_audio_url' });
     }
   }
+}
+
+export const AnyNodeSchema = AnyNodeSchemaDraft.superRefine((node, ctx) => {
+  checkSecurityRules(node, ctx);
+  nodeRules(node, ctx);
 });
+export const PublishedNodeSchema = AnyNodeSchemaDraft.superRefine(nodeRules);
 
 // ── Full graph schema (used for publish — requires ≥1 node) ──────────────────
 
-export const GraphSchema = z.object({
+const graphSchemaOf = (nodeSchema) => z.object({
   entry_node_id: nodeId,
-  nodes:         z.record(nodeId, AnyNodeSchema).refine(
+  nodes:         z.record(nodeId, nodeSchema).refine(
     n => Object.keys(n).length >= 1,
     'graph must have at least one node'
   ),
@@ -550,6 +607,8 @@ export const GraphSchema = z.object({
   g => g.nodes[g.entry_node_id] !== undefined,
   { message: 'entry_node_id must reference an existing node', path: ['entry_node_id'] }
 );
+export const GraphSchema = graphSchemaOf(AnyNodeSchema);
+export const PublishedGraphSchema = graphSchemaOf(PublishedNodeSchema);
 
 // ── Draft graph schema (used for save — allows empty canvas) ─────────────────
 // Accepts entry_node_id = '' and nodes = {} so the user can save after deleting

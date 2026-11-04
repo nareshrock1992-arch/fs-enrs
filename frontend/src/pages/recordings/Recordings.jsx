@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Headphones, Play, Pause, Download, Search, RefreshCw, X,
@@ -11,6 +12,7 @@ import { can } from '../../auth/permissions.js';
 import { useMediaUrl, downloadMedia } from '../../api/mediaAccess.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { SEARCH_DEBOUNCE_MS, summaryCounts } from './recordingsSummary.js';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 function fmtSize(bytes) {
   const n = Number(bytes);
@@ -138,7 +140,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canArchive, canDel
     if (rec.status === 'COMPLETED' || rec.status === 'ARCHIVED') {
       api.recordings.waveform(rec.id)
         .then(r => setPeaks(r.peaks?.length ? r.peaks : null))
-        .catch(() => {});
+        .catch(() => {});   // waveform is decorative: the player works without it
     }
   }, [rec.id, rec.status]);
 
@@ -169,7 +171,7 @@ function RecordingDetail({ rec, onClose, onArchive, onDelete, canArchive, canDel
 
   return (
     <div className="fixed inset-y-0 right-0 z-40 w-96 bg-surface border-l border-surface-border
-                    shadow-2xl flex flex-col overflow-hidden">
+                    shadow-lg flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-border shrink-0">
         <typeMeta.Icon size={14} className="text-brand shrink-0" />
@@ -495,7 +497,7 @@ export default function Recordings() {
     try {
       const full = await api.recordings.get(rec.id);
       setDetail(full.recording);
-    } catch {}
+    } catch (e) { notify(`Recording details could not be loaded; showing the list entry: ${e.message}`); }
   };
 
   const handleArchive = async () => {
@@ -506,7 +508,7 @@ export default function Recordings() {
   };
 
   const handleDelete = async () => {
-    if (!detail || !window.confirm('Delete this recording?')) return;
+    if (!detail || !(await confirmAction({ title: 'Delete recording', message: 'Delete this recording?', confirmLabel: 'Delete' }))) return;
     await api.recordings.remove(detail.id);
     setSelected(null);
     setDetail(null);
@@ -720,7 +722,7 @@ export default function Recordings() {
                       onClick={e => {
                         e.stopPropagation();
                         downloadMedia('recording', r.id, r.recording_file || 'recording.wav')
-                          .catch(err => alert('Download failed: ' + err.message));
+                          .catch(err => notify('Download failed: ' + err.message));
                       }}
                       title="Download"
                       aria-label="Download recording"

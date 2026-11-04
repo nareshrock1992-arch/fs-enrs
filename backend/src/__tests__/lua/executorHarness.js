@@ -97,12 +97,14 @@ export function runExecutor({
   // POST includes `-d '<json>'`. Extract the URL (last single-quoted or
   // double-quoted token that looks like a URL) and the -d body if present.
   const handlePopen = (cmd) => {
-    const urlMatch = cmd.match(/['"](https?:\/\/[^'"]+)['"]/);
-    const url = urlMatch ? urlMatch[1] : '';
+    // The request target is the LAST quoted URL: a POST body may itself contain URLs
+    // (rest_api and webhook send the external URL inside the JSON body).
+    const urlMatches = [...cmd.matchAll(/['"](https?:\/\/[^'"]+)['"]/g)];
+    const url = urlMatches.length ? urlMatches[urlMatches.length - 1][1] : '';
     const bodyMatch = cmd.match(/-d '([^']*)'/);
     const body = bodyMatch ? bodyMatch[1] : null;
     const isPiper = /\/synthesize/.test(url);
-    httpLog.push({ url, body });
+    httpLog.push({ url, body, cmd });
     if (/\bGET\b/.test(cmd) === false && /\/ivr\//.test(url) && advanceOnPoll) clock += advanceOnPoll;
     if (isPiper) return 'piper_ok';             // pretend TTS synthesis succeeded
     return nextResponse(url, body);

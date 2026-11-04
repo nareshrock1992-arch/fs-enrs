@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -5,6 +6,7 @@ import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const EMPTY = { organization_id: '', name: '', address: '', floor_plan_url: '' };
 
@@ -22,7 +24,7 @@ export default function LocationList() {
       const [l, o] = await Promise.all([api.locations.list(), api.orgs.list()]);
       setRows(l.locations || []);
       setOrgs(o.organizations || []);
-    } catch {}
+    } catch (e) { notify(e.message); }
   }
   useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -50,8 +52,8 @@ export default function LocationList() {
   }
 
   async function del(r) {
-    if (!confirm(`Delete location "${r.name}"?`)) return;
-    try { await api.locations.remove(r.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete location', message: `Delete location "${r.name}"?`, confirmLabel: 'Delete' }))) return;
+    try { await api.locations.remove(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   const orgName = id => orgs.find(o => o.id === id)?.name || id;
@@ -73,8 +75,8 @@ export default function LocationList() {
               <Td className="text-text-muted">{r.address || '—'}</Td>
               <Td>
                 <div className="flex gap-1 justify-end">
-                  <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(r)} className="btn-ghost p-1.5" aria-label={`Edit ${r.name}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${r.name}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

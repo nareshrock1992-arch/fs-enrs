@@ -184,7 +184,7 @@ describe('ivrGraphValidator — reachability via gather-node branches', () => {
     const result = await validateGraph(graph, 1);
     expect(result.warnings.filter(w => w.includes('not reachable'))).toHaveLength(0);
     expect(result.stats.unreachable).toBe(0);
-    expect(result.stats.reachable).toBe(6);
+    expect(result.stats.reachable).toBe(5);   // the fixture has 5 nodes, all reachable
   });
 
   it('still flags a genuinely orphaned node not referenced by any branch', async () => {

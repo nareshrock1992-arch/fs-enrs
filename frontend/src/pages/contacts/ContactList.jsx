@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useRef } from 'react';
 import { Plus, Pencil, Trash2, Upload, CheckCircle2, XCircle } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
@@ -5,6 +6,7 @@ import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_number: '', extension_number: '', email: '', role: '', department_id: '' };
 
@@ -34,7 +36,7 @@ export default function ContactList() {
       setRows(c.contacts || []);
       setOrgs(o.organizations || []);
       setDepts(d.departments || []);
-    } catch {}
+    } catch (e) { notify(e.message); }
   }
   useEffect(() => { setModal(null); setOrgFilter(''); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [orgFilter]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -72,8 +74,8 @@ export default function ContactList() {
   }
 
   async function del(r) {
-    if (!confirm(`Delete contact "${r.first_name} ${r.last_name}"?`)) return;
-    try { await api.contacts.remove(r.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete contact', message: `Delete contact "${r.first_name} ${r.last_name}"?`, confirmLabel: 'Delete' }))) return;
+    try { await api.contacts.remove(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   async function handleCsvUpload() {
@@ -125,8 +127,8 @@ export default function ContactList() {
               <Td className="text-text-muted">{orgName(r.organization_id)}</Td>
               <Td>
                 <div className="flex gap-1 justify-end">
-                  <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(r)} className="btn-ghost p-1.5" aria-label={`Edit ${r.first_name} ${r.last_name}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${r.first_name} ${r.last_name}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

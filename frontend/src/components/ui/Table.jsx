@@ -12,18 +12,27 @@ export function Th({ children, className = '', ...rest }) {
   );
 }
 
-export function Td({ children, className = '' }) {
+export function Td({ children, className = '', ...rest }) {
   return (
-    <td className={`table-cell ${className}`}>{children}</td>
+    <td className={`table-cell ${className}`} {...rest}>{children}</td>
   );
 }
 
-export function Tr({ children, onClick, className = '' }) {
+// A clickable row is also reachable and operable from the keyboard (Tab, Enter, Space).
+export function Tr({ children, onClick, className = '', selected = false, label }) {
+  const onKeyDown = onClick ? (e) => {
+    if (e.target !== e.currentTarget) return;   // keys inside a cell's own controls are theirs
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); }
+  } : undefined;
   return (
     <tr
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      tabIndex={onClick ? 0 : undefined}
+      aria-selected={onClick ? selected : undefined}
+      aria-label={label}
       className={`table-row hover:bg-surface-hover transition-colors duration-100
-                  ${onClick ? 'cursor-pointer' : ''} ${className}`}
+                  ${onClick ? 'cursor-pointer focus-visible:bg-surface-hover' : ''} ${selected ? 'bg-surface-hover' : ''} ${className}`}
     >
       {children}
     </tr>

@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -5,6 +6,7 @@ import { useAuthStore } from '../../store/authStore.js';
 import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const EMPTY = { name: '', code: '', address: '', phone: '', email: '' };
 
@@ -17,7 +19,7 @@ export default function OrgList() {
   const [error,  setError]  = useState('');
 
   async function load() {
-    try { setRows((await api.orgs.list()).organizations || []); } catch {}
+    try { setRows((await api.orgs.list()).organizations || []); } catch (e) { notify(e.message); }
   }
   useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -43,8 +45,8 @@ export default function OrgList() {
   function openEdit(r)  { setForm({ name: r.name, code: r.code || '', address: r.address || '', phone: r.phone || '', email: r.email || '' }); setModal(r); setError(''); }
 
   async function del(r) {
-    if (!confirm(`Delete org "${r.name}"?`)) return;
-    try { await api.orgs.remove(r.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete organization', message: `Delete organization "${r.name}"?`, confirmLabel: 'Delete' }))) return;
+    try { await api.orgs.remove(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   return (
@@ -68,8 +70,8 @@ export default function OrgList() {
               <Td>{r.contact_count ?? 0}</Td>
               <Td>
                 <div className="flex gap-1 justify-end">
-                  <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(r)} className="btn-ghost p-1.5" aria-label={`Edit ${r.name}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${r.name}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

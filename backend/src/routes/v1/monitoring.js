@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { adminOrSuper } from '../../middleware/rbac.js';
+import { adminOrSuper, superAdminOnly } from '../../middleware/rbac.js';
+import { requireConferenceAccess, requireMemberId, auditConferenceAction } from '../../middleware/conferenceAccess.js';
 import {
   getConferences,
   getStatus,
@@ -32,7 +33,12 @@ router.use(requireAuth);
 // Read-only (all authenticated users)
 router.get('/conferences', getConferences);
 router.get('/status', getStatus);
-router.get('/debug/conf-sync', adminOrSuper, debugConfSync);
+// Every tenant's rooms in one response: platform administrators only.
+router.get('/debug/conf-sync', superAdminOnly, debugConfSync);
+
+// Tenant ownership + input checks for every control route below.
+router.use('/conferences/:room', requireConferenceAccess, auditConferenceAction);
+router.use('/conferences/:room/members/:memberId', requireMemberId);
 
 // Conference-level controls (supervisors+)
 router.post('/conferences/:room/lock', adminOrSuper, lockConference);

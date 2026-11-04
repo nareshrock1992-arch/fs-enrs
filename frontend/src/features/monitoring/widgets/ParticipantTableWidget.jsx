@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../../api/client.js';
 import { elapsedSec, fmtDur } from '../utils/time.js';
+import { confirmAction } from '../../../components/ui/ConfirmDialog.jsx';
 
 // ─── Avatar ───────────────────────────────────────────────────────────────────
 
@@ -235,7 +236,7 @@ const ParticipantRow = memo(function ParticipantRow({ m, room, now, talkTracker,
             V−
           </button>
           <button title="Kick participant"
-            onClick={() => { if (window.confirm(`Kick ${display} from ${room}?`)) act(api.monitoring.kick, m.id); }}
+            onClick={async () => { if (await confirmAction({ title: 'Remove participant', message: `Remove ${display} from ${room}? Their call is disconnected.`, confirmLabel: 'Remove' })) act(api.monitoring.kick, m.id); }}
             className="p-1.5 rounded text-text-muted/50 hover:text-red-500 hover:bg-red-500/10 transition-colors">
             <PhoneOff size={13} />
           </button>

@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -6,6 +7,7 @@ import Modal from '../../components/ui/Modal.jsx';
 import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import { StatusBadge } from '../../components/ui/Badge.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const TENANT_ROLES = ['ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER'];
 const ALL_ROLES    = ['SUPER_ADMIN', ...TENANT_ROLES];
@@ -29,14 +31,14 @@ export default function UserList() {
     try {
       const params = isSuperAdmin && filter ? { tenant_id: filter } : {};
       setUsers((await api.users.list(params)).users || []);
-    } catch {}
+    } catch (e) { notify(e.message); }
   }
 
   useEffect(() => {
     setModal(null); setFilter('');
     load();
     if (isSuperAdmin) {
-      api.tenants.list().then(d => setTenants(d.tenants || [])).catch(() => {});
+      api.tenants.list().then(d => setTenants(d.tenants || [])).catch((e) => notify(`Tenants could not be loaded: ${e.message}`));
     }
   }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -81,8 +83,8 @@ export default function UserList() {
   }
 
   async function handleDelete(u) {
-    if (!confirm(`Delete user ${u.email}?`)) return;
-    try { await api.users.remove(u.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete user', message: `Delete user ${u.email}?`, confirmLabel: 'Delete' }))) return;
+    try { await api.users.remove(u.id); load(); } catch (e) { notify(e.message); }
   }
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -135,8 +137,8 @@ export default function UserList() {
               </Td>
               <Td>
                 <div className="flex items-center gap-1 justify-end">
-                  <button onClick={() => openEdit(u)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => handleDelete(u)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(u)} className="btn-ghost p-1.5" aria-label={`Edit ${u.email}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => handleDelete(u)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${u.email}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

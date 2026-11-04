@@ -38,9 +38,10 @@ import {
   getConferenceSnapshot,
 } from '../../services/eslService.js';
 
-// Inject a fake Socket.IO so emit() calls don't throw.
+// Inject a fake Socket.IO so emit() calls don't throw. Events are sent to rooms
+// (io.to(room).emit), so the fake supports chained to().
 import { setSocketIO } from '../../services/eslService.js';
-const fakeIo = { emit: vi.fn() };
+const fakeIo = { emit: vi.fn(), to: () => fakeIo };
 setSocketIO(fakeIo);
 
 // Helper: inject a minimal conference entry via the starting path so we have

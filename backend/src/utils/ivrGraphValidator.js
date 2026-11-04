@@ -1,5 +1,8 @@
-import { GraphSchema, AnyNodeSchema } from '../validators/ivrValidator.js';
+import { GraphSchema, AnyNodeSchema, PublishedGraphSchema, PublishedNodeSchema, nodeSecurityIssues } from '../validators/ivrValidator.js';
 import { query } from '../db/pool.js';
+
+// "${word " or "${word(" is an API call, "${a${b}}" builds one; "${name}" is neither.
+export const API_EXPANSION_RE = /\$\{\s*[\w.-]*(?:[\s(]|\$\{)/;
 
 /**
  * Two-pass IVR graph validator.
@@ -8,8 +11,14 @@ import { query } from '../db/pool.js';
  * Pass 2 — Graph integrity: cycle detection (DFS), dangling refs, DB ID existence.
  *
  * Returns { valid, errors, warnings, stats }.
+ *
+ * alreadyPublished: the graph is a version that was published before (Deploy). The
+ * publish-time security rules (inline transfer, protected variable names, API forms in
+ * ${...}) were added after such versions could be published, so for them those rules are
+ * reported as warnings instead of refusing the deploy, as before. Publish still refuses
+ * them, and the executor enforces them during the call.
  */
-export async function validateGraph(graph, tenantId) {
+export async function validateGraph(graph, tenantId, { alreadyPublished = false } = {}) {
   const errors   = [];
   const warnings = [];
 
@@ -54,16 +63,19 @@ export async function validateGraph(graph, tenantId) {
 
   for (const [nid, node] of Object.entries(g.nodes || {})) {
     if (!node || typeof node !== 'object') continue; // already caught in pre-flight
-    const r = AnyNodeSchema.safeParse(node);
+    const r = (alreadyPublished ? PublishedNodeSchema : AnyNodeSchema).safeParse(node);
     if (!r.success) {
       for (const issue of r.error.issues) {
         errors.push(`node ${nid}.${issue.path.join('.') || 'type'}: ${issue.message}`);
       }
     }
+    if (alreadyPublished) {
+      for (const msg of nodeSecurityIssues(node)) warnings.push(`node ${nid}.${msg} (already published: deployed as before; republishing refuses it)`);
+    }
   }
   if (errors.length > 0) return { valid: false, errors, warnings };
 
-  const parsed = GraphSchema.safeParse(g);
+  const parsed = (alreadyPublished ? PublishedGraphSchema : GraphSchema).safeParse(g);
   if (!parsed.success) {
     return {
       valid:  false,
@@ -85,6 +97,30 @@ export async function validateGraph(graph, tenantId) {
     if (node.true_node)      ids.push(node.true_node);
     if (node.false_node)     ids.push(node.false_node);
     return ids.filter(Boolean);
+  }
+
+  // 2a-bis. Channel-variable expansion is for variables only. "${name}" is a variable,
+  // but "${api args}" runs an API command when the telephony engine expands the value,
+  // and flows are written by tenant users. Every string in a node is checked, because
+  // which fields are expanded depends on the node handler.
+  const unsafeExpansion = (value, path) => {
+    if (typeof value === 'string') {
+      if (API_EXPANSION_RE.test(value)) return path;
+      return null;
+    }
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        const hit = unsafeExpansion(v, path ? `${path}.${k}` : k);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+  // The raw graph, not the parsed one: parsing drops unknown fields, but the raw JSON is stored.
+  for (const [nid, node] of Object.entries(g.nodes)) {
+    const field = unsafeExpansion(node, '');
+    if (field && alreadyPublished) warnings.push(`node ${nid}.${field}: only plain variables like \${name} are allowed here (already published: deployed as before; republishing refuses it)`);
+    else if (field) errors.push(`node ${nid}.${field}: only plain variables like \${name} are allowed here`);
   }
 
   // 2a. Dangling references

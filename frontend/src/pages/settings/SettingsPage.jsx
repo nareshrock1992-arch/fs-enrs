@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState } from 'react';
 import { Save, Wifi, WifiOff, ToggleLeft, ToggleRight, Settings2 } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -7,6 +8,8 @@ import PageHeader from '../../components/ui/PageHeader.jsx';
 
 export default function SettingsPage() {
   const activeTenantId = useAuthStore(s => s.activeTenantId);
+  // One row applies to every tenant: tenant ADMINs can read these, only SUPER_ADMIN can change them.
+  const canEdit = useAuthStore(s => s.user?.role === 'SUPER_ADMIN');
   const [settings, setSettings] = useState([]);
   const [flags,    setFlags]    = useState([]);
   const [esl,      setEsl]      = useState(null);
@@ -26,17 +29,17 @@ export default function SettingsPage() {
       const init = {};
       (s.settings || []).forEach(x => { init[x.key] = x.value; });
       setVals(init);
-    } catch {}
+    } catch (e) { notify(e.message); }
   }
   useEffect(() => { load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function saveSetting(key) {
     setSaving(key);
-    try { await api.settings.update(key, vals[key]); } catch (e) { alert(e.message); } finally { setSaving(null); }
+    try { await api.settings.update(key, vals[key]); } catch (e) { notify(e.message); } finally { setSaving(null); }
   }
 
   async function toggleFlag(key, cur) {
-    try { await api.settings.setFlag(key, !cur); load(); } catch (e) { alert(e.message); }
+    try { await api.settings.setFlag(key, !cur); load(); } catch (e) { notify(e.message); }
   }
 
   async function toggleTestMode(cur) {
@@ -44,7 +47,7 @@ export default function SettingsPage() {
     try {
       await api.settings.update('test_mode_enabled', String(!cur));
       await load();
-    } catch (e) { alert(e.message); } finally { setSaving(null); }
+    } catch (e) { notify(e.message); } finally { setSaving(null); }
   }
 
   return (
@@ -83,7 +86,7 @@ export default function SettingsPage() {
                     </p>
                   )}
                 </div>
-                <button onClick={() => toggleTestMode(vals[s.key] === 'true')} disabled={saving === s.key}
+                <button onClick={() => toggleTestMode(vals[s.key] === 'true')} disabled={!canEdit || saving === s.key}
                         className="btn-ghost p-1 shrink-0">
                   {vals[s.key] === 'true'
                     ? <ToggleRight size={22} className="text-amber-500" />
@@ -94,10 +97,10 @@ export default function SettingsPage() {
               <div key={s.key} className="flex items-end gap-3">
                 <div className="flex-1 min-w-0">
                   <label className="label">{s.key.replace(/_/g, ' ')}</label>
-                  <input className="input" value={vals[s.key] ?? ''} onChange={e => setVals(p => ({ ...p, [s.key]: e.target.value }))} />
+                  <input className="input" readOnly={!canEdit} value={vals[s.key] ?? ''} onChange={e => setVals(p => ({ ...p, [s.key]: e.target.value }))} />
                   {s.description && <p className="text-xs text-text-muted mt-1">{s.description}</p>}
                 </div>
-                <button onClick={() => saveSetting(s.key)} disabled={saving === s.key}
+                <button onClick={() => saveSetting(s.key)} disabled={!canEdit || saving === s.key}
                         className="btn-primary flex items-center gap-1.5 shrink-0">
                   <Save size={13} />{saving === s.key ? '…' : 'Save'}
                 </button>
@@ -118,7 +121,7 @@ export default function SettingsPage() {
                 <p className="text-sm font-medium text-text-primary">{fl.key.replace(/_/g, ' ')}</p>
                 {fl.description && <p className="text-xs text-text-muted">{fl.description}</p>}
               </div>
-              <button onClick={() => toggleFlag(fl.key, fl.is_enabled)} className="btn-ghost p-1">
+              <button onClick={() => toggleFlag(fl.key, fl.is_enabled)} disabled={!canEdit} className="btn-ghost p-1">
                 {fl.is_enabled
                   ? <ToggleRight size={22} className="text-green-500" />
                   : <ToggleLeft size={22} className="text-text-muted" />}

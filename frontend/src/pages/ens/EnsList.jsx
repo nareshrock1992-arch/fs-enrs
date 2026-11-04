@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useAuthStore } from '../../store/authStore.js';
 import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Users, User, ChevronDown, Search, Play, Check, X } from 'lucide-react';
@@ -8,6 +9,7 @@ import { Table, Th, Td, Tr, EmptyRow } from '../../components/ui/Table.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import ContactPicker from '../../components/ui/ContactPicker.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 // ── Collapsible section wrapper ───────────────────────────────────────────────
 
@@ -282,7 +284,7 @@ export default function EnsList() {
       setGroups(g.groups || []);
       setContacts(c.contacts || []);
       setGateways(gw.gateways || []);
-    } catch {}
+    } catch (e) { notify(`ENS configurations could not be loaded: ${e.message}`); }
   }
 
   useEffect(() => { setModal(null); load(); }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -419,12 +421,12 @@ export default function EnsList() {
   }
 
   async function del(r) {
-    if (!confirm(`Delete ENS configuration "${r.name}"?`)) return;
-    try { await api.ens.remove(r.id); load(); } catch (e) { alert(e.message); }
+    if (!(await confirmAction({ title: 'Delete ENS configuration', message: `Delete ENS configuration "${r.name}"?`, confirmLabel: 'Delete' }))) return;
+    try { await api.ens.remove(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   async function toggle(r) {
-    try { await api.ens.toggle(r.id); load(); } catch (e) { alert(e.message); }
+    try { await api.ens.toggle(r.id); load(); } catch (e) { notify(e.message); }
   }
 
   const orgName = id => orgs.find(o => o.id === id)?.name || '—';
@@ -499,8 +501,8 @@ export default function EnsList() {
                       ? <ToggleRight size={14} className="text-green-500" />
                       : <ToggleLeft  size={14} />}
                   </button>
-                  <button onClick={() => openEdit(r)} className="btn-ghost p-1.5"><Pencil size={13} /></button>
-                  <button onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(r)} className="btn-ghost p-1.5" aria-label={`Edit ${r.name}`} title="Edit"><Pencil size={13} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => del(r)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${r.name}`} title="Delete"><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               </Td>
             </Tr>

@@ -43,6 +43,7 @@ import ServiceRegistry     from './pages/services/ServiceRegistry.jsx';
 import CampaignDashboard   from './pages/ens/CampaignDashboard.jsx';
 import ErrorBoundary        from './components/ui/ErrorBoundary.jsx';
 import TenantList          from './pages/admin/TenantList.jsx';
+import AuditLog            from './pages/admin/AuditLog.jsx';
 
 function RequireAuth({ children }) {
   const token = useAuthStore(s => s.token);
@@ -120,11 +121,12 @@ export default function App() {
         {/* Admin-only */}
         <Route path="users"    element={<RequireAdmin><UserList /></RequireAdmin>} />
         <Route path="tenants"  element={<RequireSuperAdmin><TenantList /></RequireSuperAdmin>} />
+        <Route path="audit"    element={<RequireSuperAdmin><AuditLog /></RequireSuperAdmin>} />
         <Route path="settings" element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
         <Route path="settings/gateways" element={<RequireAdmin><TelephonyGateways /></RequireAdmin>} />
 
         {/* Platform Configuration Center (Phase 7) */}
-        <Route path="config" element={<RequireAdmin><ConfigCenter /></RequireAdmin>}>
+        <Route path="config" element={<RequireSuperAdmin><ConfigCenter /></RequireSuperAdmin>}>
           <Route index element={<ConfigDashboard />} />
           <Route path="vars"         element={<SysVarsPage />} />
           <Route path="switch"       element={<SwitchCorePage />} />

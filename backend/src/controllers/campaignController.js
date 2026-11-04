@@ -9,6 +9,7 @@ import {
   cancelCampaign,
   getEngineStats,
 } from '../services/campaignEngine.js';
+import { CAMPAIGN_OUTCOMES_JOIN } from '../services/ensOutcomes.js';
 
 const TriggerSchema = z.object({
   ens_configuration_id: z.number().int().positive(),
@@ -38,15 +39,19 @@ export const listCampaigns = asyncHandler(async (req, res) => {
   const configId = req.query.ens_configuration_id || null;
   const tenantId = effectiveTenantId(req);
 
+  // outcomes: one final outcome per recipient (the dashboard used to show the attempt
+  // counters on ens_campaigns, which count retries and are not updated on expiry).
   const { rows } = await query(
     `SELECT c.*,
        cfg.name AS ens_name,
        u.full_name AS triggered_by_name,
-       o.name AS organization_name
+       o.name AS organization_name,
+       to_jsonb(x) AS outcomes
      FROM ens_campaigns c
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
      LEFT JOIN users u ON u.id = c.triggered_by
      LEFT JOIN organizations o ON o.id = c.organization_id
+     ${CAMPAIGN_OUTCOMES_JOIN}
      WHERE ($1::int IS NULL OR cfg.tenant_id = $1)
        AND ($2::text IS NULL OR c.status = $2)
        AND ($3::int  IS NULL OR c.ens_configuration_id = $3)
@@ -74,11 +79,13 @@ export const getCampaign = asyncHandler(async (req, res) => {
     `SELECT c.*,
        cfg.name AS ens_name,
        u.full_name AS triggered_by_name,
-       o.name AS organization_name
+       o.name AS organization_name,
+       to_jsonb(x) AS outcomes
      FROM ens_campaigns c
      JOIN ens_configurations cfg ON cfg.id = c.ens_configuration_id
      LEFT JOIN users u ON u.id = c.triggered_by
      LEFT JOIN organizations o ON o.id = c.organization_id
+     ${CAMPAIGN_OUTCOMES_JOIN}
      WHERE c.id = $1 AND ($2::int IS NULL OR cfg.tenant_id = $2)`,
     [req.params.id, effectiveTenantId(req)]
   );

@@ -4,6 +4,8 @@ import { EventEmitter } from 'events';
 import esl from 'modesl';
 import { config } from '../config/index.js';
 import { query }  from '../db/pool.js';
+import { findConferenceOwners } from './conferenceOwnership.js';
+import { logger } from '../infrastructure/index.js';
 import { resolveDialString } from './dialResolver.js';
 
 const { Connection } = esl;
@@ -207,6 +209,8 @@ export function setConferenceRecordingError(confName, reason) {
 // blocking every HTTP request that arrives during that window.
 function eslCommandTimeout(cmd, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
+    // An ESL command is one line: a line break would start a second, unintended command.
+    if (/[\r\n\0]/.test(String(cmd))) return reject(new Error('ESL command rejected: contains a line break'));
     if (!conn || !isConn) return reject(new Error('ESL not connected'));
 
     let settled = false;
@@ -608,9 +612,48 @@ export function setSocketIO(ioInstance) {
   io = ioInstance;
 }
 
-// ─── Broadcast to all connected browser clients ─────────────
+// ─── Send an event to the browser clients allowed to see it ─────────────
+// Never io.emit(): that reaches sockets that have not logged in. Room names are the
+// ones socketService.authenticateSocket joins.
+//   conference.*  → owning tenant + SUPER_ADMIN (no known owner: SUPER_ADMIN only)
+//   channel.*     → SUPER_ADMIN (caller numbers with no tenant link; the UI does not use them)
+//   others        → any authenticated socket (esl.status)
+const ownerLookups = new Map();           // confName → { at, owner: Promise<tenantId|undefined> }
+const OWNER_CACHE_MS = 60_000;
+
+function conferenceOwner(confName) {
+  const cached = ownerLookups.get(confName);
+  if (cached && Date.now() - cached.at < OWNER_CACHE_MS) return cached.owner;
+  const owner = findConferenceOwners([confName])
+    .then((owners) => {
+      const tenantId = owners.get(confName);
+      // Do not cache "no owner yet": the incident row may follow the conference by moments.
+      if (tenantId == null) ownerLookups.delete(confName);
+      return tenantId;
+    })
+    .catch((err) => {
+      ownerLookups.delete(confName);
+      logger.warn({ module: 'eslService', confName, err: err.message }, 'Conference owner lookup failed — event limited to SUPER_ADMIN');
+      return undefined;
+    });
+  ownerLookups.set(confName, { at: Date.now(), owner });
+  return owner;
+}
+
 function emit(event, data) {
-  if (io) io.emit(event, data);
+  if (!io) return;
+  if (event.startsWith('channel.')) { io.to('role:SUPER_ADMIN').emit(event, data); return; }
+  if (!event.startsWith('conference.')) { io.to('authenticated').emit(event, data); return; }
+  if (!data?.confName) { io.to('role:SUPER_ADMIN').emit(event, data); return; }
+  // Chained on one promise per lookup, so a room's events keep their order.
+  conferenceOwner(data.confName).then((tenantId) => {
+    const target = tenantId == null ? io.to('role:SUPER_ADMIN') : io.to(`tenant:${tenantId}`).to('role:SUPER_ADMIN');
+    target.emit(event, data);
+    if (event === 'conference.ended') ownerLookups.delete(data.confName);
+  }).catch((err) => {
+    // A failed emit must not become an unhandled rejection; the event is dropped and logged.
+    logger.warn({ module: 'eslService', event, confName: data.confName, err: err.message }, 'Conference event delivery failed');
+  });
 }
 
 // ─── Update DB heartbeat record ──────────────────────────────
@@ -1800,10 +1843,12 @@ export async function originateCampaignCall({
   } else {
     if (messageText) {
       // messageText should always be resolved to a WAV by campaignEngine before
-      // reaching this point. If it arrives here, TTS synthesis failed — park the call
-      // rather than attempting FreeSWITCH speak (mod_flite is disabled).
+      // reaching this point. If it does, there is nothing to play (mod_flite is disabled).
+      // Fail the destination instead of parking: a parked call answers in silence and
+      // would be counted as delivered.
       logger.error({ module: 'eslService', campaignId, destId },
-        'messageText reached originateCampaignCall without a WAV — mod_flite is disabled; parking call');
+        'messageText reached originateCampaignCall without a WAV — mod_flite is disabled; not dialling');
+      throw new Error('No playable audio for this destination');
     }
     app = '&park()';
   }

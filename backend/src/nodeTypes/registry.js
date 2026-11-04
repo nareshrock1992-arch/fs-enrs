@@ -84,7 +84,7 @@ local function exec_play(s, node)
     -- The variable is written by a Record node or set_variable node
     -- earlier in the flow (e.g. recorded_file_path).
     local var_name = node.audio_variable or "recorded_file_path"
-    local var_val  = s:getVariable(var_name) or ""
+    local var_val  = no_api_expand(s:getVariable(var_name) or "")
     f = var_val ~= "" and var_val or nil
     if not f then
       freeswitch.consoleLog("WARN", "[ivr_executor] play: variable '" .. var_name .. "' is empty — skipping audio\\n")
@@ -352,7 +352,7 @@ local function exec_gather(s, node)
       end
     end
 
-    s:setVariable(node.variable_name or "gather_result", digits)
+    set_var(s, node.variable_name or "gather_result", digits)
 
     -- Explicit timeout route: empty string means no input was received.
     -- Falls through to _default when no timeout branch is wired.
@@ -422,7 +422,7 @@ local function exec_gather(s, node)
   -- ─────────────────────────────────────────────────────────────────────
   if node.retry_mode == "external" then
     local d = collect(node.prompt_source_type, node.prompt_audio_url, node.prompt_text)
-    s:setVariable(var, d)
+    set_var(s, var, d)
     if d == "" then
       freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=no_input → timeout\\n")
       return br["timeout"]
@@ -502,7 +502,7 @@ local function exec_gather(s, node)
         d = collect("none", nil, nil)                     -- no menu replay; collect only
       end
     end
-    s:setVariable(var, d)
+    set_var(s, var, d)
 
     local reason
     if d == "" then
@@ -644,7 +644,7 @@ local function exec_condition(s, node)
     local dest = exp ~= "" and exp or s:getVariable("destination_number") or ""
     local verify = post("/ens/verify-pin", { trigger_number = dest, pin = val })
     if verify and verify.authorized then
-      local lookup = get("/ens/lookup?number=" .. url_encode(dest))
+      local lookup = get("/ens/lookup?number=" .. url_encode(dest) .. "&ivr_number=" .. url_encode(CALL_NUMBER))
       if lookup and lookup.success and lookup.data then
         s:setVariable("ens_configuration_id", tostring(lookup.data.configuration_id))
         s:setVariable("ens_blast_clid",       lookup.data.blast_clid or "")
@@ -747,10 +747,13 @@ local function exec_ens(s, node)
   local recording_file = s:getVariable(rfvar) or ""
   if recording_file == "" then recording_file = nil end
 
+  -- ivr_number lets the backend refuse a configuration of another tenant: the ID can
+  -- come from a session variable, which the publish-time tenant check never sees.
   local d = post("/ens/campaign/start-by-config", {
     configuration_id = cfg_id,
     recording_file   = recording_file,
     caller_number    = caller_number ~= "" and caller_number or nil,
+    ivr_number       = CALL_NUMBER,
   })
 
   if d and d.success and d.campaign_id then
@@ -1033,7 +1036,7 @@ local function exec_record_message(s, node)
 
   -- Store file path in session variable — downstream ENS node reads this
   local var_name = node.variable_name or "recorded_file_path"
-  s:setVariable(var_name, fpath)
+  set_var(s, var_name, fpath)
   freeswitch.consoleLog("INFO",
     "[ivr_executor] record_message: stored " .. var_name .. "=" .. fpath .. "\\n")
 
@@ -1072,7 +1075,7 @@ end`,
     ],
     luaHandler: `
 local function exec_set_variable(s, node)
-  s:setVariable(node.variable or "unknown_var", interp(s, node.value) or "")
+  set_var(s, node.variable or "unknown_var", interp(s, node.value) or "")
   return node.next
 end`,
     apiEndpoint: null,
@@ -1090,14 +1093,38 @@ end`,
     summaryTemplate: '→ ${destination}',
     configSchema: [
       { key: 'destination', label: 'Destination', fieldType: 'mono_text', required: true, placeholder: '1001', hint: 'Extension number, or ${var} for dynamic destination' },
-      { key: 'dialplan', label: 'Dialplan', fieldType: 'select', options: [{ value: 'XML', label: 'XML (default)' }, { value: 'inline', label: 'inline' }, { value: 'enum', label: 'enum' }] },
+      // 'inline' was offered here; it runs arbitrary applications from the destination
+      // text, so it is refused at publish and at call time (IVR-16).
+      { key: 'dialplan', label: 'Dialplan', fieldType: 'select', options: [{ value: 'XML', label: 'XML (default)' }, { value: 'enum', label: 'enum' }] },
       { key: 'context', label: 'Context', fieldType: 'mono_text', placeholder: 'default' },
     ],
     luaHandler: `
 local function exec_transfer(s, node)
-  local dest = interp(s, node.destination) or ""
-  s:execute("transfer",
-    dest .. " " .. (node.dialplan or "XML") .. " " .. (node.context or "default"))
+  local raw = node.destination or ""
+  local dest = interp(s, raw) or ""
+  local dialplan = node.dialplan or "XML"
+  local context = node.context or "default"
+  -- The transfer argument is "<dest> <dialplan> <context>", split on whitespace. Words the
+  -- flow author wrote (e.g. "1001 XML public") work as before; a substituted VALUE that adds
+  -- a word (e.g. a caller name "1000 inline") would inject a dialplan, so that is refused.
+  local function words(v) local n = 0; for _ in v:gmatch("%S+") do n = n + 1 end; return n end
+  if words(dest) > words((raw:gsub("\${[^}]+}", "x"))) then
+    freeswitch.consoleLog("ERR", "[ivr_executor] transfer: a variable value added a word to the destination — refused\\n")
+    error("transfer destination not allowed")
+  end
+  -- The inline dialplan runs arbitrary applications. Publishing a NEW inline transfer is
+  -- refused; flows already published keep working unless the operator sets the global
+  -- variable ENRS_IVR_BLOCK_INLINE_TRANSFER=true (see scripts/ivr-compat-report.js).
+  -- A destination's own second word is the dialplan the engine uses, so it counts too.
+  local dest_dp = dest:match("^%s*%S+%s+(%S+)")
+  if dialplan:lower() == "inline" or (dest_dp and dest_dp:lower() == "inline") then
+    if (_api:execute("global_getvar", "ENRS_IVR_BLOCK_INLINE_TRANSFER") or "") == "true" then
+      freeswitch.consoleLog("ERR", "[ivr_executor] transfer: inline dialplan blocked by ENRS_IVR_BLOCK_INLINE_TRANSFER\\n")
+      error("transfer dialplan not allowed")
+    end
+    freeswitch.consoleLog("WARN", "[ivr_executor] transfer: inline dialplan used (deprecated; republish with XML)\\n")
+  end
+  s:execute("transfer", no_api_expand(dest) .. " " .. dialplan .. " " .. context)
   return nil
 end`,
     apiEndpoint: null,
@@ -1134,11 +1161,15 @@ local function exec_webhook(s, node)
   -- through API_BASE/API_KEY (those are for this app's own internal API
   -- only). Same curl-via-io.popen pattern as every other HTTP call in this
   -- file, just without the internal auth header.
+  -- IVR-14: the URL is escaped for the shell like the body (a quote in it used to end
+  -- the shell word and run commands), and passed with --url so a value starting with
+  -- "-" cannot be read as a curl option. The request itself is unchanged.
   local body = interp(s, node.body_template) or "{}"
   local safe_body = body:gsub("'", "'\\\\''")
+  local safe_url = url:gsub("'", "'\\\\''")
   local cmd = string.format(
-    "curl -s -m %d -X POST -H 'Content-Type: application/json' -d '%s' '%s' 2>/dev/null",
-    HTTP_TIMEOUT, safe_body, url)
+    "curl -s -m %d -X POST -H 'Content-Type: application/json' -d '%s' --url '%s' 2>/dev/null",
+    HTTP_TIMEOUT, safe_body, safe_url)
   local h = io.popen(cmd)
   if h then h:close() end
   return node.next
@@ -1237,6 +1268,7 @@ local function exec_rest_api(s, node)
     body              = interp(s, node.body_template or ""),
     timeout_seconds   = tmo,
     response_mappings = node.response_mappings,
+    ivr_number        = CALL_NUMBER,
   }, tmo + 5)
   if resp == nil then
     -- Proxy unreachable or internal curl timed out. Not the external system's
@@ -1246,7 +1278,7 @@ local function exec_rest_api(s, node)
   end
   -- Apply server-computed mappings (names → values). NEVER log the values (O-7).
   if type(resp.vars) == "table" then
-    for k, v in pairs(resp.vars) do s:setVariable(k, tostring(v)) end
+    for k, v in pairs(resp.vars) do set_var(s, k, tostring(v)) end
   end
   local outcome = resp.outcome or "http_error"
   freeswitch.consoleLog("INFO", "[ivr_executor] rest_api: status=" .. tostring(resp.status) .. " outcome=" .. outcome .. "\\n")
@@ -1764,7 +1796,7 @@ local function exec_ens_blast_record(s, node)
   -- Resolve configuration_id (node value, else lookup by dialed number)
   local cfg_id = node.ens_configuration_id
   if not cfg_id then
-    local lookup = get("/ens/lookup?number=" .. url_encode(dest))
+    local lookup = get("/ens/lookup?number=" .. url_encode(dest) .. "&ivr_number=" .. url_encode(CALL_NUMBER))
     if lookup and lookup.success and lookup.data then
       cfg_id = lookup.data.configuration_id
     end
@@ -1878,7 +1910,7 @@ local function exec_ens_playback(s, node)
   -- 1. Resolve ENS configuration from the inbound emergency number.
   --    All announcement source_type/audio_url fields come from the ENS
   --    configuration, keyed by inbound number — guaranteed per-config isolation.
-  local lookup = get("/ens/lookup?number=" .. url_encode(dest))
+  local lookup = get("/ens/lookup?number=" .. url_encode(dest) .. "&ivr_number=" .. url_encode(CALL_NUMBER))
   if not lookup or not lookup.success or not lookup.data then
     freeswitch.consoleLog("ERR", "[ivr_executor] ens_playback: lookup failed for number=" .. dest .. "\\n")
     speak(s, "This playback number is not configured. Please contact your system administrator.")
@@ -1937,7 +1969,7 @@ local function exec_ens_playback(s, node)
     end
 
     if audio_file then
-      s:execute("playback", audio_file)
+      s:execute("playback", no_api_expand(audio_file))
       get("/ens/campaigns/" .. url_encode(tostring(latest.campaign_id or "")) ..
           "/playback-log?caller=" .. url_encode(caller))
     else

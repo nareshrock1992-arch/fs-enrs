@@ -32,8 +32,7 @@ export default function Drawer({ open, onClose, title, subtitle, size = 'md', ch
         onClick={onClose}
         style={{
           position: 'fixed', inset: 0, zIndex: 40,
-          background: 'rgba(0,0,0,0.45)',
-          backdropFilter: 'blur(2px)',
+          background: 'rgba(0,0,0,0.4)',
           transition: 'opacity 0.2s',
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'all' : 'none',
@@ -49,13 +48,13 @@ export default function Drawer({ open, onClose, title, subtitle, size = 'md', ch
         aria-label={title}
         style={{
           position: 'fixed', top: 0, right: 0, bottom: 0,
-          width, zIndex: 50,
+          width, maxWidth: '100vw', zIndex: 50,   // never wider than a phone screen
           display: 'flex', flexDirection: 'column',
-          transform: open ? 'translateX(0)' : `translateX(${width}px)`,
+          transform: open ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 0.25s cubic-bezier(0.4,0,0.2,1)',
           outline: 'none',
         }}
-        className="bg-surface-panel border-l border-surface-border shadow-2xl"
+        className="bg-surface-panel border-l border-surface-border shadow-lg"
       >
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-surface-border shrink-0">

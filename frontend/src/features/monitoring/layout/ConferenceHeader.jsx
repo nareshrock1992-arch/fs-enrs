@@ -5,6 +5,7 @@
  * Row 2: live metadata strip (duration · participants · moderators).
  * Inline forms for Broadcast and Invite expand beneath on demand.
  */
+import { notify } from '../../../components/ui/Toast.jsx';
 import { useState, memo } from 'react';
 import {
   Lock, Unlock, Radio, Square, Mic, MicOff,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api }           from '../../../api/client.js';
 import { elapsedSec, fmtDur } from '../utils/time.js';
+import { confirmAction } from '../../../components/ui/ConfirmDialog.jsx';
 
 // ─── Icon-only action button (32 × 32) ───────────────────────────────────────
 
@@ -63,7 +65,7 @@ export const ConferenceHeader = memo(function ConferenceHeader({ conf, now }) {
   async function act(key, fn, ...args) {
     setBusy(b => ({ ...b, [key]: true }));
     try { await fn(name, ...args); }
-    catch (e) { alert('Command failed: ' + (e.message || 'Unknown error')); }
+    catch (e) { notify('Command failed: ' + (e.message || 'Unknown error')); }
     finally   { setBusy(b => ({ ...b, [key]: false })); }
   }
 
@@ -150,8 +152,8 @@ export const ConferenceHeader = memo(function ConferenceHeader({ conf, now }) {
           <IconBtn
             title="Terminate conference — disconnects all participants"
             danger
-            onClick={() => {
-              if (window.confirm(`Terminate "${name}"?\n\nAll ${members.length} participant(s) will be disconnected.`))
+            onClick={async () => {
+              if (await confirmAction({ title: 'Terminate conference', message: `Terminate "${name}"? All ${members.length} participant(s) will be disconnected.`, confirmLabel: 'Terminate' }))
                 act('terminate', api.monitoring.terminate);
             }}>
             <Trash2 size={14} />

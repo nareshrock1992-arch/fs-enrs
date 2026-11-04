@@ -11,7 +11,7 @@
  */
 import { Router }    from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { adminOnly }   from '../../middleware/rbac.js';
+import { superAdminOnly } from '../../middleware/rbac.js';
 import { asyncHandler } from '../../middleware/asyncHandler.js';
 
 import { FreeSwitchDriver }     from '../../../platform/drivers/FreeSwitchDriver.js';
@@ -58,7 +58,9 @@ async function getHealthChecker() {
 
 const router = Router();
 
-const auth = [requireAuth, adminOnly];
+// SIPCommunication configuration is one set of files shared by every tenant, and can hold
+// credentials: platform administrators only, for reading as well as for changes.
+const auth = [requireAuth, superAdminOnly];
 
 // GET /platform/config/providers — list all registered providers
 router.get('/providers', ...auth, asyncHandler(async (req, res) => {

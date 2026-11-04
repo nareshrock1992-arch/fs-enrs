@@ -26,7 +26,7 @@ export default function VersionDrawer({ flowUuid, currentVersion, restoreLoading
 
       {/* Drawer */}
       <div className="fixed top-0 right-0 h-full w-80 z-50 flex flex-col
-                      bg-surface-panel border-l border-surface-border shadow-2xl">
+                      bg-surface-panel border-l border-surface-border shadow-lg">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border shrink-0">
           <div className="flex items-center gap-2">

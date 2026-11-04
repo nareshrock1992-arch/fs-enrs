@@ -1,12 +1,15 @@
+import { notify } from '../ui/Toast.jsx';
 import { useState, useEffect, useRef } from 'react';
 import { Menu, Sun, Moon, LogOut, KeyRound, Building2, ChevronDown } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore.js';
 import { useTheme } from '../../hooks/useTheme.js';
 import { api } from '../../api/client.js';
 import { useNavigate } from 'react-router-dom';
+import ChangePasswordDialog from './ChangePasswordDialog.jsx';
 
-export default function Header({ onMenuToggle }) {
+export default function Header({ onMenuToggle, menuOpen }) {
   const { isDark, toggle } = useTheme();
+  const [pwOpen, setPwOpen] = useState(false);
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
 
@@ -19,8 +22,8 @@ export default function Header({ onMenuToggle }) {
   return (
     <header className="h-12 bg-surface-panel border-b border-surface-border
                        flex items-center gap-2 px-3 shrink-0">
-      <button onClick={onMenuToggle}
-              className="btn-ghost p-1.5" aria-label="Toggle sidebar">
+      <button type="button" onClick={onMenuToggle} aria-expanded={menuOpen}
+              className="btn-ghost p-1.5" aria-label="Toggle navigation">
         <Menu size={16} />
       </button>
 
@@ -28,12 +31,13 @@ export default function Header({ onMenuToggle }) {
 
       {user?.role === 'SUPER_ADMIN' && <TenantSelector />}
 
-      <button onClick={toggle} className="btn-ghost p-1.5" aria-label="Toggle theme">
+      <button type="button" onClick={toggle} className="btn-ghost p-1.5" aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}>
         {isDark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
 
-      <button onClick={() => navigate('/settings/password')} className="btn-ghost p-1.5"
-              title="Change password">
+      {/* There is no password page; the dialog uses the change-password API directly. */}
+      <button type="button" onClick={() => setPwOpen(true)} className="btn-ghost p-1.5"
+              title="Change password" aria-label="Change password">
         <KeyRound size={16} />
       </button>
 
@@ -46,11 +50,12 @@ export default function Header({ onMenuToggle }) {
             {user?.role?.toLowerCase()}
           </p>
         </div>
-        <button onClick={handleLogout} className="btn-ghost p-1.5 text-red-500 hover:bg-red-500/10"
-                title="Logout">
+        <button type="button" onClick={handleLogout} className="btn-ghost p-1.5 text-red-500 hover:bg-red-500/10"
+                title="Sign out" aria-label="Sign out">
           <LogOut size={16} />
         </button>
       </div>
+      {pwOpen && <ChangePasswordDialog onClose={() => setPwOpen(false)} />}
     </header>
   );
 }
@@ -82,7 +87,7 @@ function TenantSelector() {
         });
         const d = await res.json();
         setTenants(d.tenants || []);
-      } catch {}
+      } catch (e) { notify(`Tenant list could not be loaded: ${e.message}`); }
       setLoading(false);
     }
   }

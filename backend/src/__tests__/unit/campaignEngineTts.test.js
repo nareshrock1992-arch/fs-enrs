@@ -50,6 +50,7 @@ vi.mock('../../config/fsConfig.js', () => ({
 vi.mock('../../db/pool.js',                () => ({ query: vi.fn(), withTransaction: vi.fn() }));
 vi.mock('../../services/eslService.js',    () => ({ originateCampaignCall: vi.fn() }));
 vi.mock('../../services/socketService.js', () => ({ emitInternal: vi.fn() }));
+vi.mock('../../services/eventTenant.js',    () => ({ campaignTenant: vi.fn(async () => 10) }));
 vi.mock('../../infrastructure/index.js',   () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));

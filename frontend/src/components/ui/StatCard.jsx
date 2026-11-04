@@ -56,7 +56,7 @@ export default function StatCard({
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted truncate">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted leading-snug break-words">
           {label}
         </p>
         <p className="text-2xl font-bold text-text-primary leading-tight tabular-nums mt-0.5">

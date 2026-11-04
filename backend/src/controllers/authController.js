@@ -4,6 +4,7 @@ import { z }  from 'zod';
 import { query } from '../db/pool.js';
 import { config } from '../config/index.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { passwordSchema } from '../validators/passwordPolicy.js';
 
 const LoginSchema = z.object({
   email:    z.string().email(),
@@ -141,7 +142,7 @@ export const me = asyncHandler(async (req, res) => {
 export const changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = z.object({
     currentPassword: z.string().min(1),
-    newPassword:     z.string().min(8),
+    newPassword:     passwordSchema,
   }).parse(req.body);
 
   const { rows } = await query(

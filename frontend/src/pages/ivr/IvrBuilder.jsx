@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AlertTriangle, Star, X, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
@@ -12,6 +13,7 @@ import BuilderToolbar    from '../../components/ivr/toolbar/BuilderToolbar.jsx';
 import VersionDrawer     from '../../components/ivr/panels/VersionDrawer.jsx';
 import BindNumbersModal  from '../../components/ivr/panels/BindNumbersModal.jsx';
 import ValidationErrorPanel from '../../components/ivr/panels/ValidationErrorPanel.jsx';
+import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 const PALETTE_WIDTH  = 188;
 // Property panel width. Default is sized for the most field-heavy node type
@@ -142,7 +144,7 @@ export default function IvrBuilder() {
     try {
       const { flow } = await api.ivr.get(uuid);
       graph.updateMeta({ bound_numbers: flow.bound_numbers });
-    } catch {}
+    } catch (e) { notify(`Bound numbers could not be refreshed: ${e.message}`); }
   }, [uuid, graph]);
 
   const selectedNode = graph.selected ? graph.nodes[graph.selected] : null;
@@ -325,14 +327,14 @@ export default function IvrBuilder() {
           restoreLoading={restoreLoading}
           onClose={() => setShowHistory(false)}
           onRestore={async (v) => {
-            if (!window.confirm(`Restore v${v.version_number}? This will overwrite the current draft.`)) return;
+            if (!(await confirmAction({ title: 'Restore version', message: `Restore v${v.version_number}? This will overwrite the current draft.`, confirmLabel: 'Restore', variant: 'warning' }))) return;
             setRestoreLoading(true);
             try {
               const { version: full } = await api.ivr.getVersion(uuid, v.version_number);
               graph.dispatch({ type: 'SEED', flow: { ...graph.flowMeta, graph: full.graph } });
               setShowHistory(false);
             } catch (e) {
-              alert('Failed to load version ' + v.version_number + ': ' + (e.message || 'Unknown error'));
+              notify('Failed to load version ' + v.version_number + ': ' + (e.message || 'Unknown error'));
             } finally {
               setRestoreLoading(false);
             }

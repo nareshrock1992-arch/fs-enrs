@@ -10,6 +10,7 @@ import { nodeStyle } from '../canvas/nodeStyle.js';
 import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
 import { bucketNodeErrors } from './inspectorErrors.js';
 import { groupFields, sectionDefaultOpen } from './fieldSections.js';
+import { confirmAction } from '../../../components/ui/ConfirmDialog.jsx';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -203,6 +204,11 @@ function InterpolableTextarea({ value, onChange, placeholder, rows = 3 }) {
 }
 
 function Select({ value, onChange, options }) {
+  // A stored value that is no longer offered (e.g. a transfer published with "inline") is
+  // shown as it is, instead of the browser displaying the first option over it.
+  const shown = value && !options.some(o => o.value === value)
+    ? [...options, { value, label: `${value} (current value, not offered for new nodes)` }]
+    : options;
   return (
     <select
       value={value || ''}
@@ -210,7 +216,7 @@ function Select({ value, onChange, options }) {
       className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
                  text-xs text-text-primary focus:outline-none focus:border-brand"
     >
-      {options.map(o => (
+      {shown.map(o => (
         <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
@@ -825,7 +831,7 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
           </button>
         )}
         <button
-          onClick={() => { if (window.confirm('Delete this node?')) onDelete(node.id); }}
+          onClick={async () => { if (await confirmAction({ title: 'Delete node', message: 'Delete this node? Connections to it are removed.', confirmLabel: 'Delete' })) onDelete(node.id); }}
           className="w-full flex items-center justify-center gap-1.5 text-xs py-1.5
                      rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
         >

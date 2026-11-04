@@ -1,3 +1,4 @@
+import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useReducer, useCallback } from 'react';
 import { PhoneIncoming, Clock, CheckCircle2, User, ShieldAlert } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
@@ -170,7 +171,7 @@ export default function ErsLive() {
       }
 
       dispatch({ type: 'SEED', payload: { incidents, queue: q.queue || [] } });
-    } catch {}
+    } catch (e) { notify(`Live incidents could not be loaded — the board may be incomplete: ${e.message}`); }
   }, [activeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { seed(); }, [seed]);
@@ -188,7 +189,7 @@ export default function ErsLive() {
     try {
       const q = await api.ers.queue();
       dispatch({ type: 'QUEUE_SYNC', payload: q.queue || [] });
-    } catch {}
+    } catch (e) { notify(`Queue could not be refreshed: ${e.message}`); }
   }, []);
 
   useSocketEvent('enrs::ers_incident_created', reloadQueue);
@@ -201,7 +202,7 @@ export default function ErsLive() {
     try {
       await api.ers.completeIncident(uuid);
       dispatch({ type: 'ERS_ENDED', payload: { incident_uuid: uuid } });
-    } catch {}
+    } catch (e) { notify(`Incident could not be completed: ${e.message}`); }
   }
 
   const incidents = Object.values(state.incidents);
