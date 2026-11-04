@@ -73,6 +73,48 @@ describe('xlsxWriter', () => {
   });
 });
 
+describe('pie chart on a summary sheet', () => {
+  const chart = { title: 'Responders', rows: [{ label: 'Answered', value: 2, color: '16A34A' }, { label: 'Not answered', value: 1, color: 'DC2626' }] };
+  const book = (name = 'Summary') => parts(buildWorkbook([
+    { name, title: 'Report', items: [{ label: 'A', value: 1, type: 'int' }], chart, notes: ['n'] },
+    { name: 'Data', columns: COLUMNS, rows: [] },
+  ]));
+
+  it('adds a drawing and a native pie chart, wired by relationships and content types', () => {
+    const p = book();
+    for (const n of ['xl/worksheets/_rels/sheet1.xml.rels', 'xl/drawings/drawing1.xml', 'xl/drawings/_rels/drawing1.xml.rels', 'xl/charts/chart1.xml']) expect(p[n], n).toBeTruthy();
+    expect(p['xl/worksheets/sheet1.xml']).toContain('<drawing r:id="rId1"/>');
+    expect(p['xl/worksheets/_rels/sheet1.xml.rels']).toContain('Target="../drawings/drawing1.xml"');
+    expect(p['xl/drawings/_rels/drawing1.xml.rels']).toContain('Target="../charts/chart1.xml"');
+    expect(p['[Content_Types].xml']).toContain('PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"');
+    expect(p['[Content_Types].xml']).toContain('PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"');
+    expect(p['xl/worksheets/sheet2.xml']).not.toContain('drawing');
+  });
+  it('the chart plots the data rows written on the sheet, with cached values and colours', () => {
+    const p = book();
+    const sheet = p['xl/worksheets/sheet1.xml'];
+    const c = p['xl/charts/chart1.xml'];
+    const [, first, last] = c.match(/'Summary'!\$A\$(\d+):\$A\$(\d+)/);
+    expect(Number(last) - Number(first)).toBe(1);
+    expect(sheet).toContain(`<c r="A${first}" s="0" t="inlineStr"><is><t xml:space="preserve">Answered</t>`);
+    expect(sheet).toContain(`<c r="B${last}" s="3"><v>1</v></c>`);
+    expect(c).toContain(`'Summary'!$B$${first}:$B$${last}`);
+    expect(c).toMatch(/<c:numCache>.*<c:v>2<\/c:v>.*<c:v>1<\/c:v>/);
+    expect(c).toContain('<a:srgbClr val="16A34A"/>');
+    expect(c).toContain('<c:showPercent val="1"/>');
+  });
+  it('a sheet name with an apostrophe is quoted correctly in the chart reference', () => {
+    expect(book("Ops' summary")['xl/charts/chart1.xml']).toContain("'Ops'' summary'!$A$");
+  });
+  it('a workbook without a chart has no chart parts and an unchanged summary sheet', () => {
+    const p = parts(buildWorkbook([{ name: 'Summary', title: 'T', items: [{ label: 'A', value: 1 }] }]));
+    expect(Object.keys(p).some((n) => /drawing|chart|worksheets\/_rels/.test(n))).toBe(false);
+    expect(p['xl/worksheets/sheet1.xml']).not.toContain('xmlns:r');
+    expect(p['xl/worksheets/sheet1.xml']).not.toContain('<drawing');
+    expect(p['[Content_Types].xml']).not.toContain('chart');
+  });
+});
+
 describe('large workbooks', () => {
   const cols = [{ header: 'A', key: 'a' }, { header: 'When', key: 'at', type: 'datetime' }, { header: 'N', key: 'n', type: 'int' }];
   it('the worker builds the same file content as the main thread', async () => {

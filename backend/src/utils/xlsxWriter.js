@@ -67,8 +67,9 @@ function cell(ref, value, type, empty) {
   }
 }
 
-// Key/value worksheet: title, then label | value rows, then notes.
-function summarySheetXml({ title, items = [], notes = [] }) {
+// Key/value worksheet: title, then label | value rows, then the chart's data rows (when the
+// sheet has a chart), then notes. Returns the XML and, with a chart, the rows it plots.
+function summarySheetXml({ title, items = [], notes = [], chart }) {
   const rows = [];
   let r = 1;
   if (title) { rows.push(`<row r="${r}">${textCell(`A${r}`, title, XF.title)}</row>`); r += 2; }
@@ -81,6 +82,17 @@ function summarySheetXml({ title, items = [], notes = [] }) {
     }
     r += 1;
   }
+  let plotted = null;
+  if (chart) {
+    r += 1;
+    rows.push(`<row r="${r}">${textCell(`A${r}`, chart.dataTitle ?? chart.title, XF.label)}</row>`);
+    r += 1;
+    plotted = { first: r, last: r + chart.rows.length - 1 };
+    for (const p of chart.rows) {
+      rows.push(`<row r="${r}">${textCell(`A${r}`, p.label, XF.default)}${numberCell(`B${r}`, Number(p.value) || 0, XF.int)}</row>`);
+      r += 1;
+    }
+  }
   if (notes.length) {
     r += 1;
     rows.push(`<row r="${r}">${textCell(`A${r}`, 'Notes', XF.label)}</row>`);
@@ -90,8 +102,30 @@ function summarySheetXml({ title, items = [], notes = [] }) {
       r += 1;
     }
   }
+  const ns = plotted ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : '';
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"${ns}><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><cols><col min="1" max="1" width="38" customWidth="1"/><col min="2" max="2" width="44" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData>${plotted ? '<drawing r:id="rId1"/>' : ''}</worksheet>`;
+  return { xml, plotted };
+}
+
+// ── Pie chart (a native Excel chart; it plots the data rows written on the sheet) ─────
+const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const relsXml = (type, target) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/${type}" Target="${target}"/></Relationships>`;
+
+const drawingXml = () => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>10</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>21</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="${REL}" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+
+function pieChartXml(chart, sheetName, { first, last }) {
+  const sheetRef = `'${String(sheetName).replace(/'/g, "''")}'`;
+  const n = chart.rows.length;
+  const colour = (c) => (/^[0-9A-Fa-f]{6}$/.test(String(c ?? '')) ? String(c).toUpperCase() : null);
+  const points = chart.rows.map((p, i) => (colour(p.color)
+    ? `<c:dPt><c:idx val="${i}"/><c:bubble3D val="0"/><c:spPr><a:solidFill><a:srgbClr val="${colour(p.color)}"/></a:solidFill></c:spPr></c:dPt>` : '')).join('');
+  const strPts = chart.rows.map((p, i) => `<c:pt idx="${i}"><c:v>${escapeXml(p.label)}</c:v></c:pt>`).join('');
+  const numPts = chart.rows.map((p, i) => `<c:pt idx="${i}"><c:v>${Number(p.value) || 0}</c:v></c:pt>`).join('');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><cols><col min="1" max="1" width="38" customWidth="1"/><col min="2" max="2" width="44" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData></worksheet>`;
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}"><c:roundedCorners val="0"/><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>${escapeXml(chart.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/><c:pieChart><c:varyColors val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>${escapeXml(chart.title)}</c:v></c:tx>${points}<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/><c:showLeaderLines val="1"/></c:dLbls><c:cat><c:strRef><c:f>${escapeXml(`${sheetRef}!$A$${first}:$A$${last}`)}</c:f><c:strCache><c:ptCount val="${n}"/>${strPts}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>${escapeXml(`${sheetRef}!$B$${first}:$B$${last}`)}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${n}"/>${numPts}</c:numCache></c:numRef></c:val></c:ser><c:firstSliceAng val="0"/></c:pieChart></c:plotArea><c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>`;
 }
 
 // Table worksheet: frozen header row + auto-filter.
@@ -121,17 +155,30 @@ function sheetNames(sheets) {
 }
 
 /**
- * @param sheets [{ name, title, items, notes }]   summary sheet, or
+ * @param sheets [{ name, title, items, notes, chart }]   summary sheet, or
  *               [{ name, columns: [{ header, key, type, width, empty }], rows }]  table sheet
  *               type: 'text' (default) | 'int' | 'percent' (0–1) | 'datetime' | 'duration' (seconds)
+ *               chart (optional, summary sheet): { title, dataTitle?, rows: [{ label, value, color? (RRGGBB) }] }
+ *               → a pie chart beside the summary, plotting those rows (also written on the sheet)
  * @returns Buffer  an .xlsx file
  */
 export function buildWorkbook(sheets) {
   const names = sheetNames(sheets);
+  const built = sheets.map((s) => (s.columns ? { xml: tableSheetXml(s), plotted: null } : summarySheetXml(s)));
+  // Chart k (1-based) belongs to the k-th sheet that has one.
+  const charts = [];
+  built.forEach((b, i) => { if (b.plotted) charts.push({ sheet: i, k: charts.length + 1 }); });
+  const chartParts = charts.flatMap(({ sheet, k }) => [
+    { name: `xl/worksheets/_rels/sheet${sheet + 1}.xml.rels`, text: relsXml('drawing', `../drawings/drawing${k}.xml`) },
+    { name: `xl/drawings/drawing${k}.xml`, text: drawingXml() },
+    { name: `xl/drawings/_rels/drawing${k}.xml.rels`, text: relsXml('chart', `../charts/chart${k}.xml`) },
+    { name: `xl/charts/chart${k}.xml`, text: pieChartXml(sheets[sheet].chart, names[sheet], built[sheet].plotted) },
+  ]);
   const entries = [
     { name: '[Content_Types].xml', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${
-      sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
+      sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}${
+      charts.map(({ k }) => `<Override PartName="/xl/drawings/drawing${k}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/charts/chart${k}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`).join('')}</Types>` },
     { name: '_rels/.rels', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
     { name: 'xl/workbook.xml', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -144,7 +191,8 @@ export function buildWorkbook(sheets) {
       sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
     }<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
     { name: 'xl/styles.xml', text: STYLES },
-    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: s.columns ? tableSheetXml(s) : summarySheetXml(s) })),
+    ...built.map((b, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: b.xml })),
+    ...chartParts,
   ];
   return buildStoredZip(entries.map((e) => ({ name: e.name, data: Buffer.from(e.text, 'utf8') })));
 }

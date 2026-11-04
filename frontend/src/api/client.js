@@ -13,6 +13,11 @@ export function qs(q) {
   return out;
 }
 
+// The browser's IANA time zone (e.g. "Asia/Riyadh"); undefined leaves the export in UTC.
+export function viewerTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; }
+}
+
 function getToken() {
   return localStorage.getItem('enrs_token');
 }
@@ -235,8 +240,10 @@ export const api = {
     ensCampaignDetail:(id)   => request('GET', `/reports/ens-campaigns/${id}`),
     // Excel exports (returned as a Blob; the session token is sent as for any API call)
     ensCampaignsExport: (q) => request('GET', `/reports/ens-campaigns/export?${qs(q || {})}`, undefined, { blob: true }),
-    ensCampaignExport:  (id) => request('GET', `/reports/ens-campaigns/${id}/export`, undefined, { blob: true }),
+    // Single-item reports are written in the viewer's time zone (named in the file).
+    ensCampaignExport:  (id) => request('GET', `/reports/ens-campaigns/${id}/export?${qs({ tz: viewerTimeZone() })}`, undefined, { blob: true }),
     ersExport:          (q) => request('GET', `/reports/ers/export?${qs(q || {})}`, undefined, { blob: true }),
+    ersIncidentExport:  (uuid) => request('GET', `/reports/ers/${uuid}/export?${qs({ tz: viewerTimeZone() })}`, undefined, { blob: true }),
   },
 
   // Settings

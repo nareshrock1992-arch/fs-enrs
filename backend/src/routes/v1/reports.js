@@ -6,6 +6,8 @@ import { query } from '../../db/pool.js';
 import { effectiveTenantId } from '../../middleware/tenantScope.js';
 import { contentDisposition } from '../../utils/mediaHttp.js';
 import { buildWorkbookAsync } from '../../utils/xlsxWriter.js';
+import { wavDurationSec } from '../../utils/wavDuration.js';
+import { fsPathService } from '../../services/freeSwitchPathService.js';
 import { logger } from '../../infrastructure/index.js';
 
 const router = Router();
@@ -298,6 +300,44 @@ const stamp = () => new Date().toISOString().slice(0, 10);
 // Day boundaries come from the database session, while cell times are written in UTC.
 const dbTimeZone = async () => (await query(`SELECT current_setting('TimeZone') AS tz`))?.rows?.[0]?.tz;
 
+// Optional ?tz= (the viewer's IANA time zone, e.g. Asia/Riyadh). Without it, or when the
+// runtime does not know the zone, every time stays in UTC as before.
+export function exportTimeZone(q = {}) {
+  const tz = typeof q.tz === 'string' ? q.tz.trim() : '';
+  if (!tz || tz.length > 64) return null;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return null; }
+}
+// The wall-clock time in tz, as a Date whose UTC fields hold it (the workbook writes UTC fields).
+export function inZone(value, tz) {
+  if (!tz || value === null || value === undefined || value === '') return value;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(d).map((x) => [x.type, x.value]));
+  return new Date(Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second));
+}
+// Moves every datetime cell to tz and names the zone where a heading or label says "(UTC)".
+export function zoneSheets(sheets, tz) {
+  if (!tz) return sheets;
+  const label = (s) => String(s).replace('(UTC)', `(${tz})`);
+  return sheets.map((s) => (s.columns
+    ? {
+        ...s,
+        columns: s.columns.map((c) => ({ ...c, header: label(c.header) })),
+        rows: s.rows.map((row) => {
+          const out = { ...row };
+          for (const c of s.columns) if (c.type === 'datetime') out[c.key] = inZone(row[c.key], tz);
+          return out;
+        }),
+      }
+    : { ...s, items: (s.items || []).map((it) => (it.type === 'datetime'
+        ? { ...it, label: label(it.label), value: inZone(it.value, tz) } : it)) }));
+}
+const timesNote = (tz) => (tz ? `All times are in ${tz} (the time zone of the person who exported).` : 'All times are UTC.');
+const fileNameOf = (p) => (p ? String(p).replace(/^.*[\\/]/, '') : null);
+
 // GET /api/v1/reports/ens-campaigns/export?from=&to=&status=&org_id=     → .xlsx
 // GET /api/v1/reports/ens-campaigns/:id/export                           → .xlsx (one campaign)
 async function exportCampaigns(req, res, campaignId) {
@@ -324,12 +364,18 @@ async function exportCampaigns(req, res, campaignId) {
 
   const { rows: campaigns } = await query(
     `SELECT c.id, c.status, c.triggered_via, c.trigger_number, c.created_at, c.started_at, c.completed_at,
-            c.campaign_duration_sec, e.name AS ens_name, o.name AS org_name, u.full_name AS triggered_by_name,
+            c.campaign_duration_sec, e.name AS ens_name, e.id AS ens_configuration_id, o.name AS org_name, u.full_name AS triggered_by_name,
+            c.recording_file, c.message_audio_url, c.message_text, md.duration_sec AS message_duration_sec,
             x.*
        FROM ens_campaigns c
        JOIN ens_configurations e ON e.id = c.ens_configuration_id
        LEFT JOIN organizations o ON o.id = c.organization_id
        LEFT JOIN users u ON u.id = c.triggered_by
+       LEFT JOIN LATERAL (
+         SELECT mf.duration_sec FROM media_files mf
+          WHERE mf.fs_path = COALESCE(c.recording_file, c.message_audio_url)
+          ORDER BY mf.id DESC LIMIT 1
+       ) md ON true
        ${CAMPAIGN_OUTCOMES_JOIN}
       WHERE ${where}
       ORDER BY c.created_at DESC`, params
@@ -338,6 +384,8 @@ async function exportCampaigns(req, res, campaignId) {
     `SELECT c.id AS campaign_id, e.name AS ens_name, d.phone_number, d.target_type, d.attempt_count, d.max_attempts,
             d.last_attempt_at, d.answered_at, d.completed_at, d.hangup_cause, d.error_message, d.status,
             COALESCE(d.contact_name, NULLIF(TRIM(ec.first_name || ' ' || ec.last_name), '')) AS contact_name,
+            CASE WHEN d.answered_at IS NOT NULL AND d.completed_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (d.completed_at - d.answered_at)))::INT END AS call_duration_sec,
             ${DESTINATION_OUTCOME_SQL} AS outcome
        FROM ens_campaign_destinations d
        JOIN ens_campaigns c ON c.id = d.campaign_id
@@ -354,8 +402,16 @@ async function exportCampaigns(req, res, campaignId) {
     initiator: c.triggered_by_name || c.trigger_number,
     answered_rate: ratio(c.answered, c.recipients),
   }));
-  await sendWorkbook(res, `ens-campaigns-${stamp()}.xlsx`, [
-    {
+  const tz = exportTimeZone(req.query);
+  const one = campaignId ? rows[0] : null;
+  if (one) {
+    for (const r of recipients) r.detailed_outcome = detailedOutcome(r);
+    one.message_length = await messageLength(one);
+    // Nothing has finished yet: the rate is not known (N/A), not 0%.
+    if (one.recipients > 0 && one.recipients === (one.pending || 0)) one.answered_rate = null;
+  }
+  await sendWorkbook(res, `ens-campaigns-${stamp()}.xlsx`, zoneSheets([
+    one ? campaignSummarySheet(req, one, tz, recipients) : {
       name: 'Summary',
       title: 'Emergency Notification Report',
       items: [
@@ -376,7 +432,7 @@ async function exportCampaigns(req, res, campaignId) {
         { label: 'Retries', value: sum(campaigns, 'retries'), type: 'int' },
       ],
       notes: [
-        'All times are UTC. Each recipient is counted once, by final outcome, from the per-recipient call records.',
+        `${timesNote(tz)} Each recipient is counted once, by final outcome, from the per-recipient call records.`,
         'Time to answer is measured from the last call attempt to the answer.',
         'Acknowledgements, DTMF responses and emergency type are not stored by the system, so they are not reported.',
       ],
@@ -396,7 +452,7 @@ async function exportCampaigns(req, res, campaignId) {
         { header: 'Duration', key: 'campaign_duration_sec', type: 'duration', width: 11, empty: 'Not completed' },
         { header: 'Recipients', key: 'recipients', type: 'int', width: 11 },
         { header: 'Answered', key: 'answered', type: 'int', width: 10 },
-        { header: 'Answered rate', key: 'answered_rate', type: 'percent', width: 10, empty: 'No recipients' },
+        { header: 'Answered rate', key: 'answered_rate', type: 'percent', width: 10, empty: one ? 'N/A' : 'No recipients' },
         { header: 'Busy', key: 'busy', type: 'int', width: 8 },
         { header: 'No answer', key: 'no_answer', type: 'int', width: 10 },
         { header: 'Failed', key: 'failed', type: 'int', width: 8 },
@@ -418,6 +474,8 @@ async function exportCampaigns(req, res, campaignId) {
         { header: 'Number', key: 'phone_number', width: 16 },
         { header: 'Type', key: 'target_type', width: 11 },
         { header: 'Outcome', key: 'outcome', width: 11 },
+        // Single-campaign report only: declined / unreachable separated from "no answer".
+        ...(one ? [{ header: 'Detailed outcome', key: 'detailed_outcome', width: 13 }] : []),
         { header: 'Attempts', key: 'attempt_count', type: 'int', width: 9 },
         { header: 'Max attempts', key: 'max_attempts', type: 'int', width: 9 },
         { header: 'Last attempt (UTC)', key: 'last_attempt_at', type: 'datetime', width: 20, empty: 'Not dialled' },
@@ -425,18 +483,113 @@ async function exportCampaigns(req, res, campaignId) {
         { header: 'Completed (UTC)', key: 'completed_at', type: 'datetime', width: 20, empty: 'Not completed' },
         { header: 'Hang-up cause', key: 'hangup_cause', width: 24, empty: 'None' },
         { header: 'Error', key: 'error_message', width: 30, empty: 'None' },
+        // Single-campaign report only: the list export keeps its columns.
+        ...(one ? [{ header: 'Call duration', key: 'call_duration_sec', type: 'duration', width: 12, empty: 'Not answered' }] : []),
       ],
       rows: recipients,
     },
-  ]);
-  await auditExport(req, campaignId ? `ens-campaign:${campaignId}` : 'ens-campaigns', { from, to, status, org_id }, recipients.length);
+  ], tz));
+  await auditExport(req, campaignId ? `ens-campaign:${campaignId}` : 'ens-campaigns', { from, to, status, org_id, ...(tz ? { tz } : {}) }, recipients.length);
+}
+
+// ── Single-campaign / single-incident report: details, totals and a pie chart on page 1 ──
+// Report-only outcome detail. The shared outcome (ensOutcomes.js, used by the dashboards and
+// the list export) stays as it is; within its "no answer", this report names a declined call
+// and an unreachable subscriber separately, from the stored hang-up cause.
+const DECLINED_CAUSES = ['CALL_REJECTED'];
+const UNREACHABLE_CAUSES = ['SUBSCRIBER_ABSENT'];
+export function detailedOutcome(r) {
+  if (r.outcome === 'no_answer' && DECLINED_CAUSES.includes(r.hangup_cause)) return 'declined';
+  if (r.outcome === 'no_answer' && UNREACHABLE_CAUSES.includes(r.hangup_cause)) return 'unreachable';
+  return r.outcome;
+}
+const ENS_REPORT_OUTCOMES = [
+  ['answered', 'Answered', '16A34A'], ['busy', 'Busy', 'F59E0B'], ['no_answer', 'No answer', '6366F1'],
+  ['declined', 'Declined', 'DB2777'], ['unreachable', 'Unreachable', '0EA5E9'],
+  ['failed', 'Failed', 'DC2626'], ['expired', 'Expired before dialling', '9CA3AF'],
+  ['skipped', 'Skipped', '6B7280'], ['pending', 'Still pending', '3B82F6'],
+];
+// Only the slices with a value; no chart at all when nothing has one.
+function pieOf(title, slices) {
+  const shown = slices.filter((s) => Number(s.value) > 0);
+  return shown.length ? { title, dataTitle: 'Chart data', rows: shown } : undefined;
+}
+function messageSource(c) {
+  if (c.message_text) return 'Text to speech';        // synthesised to a file at dial time
+  if (c.recording_file) return 'Recorded message';
+  if (c.message_audio_url) return 'Audio file';
+  return null;
+}
+// Media library length when the file is in the library; otherwise the WAV header of the file
+// itself (text-to-speech output, phone recordings), read only inside the sound / recording dirs.
+async function messageLength(c) {
+  if (c.message_duration_sec !== null && c.message_duration_sec !== undefined) {
+    return { sec: Number(c.message_duration_sec), source: 'Media library' };
+  }
+  const stored = c.recording_file || c.message_audio_url;
+  const file = typeof stored === 'string' && stored.startsWith('/media/') ? fsPathService.resolveMediaPath(stored) : stored;
+  const sec = await wavDurationSec(file, [fsPathService.getSoundDir(), fsPathService.getRecordingDir()]);
+  return sec === null ? { sec: null, source: null } : { sec, source: 'Audio file header' };
+}
+
+function campaignSummarySheet(req, c, tz, recipients) {
+  // Every figure below comes from the same per-recipient rows as the Recipients sheet.
+  const k = Object.fromEntries(ENS_REPORT_OUTCOMES.map(([key]) => [key, 0]));
+  for (const r of recipients) k[r.detailed_outcome] = (k[r.detailed_outcome] || 0) + 1;
+  const total = recipients.length;
+  const notAnswered = total - k.answered - k.pending;
+  const rate = total === 0 ? null : (total === k.pending ? null : k.answered / total);
+  const rateEmpty = total === 0 ? 'No recipients' : 'N/A (no completed outcomes yet)';
+  return {
+    name: 'Summary',
+    title: 'Emergency Notification — Campaign Report',
+    items: [
+      ...generatedItems(req),
+      { section: 'Campaign' },
+      { label: 'ENS configuration', value: c.ens_name },
+      { label: 'ENS configuration ID', value: c.ens_configuration_id, type: 'int' },
+      { label: 'Organization', value: c.org_name },
+      { label: 'Campaign reference', value: c.id },
+      { label: 'Status', value: c.status },
+      { label: 'Triggered via', value: c.triggered_via },
+      { label: 'Triggered by', value: c.triggered_by_name, empty: 'Not recorded' },
+      { label: 'Trigger number', value: c.trigger_number, empty: 'None' },
+      { label: 'Invoked (UTC)', value: c.created_at, type: 'datetime' },
+      { label: 'Started (UTC)', value: c.started_at, type: 'datetime', empty: 'Not started' },
+      { label: 'Completed (UTC)', value: c.completed_at, type: 'datetime', empty: 'Not completed' },
+      { label: 'Campaign duration', value: c.campaign_duration_sec, type: 'duration', empty: 'Not completed' },
+      { section: 'Message' },
+      { label: 'Message source', value: messageSource(c) },
+      { label: 'Message file', value: fileNameOf(c.recording_file || c.message_audio_url), empty: 'None' },
+      { label: 'Message duration', value: c.message_length?.sec ?? null, type: 'duration' },
+      { label: 'Message duration source', value: c.message_length?.source ?? null },
+      { label: 'Message text', value: c.message_text ? String(c.message_text).slice(0, 500) : null, empty: 'None' },
+      { section: 'Recipients' },
+      { label: 'Recipients', value: total, type: 'int' },
+      { label: 'Answered', value: k.answered, type: 'int' },
+      { label: 'Not answered', value: notAnswered, type: 'int' },
+      { label: 'Answered rate', value: rate, type: 'percent', empty: rateEmpty },
+      ...ENS_REPORT_OUTCOMES.slice(1).map(([key, label]) => ({ label, value: k[key], type: 'int' })),
+      { label: 'Call attempts', value: c.attempts, type: 'int' },
+      { label: 'Retries', value: c.retries, type: 'int' },
+      { label: 'Average time to answer', value: c.avg_answer_sec, type: 'duration', empty: 'No answers' },
+    ],
+    chart: pieOf('Recipients by outcome', ENS_REPORT_OUTCOMES.map(([key, label, color]) => ({ label, value: k[key], color }))),
+    notes: [
+      `${timesNote(tz)} Each recipient is counted once, by final outcome; the Recipients sheet lists every recipient.`,
+      'Declined (CALL_REJECTED) and Unreachable (SUBSCRIBER_ABSENT) are shown separately here; the dashboards and the list export count them as "No answer".',
+      'Message duration: the media library length, or the length in the audio file header; "Not recorded" when neither is available.',
+      'Message text is shown up to 500 characters. Call duration is from answer to hang-up.',
+    ],
+  };
 }
 
 router.get('/ens-campaigns/export', asyncHandler((req, res) => exportCampaigns(req, res, null)));
 router.get('/ens-campaigns/:id/export', asyncHandler((req, res) => exportCampaigns(req, res, requireUuid(req.params.id))));
 
 // GET /api/v1/reports/ers/export?from=&to=&status=&org_id=     → .xlsx
-router.get('/ers/export', asyncHandler(async (req, res) => {
+// GET /api/v1/reports/ers/:incidentUuid/export                 → .xlsx (one incident)
+async function exportIncidents(req, res, incidentUuid) {
   const filters = parseReportQuery(req.query);
   const { from, to, status, org_id } = filters;
   const where = `i.deleted_at IS NULL
@@ -444,8 +597,9 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
        AND ($2::date IS NULL OR i.started_at >= $2::date)
        AND ($3::date IS NULL OR i.started_at <  $3::date + interval '1 day')
        AND ($4::text IS NULL OR i.status = $4)
-       AND ($5::int  IS NULL OR e.organization_id = $5)`;
-  const params = [effectiveTenantId(req), from, to, status, org_id];
+       AND ($5::int  IS NULL OR e.organization_id = $5)
+       AND ($6::uuid IS NULL OR i.incident_uuid = $6)`;
+  const params = [effectiveTenantId(req), from, to, status, org_id, incidentUuid];
 
   const { rows: [size] } = await query(
     `SELECT COUNT(*)::INT AS incidents,
@@ -454,11 +608,18 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
        FROM ers_incidents i JOIN ers_configurations e ON e.id = i.ers_configuration_id
       WHERE ${where}`, params
   );
+  if (incidentUuid && !size.incidents) return res.status(404).json({ error: 'Incident not found' });
   if (size.incidents + size.details > EXPORT_MAX_ROWS) return tooLarge(res);
 
   const { rows: incidents } = await query(
     `SELECT i.incident_uuid, i.status, i.group_type, i.caller_number, i.caller_name, i.conference_room,
             i.started_at, i.ended_at, i.cancelled_at, e.name AS ers_name, o.name AS org_name,
+            e.id AS ers_configuration_id, i.emergency_call_number, i.queued_at, i.dequeued_at,
+            CASE WHEN i.ended_at IS NULL AND i.cancelled_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (i.cancelled_at - i.started_at)))::INT END AS cancelled_after_sec,
+            rec.file_size_bytes AS recording_size_bytes, rec.duration_sec AS recording_duration_sec,
+            CASE WHEN i.queued_at IS NOT NULL AND i.dequeued_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (i.dequeued_at - i.queued_at)))::INT END AS queue_sec,
             CASE WHEN i.ended_at IS NOT NULL THEN EXTRACT(EPOCH FROM (i.ended_at - i.started_at))::INT END AS duration_sec,
             regexp_replace(COALESCE(rec.recording_path, i.recording_path), '^.*/', '') AS recording_file,
             x.invited, x.joined, x.not_joined, x.observers, y.participants
@@ -476,7 +637,7 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
          SELECT COUNT(*)::INT AS participants FROM ers_incident_participants p WHERE p.incident_id = i.id
        ) y ON true
        LEFT JOIN LATERAL (
-         SELECT r2.recording_path FROM recordings r2
+         SELECT r2.recording_path, r2.file_size_bytes, r2.duration_sec FROM recordings r2
           WHERE r2.incident_uuid = i.incident_uuid AND r2.deleted_at IS NULL
             AND (i.tenant_id IS NULL OR r2.tenant_id = i.tenant_id)
           ORDER BY r2.started_at DESC NULLS LAST LIMIT 1
@@ -500,7 +661,9 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
     `SELECT i.incident_uuid, p.raw_number, p.role, p.joined_at, p.left_at, p.disconnect_cause,
             COALESCE(p.total_talk_seconds, CASE WHEN p.left_at IS NOT NULL AND p.joined_at IS NOT NULL
                        THEN EXTRACT(EPOCH FROM (p.left_at - p.joined_at))::INT END) AS talk_seconds,
-            COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), p.caller_name) AS name
+            COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), p.caller_name,
+                     -- single-incident report: the initiator row has no name; the incident holds the caller's
+                     CASE WHEN $6::uuid IS NOT NULL AND p.role = 'initiator' THEN i.caller_name END) AS name
        FROM ers_incident_participants p
        JOIN ers_incidents i ON i.id = p.incident_id
        JOIN ers_configurations e ON e.id = i.ers_configuration_id
@@ -512,8 +675,10 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
   const invited = sum(incidents, 'invited');
   const joined = sum(incidents, 'joined');
   const byStatus = (s) => incidents.filter(i => i.status === s).length;
-  await sendWorkbook(res, `ers-incidents-${stamp()}.xlsx`, [
-    {
+  const tz = exportTimeZone(req.query);
+  const one = incidentUuid ? incidents[0] : null;
+  await sendWorkbook(res, `ers-incidents-${stamp()}.xlsx`, zoneSheets([
+    one ? incidentSummarySheet(req, one, tz) : {
       name: 'Summary',
       title: 'Emergency Response Report',
       items: [
@@ -530,7 +695,7 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
         { label: 'Responders joined', value: joined, type: 'int' },
         { label: 'Responder join rate', value: ratio(joined, invited), type: 'percent', empty: 'No responders invited' },
       ],
-      notes: ['All times are UTC. "Not joined" counts responders who were invited and never joined, including any still ringing on an active incident.'],
+      notes: [`${timesNote(tz)} "Not joined" counts responders who were invited and never joined, including any still ringing on an active incident.`],
     },
     {
       name: 'Incidents',
@@ -589,9 +754,73 @@ router.get('/ers/export', asyncHandler(async (req, res) => {
       ],
       rows: participants,
     },
-  ]);
-  await auditExport(req, 'ers-incidents', { from, to, status, org_id }, incidents.length);
-}));
+  ], tz));
+  await auditExport(req, incidentUuid ? `ers-incident:${incidentUuid}` : 'ers-incidents',
+    { from, to, status, org_id, ...(tz ? { tz } : {}) }, incidents.length);
+}
+
+const sizeText = (b) => {
+  const n = Number(b);
+  if (b === null || b === undefined || !Number.isFinite(n)) return null;
+  return n >= 1_048_576 ? `${(n / 1_048_576).toFixed(1)} MB (${n.toLocaleString('en-US')} bytes)`
+    : `${(n / 1024).toFixed(1)} KB (${n.toLocaleString('en-US')} bytes)`;
+};
+
+function incidentSummarySheet(req, i, tz) {
+  const ended = i.ended_at !== null && i.ended_at !== undefined;
+  const cancelled = !ended && i.cancelled_at !== null && i.cancelled_at !== undefined;
+  const hasResponders = Number(i.invited) > 0;
+  return {
+    name: 'Summary',
+    title: 'Emergency Response — Incident Report',
+    items: [
+      ...generatedItems(req),
+      { section: 'Incident' },
+      { label: 'ERS configuration', value: i.ers_name },
+      { label: 'ERS configuration ID', value: i.ers_configuration_id, type: 'int' },
+      { label: 'Organization', value: i.org_name },
+      { label: 'Incident reference', value: i.incident_uuid },
+      { label: 'Status', value: i.status },
+      { label: 'Tier', value: i.group_type },
+      { label: 'Caller name', value: i.caller_name },
+      { label: 'Caller number', value: i.caller_number },
+      { label: 'Emergency number dialled', value: i.emergency_call_number },
+      { label: 'Conference room', value: i.conference_room, empty: 'None' },
+      { label: 'Invoked (UTC)', value: i.started_at, type: 'datetime' },
+      { label: 'Ended (UTC)', value: i.ended_at, type: 'datetime', empty: 'Not ended' },
+      { label: 'Cancelled (UTC)', value: i.cancelled_at, type: 'datetime', empty: 'Not cancelled' },
+      { label: cancelled ? 'Duration (until cancelled)' : 'Duration',
+        value: ended ? i.duration_sec : (cancelled ? i.cancelled_after_sec : null), type: 'duration', empty: 'Not ended' },
+      { label: 'Time in queue', value: i.queue_sec, type: 'duration', empty: 'Not queued' },
+      { label: 'Recording file', value: i.recording_file, empty: 'No recording' },
+      { label: 'Recording length', value: i.recording_file ? i.recording_duration_sec : null, type: 'duration',
+        empty: i.recording_file ? 'Not recorded' : 'No recording' },
+      { label: 'Recording size', value: i.recording_file ? sizeText(i.recording_size_bytes) : null,
+        empty: i.recording_file ? 'Not recorded' : 'No recording' },
+      { section: 'Responders' },
+      ...(hasResponders ? [] : [{ label: 'Responders', value: 'No responders were invited for this incident' }]),
+      { label: 'Responders invited', value: i.invited, type: 'int' },
+      { label: 'Answered (joined)', value: i.joined, type: 'int' },
+      { label: 'Not answered', value: i.not_joined, type: 'int' },
+      { label: 'Answer rate', value: ratio(i.joined, i.invited), type: 'percent', empty: 'No responders invited' },
+      { label: 'Observers', value: i.observers, type: 'int' },
+      { label: 'Participants', value: i.participants, type: 'int' },
+    ],
+    // No chart when no responder was invited (it would be empty).
+    chart: hasResponders ? pieOf('Responders: answered and not answered', [
+      { label: 'Answered', value: i.joined || 0, color: '16A34A' },
+      { label: 'Not answered', value: i.not_joined || 0, color: 'DC2626' },
+    ]) : undefined,
+    notes: [
+      `${timesNote(tz)} The Responders sheet lists every invited responder; Participants lists everyone who was in the conference. Observers are not counted as invited.`,
+      'Why a responder did not answer (busy, declined, no answer) is not recorded for ring-all legs, so their hang-up cause shows "None".',
+      'Recording length and size are the values stored when the recording was closed.',
+    ],
+  };
+}
+
+router.get('/ers/export', asyncHandler((req, res) => exportIncidents(req, res, null)));
+router.get('/ers/:incidentUuid/export', asyncHandler((req, res) => exportIncidents(req, res, requireUuid(req.params.incidentUuid))));
 
 // GET /api/v1/reports/ers/:incidentUuid
 router.get('/ers/:incidentUuid', asyncHandler(async (req, res) => {

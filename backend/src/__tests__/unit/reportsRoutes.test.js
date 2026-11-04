@@ -6,7 +6,7 @@
  * (fan-out, recording choice, playback scope) are verified against real PostgreSQL
  * in the isolated e2e run.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
@@ -22,13 +22,15 @@ vi.mock('../../db/pool.js', () => ({
   query: vi.fn(async (sql, p = []) => {
     const s = sql.replace(/\s+/g, ' ');
     calls.push({ s, p });
+    const given = globalThis.__rowsFor?.(s);   // a test can supply detail rows for one query
+    if (given) return { rows: given };
     if (/FROM audit_logs a/.test(s)) {
       const scoped = /ec\.tenant_id = \$3/.test(s);
       return { rows: AUDIT.filter(a => !scoped || p[2] == null || a.cfgTenant === p[2]).map(({ details, created_at }) => ({ details, created_at })) };
     }
     if (/INSERT INTO audit_logs/.test(s)) return { rows: [] };
     if (/COUNT\(DISTINCT c\.id\)::INT AS campaigns/.test(s)) return { rows: [globalThis.__exportSize] };
-    if (/COUNT\(\*\)::INT AS incidents/.test(s)) return { rows: [{ incidents: 1, details: globalThis.__exportSize.recipients }] };
+    if (/COUNT\(\*\)::INT AS incidents/.test(s)) return { rows: [{ incidents: globalThis.__exportSize.campaigns, details: globalThis.__exportSize.recipients }] };
     if (/COUNT\(\*\)::INT AS total/.test(s)) return { rows: [{ total: 0, active: 0, completed: 0, responders: 0, answered: 0, running: 0, destinations: 0 }] };
     return { rows: [] };
   }),
@@ -38,7 +40,7 @@ vi.mock('../../db/pool.js', () => ({
 const { config } = await import('../../config/index.js');
 const { errorHandler } = await import('../../middleware/asyncHandler.js');
 const reportsRouter = (await import('../../routes/v1/reports.js')).default;
-const { parseReportQuery, roomWindowEnd, BUSY_CAUSE_LIST, NO_ANSWER_CAUSE_LIST } = await import('../../routes/v1/reports.js');
+const { parseReportQuery, roomWindowEnd, BUSY_CAUSE_LIST, NO_ANSWER_CAUSE_LIST, exportTimeZone, inZone } = await import('../../routes/v1/reports.js');
 
 const app = express();
 app.use('/reports', reportsRouter);
@@ -113,7 +115,8 @@ describe('Excel exports', () => {
     expect(JSON.parse(audit.p[2]).filters.from).toBe('2026-10-01');
   });
   it('every export query is tenant-scoped with the token tenant; a forged ?tenant_id changes nothing', async () => {
-    for (const p of ['/reports/ens-campaigns/export?tenant_id=20', `/reports/ens-campaigns/${U}/export?tenant_id=20`, '/reports/ers/export?tenant_id=20']) {
+    for (const p of ['/reports/ens-campaigns/export?tenant_id=20', `/reports/ens-campaigns/${U}/export?tenant_id=20`, '/reports/ers/export?tenant_id=20',
+      `/reports/ers/${U}/export?tenant_id=20`]) {
       calls = [];
       expect((await binary(request(app).get(p).set(as(A10)))).status, p).toBe(200);
       // current_setting reads no tenant data
@@ -133,9 +136,11 @@ describe('Excel exports', () => {
     expect((await request(app).get('/reports/ens-campaigns/abc/export').set(as(A10))).status).toBe(400);
     expect(calls).toHaveLength(0);
   });
-  it('another tenant\'s (or an unknown) campaign is a 404', async () => {
+  it('another tenant\'s (or an unknown) campaign or incident is a 404', async () => {
     globalThis.__exportSize = { campaigns: 0, recipients: 0 };
     expect((await request(app).get(`/reports/ens-campaigns/${U}/export`).set(as(A10))).status).toBe(404);
+    expect((await request(app).get(`/reports/ers/${U}/export`).set(as(A10))).status).toBe(404);
+    expect((await request(app).get('/reports/ers/not-a-uuid/export').set(as(A10))).status).toBe(400);
   });
   it('a selection over the row cap is refused before any detail query', async () => {
     globalThis.__exportSize = { campaigns: 1, recipients: 50_000 };
@@ -153,6 +158,144 @@ describe('Excel exports', () => {
     // every retryable cause is classified, except a routing failure, which reports as "failed"
     const classified = new Set([...BUSY_CAUSE_LIST, ...NO_ANSWER_CAUSE_LIST, 'NO_ROUTE_DESTINATION']);
     expect(set('RETRYABLE_CAUSES').filter(c => !classified.has(c))).toEqual([]);
+  });
+});
+
+describe('single campaign / single incident report (page 1: details, totals, pie chart)', () => {
+  const U = '3f2b8c1e-9a4d-4e2f-8b1a-0c9d8e7f6a5b';
+  const binary = (r) => r.buffer(true).parse((res, cb) => { const c = []; res.on('data', d => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
+  // Store-only ZIP → { partName: text }
+  const parts = (buf) => {
+    const eocd = buf.length - 22, out = {};
+    let p = buf.readUInt32LE(eocd + 16);
+    for (let i = 0; i < buf.readUInt16LE(eocd + 10); i++) {
+      const size = buf.readUInt32LE(p + 20), nlen = buf.readUInt16LE(p + 28), off = buf.readUInt32LE(p + 42);
+      const start = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28);
+      out[buf.subarray(p + 46, p + 46 + nlen).toString('utf8')] = buf.subarray(start, start + size).toString('utf8');
+      p += 46 + nlen;
+    }
+    return out;
+  };
+  const CAMPAIGN = {
+    id: U, status: 'completed', triggered_via: 'UI', trigger_number: null, created_at: '2026-11-04T10:00:00Z',
+    started_at: '2026-11-04T10:00:02Z', completed_at: '2026-11-04T10:03:00Z', campaign_duration_sec: 178,
+    ens_name: 'Fire drill', org_name: 'Org A', triggered_by_name: 'Admin A', recording_file: null,
+    message_audio_url: '/opt/sounds/enrs/fire.wav', message_text: null, message_duration_sec: '12.50',
+    recipients: 4, answered: 2, busy: 1, no_answer: 1, failed: 0, expired: 0, skipped: 0, pending: 0, attempts: 7, retries: 3, avg_answer_sec: 6,
+  };
+  const INCIDENT = {
+    incident_uuid: U, status: 'COMPLETED', group_type: 'primary', caller_number: '7001004', caller_name: 'Sunday Monday',
+    conference_room: '3010', started_at: '2026-11-04T10:06:47Z', ended_at: '2026-11-04T10:06:50Z', cancelled_at: null,
+    ers_name: 'Test_ERS', org_name: 'Default Organization', emergency_call_number: '911', queued_at: null, dequeued_at: null,
+    queue_sec: null, duration_sec: 3, recording_file: 'ers_3010.wav', invited: 3, joined: 2, not_joined: 1, observers: 0, participants: 3,
+  };
+  beforeEach(() => {
+    globalThis.__exportSize = { campaigns: 1, recipients: 2 };
+    globalThis.__rowsFor = (s) => {
+      if (/FROM ens_campaigns c .*ORDER BY c\.created_at DESC$/.test(s.trim()) && /md\.duration_sec/.test(s)) return [CAMPAIGN];
+      if (/FROM ens_campaign_destinations d/.test(s)) return globalThis.__recipients ?? [
+        { campaign_id: U, ens_name: 'Fire drill', contact_name: 'Ann', phone_number: '+966 50 000 0001', outcome: 'answered', hangup_cause: 'NORMAL_CLEARING',
+          answered_at: '2026-11-04T10:00:10Z', completed_at: '2026-11-04T10:00:40Z', call_duration_sec: 30 },
+        { campaign_id: U, contact_name: 'Bo', phone_number: '0500000002', outcome: 'answered', hangup_cause: 'NORMAL_CLEARING' },
+        { campaign_id: U, contact_name: 'Cy', phone_number: '0500000003', outcome: 'busy', hangup_cause: 'USER_BUSY' },
+        { campaign_id: U, contact_name: 'Di', phone_number: '0500000004', outcome: 'no_answer', hangup_cause: 'NO_ANSWER' },
+        { campaign_id: U, contact_name: 'Ed', phone_number: '0500000005', outcome: 'no_answer', hangup_cause: 'CALL_REJECTED' },
+        { campaign_id: U, contact_name: 'Fi', phone_number: '0500000006', outcome: 'no_answer', hangup_cause: 'SUBSCRIBER_ABSENT' }];
+      if (/SELECT i\.incident_uuid, i\.status/.test(s)) return [INCIDENT];
+      return null;
+    };
+  });
+  afterEach(() => { delete globalThis.__rowsFor; });
+
+  it('ERS incident: details, answered / not answered pie, times in the viewer zone, audited as that incident', async () => {
+    const r = await binary(request(app).get(`/reports/ers/${U}/export?tz=Asia/Riyadh`).set(as(OP10)));
+    expect(r.status).toBe(200);
+    const p = parts(r.body);
+    const summary = p['xl/worksheets/sheet1.xml'];
+    for (const t of ['Emergency Response — Incident Report', 'Test_ERS', 'Sunday Monday', '7001004', 'Emergency number dialled',
+      'Invoked (Asia/Riyadh)', 'Answered (joined)', 'Not answered']) expect(summary, t).toContain(t);
+    expect(summary).toContain('<drawing r:id="rId1"/>');
+    const chart = p['xl/charts/chart1.xml'];
+    expect(chart).toContain('<c:pieChart>');
+    expect(chart).toMatch(/<c:v>Answered<\/c:v>.*<c:v>Not answered<\/c:v>/);
+    expect(chart).toMatch(/<c:pt idx="0"><c:v>2<\/c:v><\/c:pt><c:pt idx="1"><c:v>1<\/c:v>/);
+    expect(p['[Content_Types].xml']).toContain('/xl/charts/chart1.xml');
+    expect(p['xl/worksheets/sheet3.xml']).toContain('Rang (Asia/Riyadh)');
+    const audit = calls.find(c => /report_exported/.test(c.s));
+    expect(audit.p[1]).toBe(`ers-incident:${U}`);
+    expect(JSON.parse(audit.p[2]).filters.tz).toBe('Asia/Riyadh');
+  });
+  it('ENS campaign: ENS name, invoked time, message duration, outcome pie, per-recipient call duration', async () => {
+    const r = await binary(request(app).get(`/reports/ens-campaigns/${U}/export?tz=Asia/Riyadh`).set(as(OP10)));
+    expect(r.status).toBe(200);
+    const p = parts(r.body);
+    const summary = p['xl/worksheets/sheet1.xml'];
+    for (const t of ['Emergency Notification — Campaign Report', 'Fire drill', 'Invoked (Asia/Riyadh)', 'Message duration', 'fire.wav', 'Audio file'])
+      expect(summary, t).toContain(t);
+    expect(summary).toContain('ENS configuration ID');
+    const chart = p['xl/charts/chart1.xml'];
+    expect(chart).toMatch(/<c:v>Answered<\/c:v>.*<c:v>Busy<\/c:v>.*<c:v>No answer<\/c:v>.*<c:v>Declined<\/c:v>.*<c:v>Unreachable<\/c:v>/);
+    // 2 answered, 1 busy, 1 ordinary no answer, 1 declined, 1 unreachable — declined/unreachable not in "No answer"
+    expect(chart).toMatch(/<c:numCache><c:formatCode>General<\/c:formatCode><c:ptCount val="5"\/><c:pt idx="0"><c:v>2<\/c:v><\/c:pt><c:pt idx="1"><c:v>1<\/c:v><\/c:pt><c:pt idx="2"><c:v>1<\/c:v><\/c:pt><c:pt idx="3"><c:v>1<\/c:v><\/c:pt><c:pt idx="4"><c:v>1<\/c:v>/);
+    expect(chart).not.toContain('<c:v>Failed</c:v>');   // empty slices are left out
+    const recips = p['xl/worksheets/sheet3.xml'];
+    for (const t of ['Call duration', 'Detailed outcome', '>declined<', '>unreachable<', '+966 50 000 0001']) expect(recips, t).toContain(t);
+  });
+  it('ENS running campaign, everyone pending: answer rate N/A (not 0%), pending kept, no other slices', async () => {
+    globalThis.__recipients = [
+      { campaign_id: U, contact_name: 'P1', phone_number: '1', outcome: 'pending' },
+      { campaign_id: U, contact_name: 'P2', phone_number: '2', outcome: 'pending' }];
+    try {
+      const p = parts((await binary(request(app).get(`/reports/ens-campaigns/${U}/export`).set(as(OP10)))).body);
+      expect(p['xl/worksheets/sheet1.xml']).toContain('N/A (no completed outcomes yet)');
+      expect(p['xl/charts/chart1.xml']).toMatch(/<c:strCache><c:ptCount val="1"\/><c:pt idx="0"><c:v>Still pending<\/c:v>/);
+    } finally { delete globalThis.__recipients; }
+  });
+  it('the list export keeps the shared outcome: no Declined / Unreachable split, no Detailed outcome column', async () => {
+    const p = parts((await binary(request(app).get('/reports/ens-campaigns/export').set(as(OP10)))).body);
+    expect(Object.values(p).join('')).not.toMatch(/Declined|Unreachable|Detailed outcome/);
+  });
+  it('ERS: configuration ID, recording length and size, cancelled duration, zero responders without a chart', async () => {
+    let p = parts((await binary(request(app).get(`/reports/ers/${U}/export`).set(as(OP10)))).body);
+    for (const t of ['ERS configuration ID', 'Recording length', 'Recording size']) expect(p['xl/worksheets/sheet1.xml'], t).toContain(t);
+    const base = INCIDENT;
+    try {
+      globalThis.__rowsFor = (s) => (/SELECT i\.incident_uuid, i\.status/.test(s)
+        ? [{ ...base, status: 'CANCELLED', ended_at: null, cancelled_at: '2026-11-04T10:07:27Z', duration_sec: null, cancelled_after_sec: 40,
+             invited: 0, joined: 0, not_joined: 0, observers: 0, participants: 0 }] : null);
+      p = parts((await binary(request(app).get(`/reports/ers/${U}/export`).set(as(OP10)))).body);
+      const s = p['xl/worksheets/sheet1.xml'];
+      expect(s).toContain('Duration (until cancelled)');
+      expect(s).toContain('<v>0.000462962962962963</v>');     // 40 s as an Excel duration
+      expect(s).toContain('No responders were invited for this incident');
+      expect(Object.keys(p).some((n) => /charts|drawings/.test(n))).toBe(false);
+    } finally { delete globalThis.__rowsFor; }
+  });
+  it('the initiator name falls back to the incident caller name only in the single-incident report', async () => {
+    calls = [];
+    await binary(request(app).get(`/reports/ers/${U}/export`).set(as(OP10)));
+    const q = calls.find((c) => /SELECT i.incident_uuid, p.raw_number/.test(c.s));
+    expect(q.s).toContain("WHEN $6::uuid IS NOT NULL AND p.role = 'initiator' THEN i.caller_name");
+    expect(q.p[5]).toBe(U);
+    calls = [];
+    await binary(request(app).get('/reports/ers/export').set(as(OP10)));
+    expect(calls.find((c) => /SELECT i.incident_uuid, p.raw_number/.test(c.s)).p[5]).toBeNull();
+  });
+  it('list exports are unchanged: no chart, no extra column, UTC labels', async () => {
+    for (const path of ['/reports/ens-campaigns/export', '/reports/ers/export']) {
+      const p = parts((await binary(request(app).get(path).set(as(OP10)))).body);
+      expect(Object.keys(p).some(n => /charts|drawings/.test(n)), path).toBe(false);
+      expect(p['xl/worksheets/sheet1.xml'], path).toContain('Generated (UTC)');
+      expect(Object.values(p).join(''), path).not.toContain('Call duration');
+    }
+  });
+  it('time zone: an unknown or malformed zone falls back to UTC; conversion keeps the wall clock', () => {
+    expect(exportTimeZone({ tz: 'Asia/Riyadh' })).toBe('Asia/Riyadh');
+    for (const tz of [undefined, '', 'Not/AZone', 'x'.repeat(80), ['Asia/Riyadh']]) expect(exportTimeZone({ tz })).toBeNull();
+    expect(inZone('2026-11-04T10:06:47Z', 'Asia/Riyadh').toISOString()).toBe('2026-11-04T13:06:47.000Z');
+    expect(inZone('2026-07-01T12:00:00Z', 'America/New_York').toISOString()).toBe('2026-07-01T08:00:00.000Z');
+    expect(inZone(null, 'Asia/Riyadh')).toBeNull();
+    expect(inZone('2026-11-04T10:00:00Z', null)).toBe('2026-11-04T10:00:00Z');
   });
 });
 

@@ -134,6 +134,10 @@ const DetailPanel = memo(function DetailPanel({ uuid, onClose }) {
             {t.label}
           </button>
         ))}
+        <span className="ml-auto pl-3">
+          <ExportButton run={() => api.reports.ersIncidentExport(uuid)} label="Export incident"
+            filename={`ers-incident-${String(uuid).slice(0, 8)}.xlsx`} />
+        </span>
       </div>
 
       <div className="px-4 pb-5 pt-3">
