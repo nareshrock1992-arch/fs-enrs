@@ -6,11 +6,21 @@
  * so the frontend can immediately navigate to the designer.
  */
 
-import { withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
 import { guardMediaReferences, mediaGuardErrorResponse } from '../services/mediaDependencyService.js';
 import { v4 as uuidv4 } from 'uuid';
 import { fsPathService } from '../services/freeSwitchPathService.js';
-import { requireTenantForWrite } from '../middleware/tenantScope.js';
+import { resolveCreateTenant } from '../middleware/tenantScope.js';
+
+// Optional organization for a template-created flow: absent/empty → null; a positive
+// integer (number or digit string) → that number; anything else → 400.
+function parseOrganizationId(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v).trim();
+  const n = Number(s);
+  if (/^\d+$/.test(s) && n >= 1 && n <= 2147483647) return n;
+  throw Object.assign(new Error('organization_id must be a positive integer'), { status: 400 });
+}
 
 // ── Template definitions ───────────────────────────────────────────────────────
 //
@@ -772,7 +782,9 @@ export async function createFromTemplate(req, res) {
     return res.status(404).json({ error: `Template '${id}' not found` });
   }
 
-  const tenantId   = requireTenantForWrite(req);
+  // Same tenant and organization validation as POST /ivr/flows.
+  const organizationId = parseOrganizationId(req.body?.organization_id);
+  const tenantId   = await resolveCreateTenant(req, query, organizationId);
   const customName = req.body?.name;
   const flowUuid   = uuidv4();
   const name       = customName || tpl.name;
@@ -786,8 +798,8 @@ export async function createFromTemplate(req, res) {
       await guardMediaReferences(tq, tpl.graph);
       return tq(
         `INSERT INTO ivr_flows
-           (tenant_id, flow_uuid, name, description, graph, is_active, created_by)
-         VALUES ($1, $2, $3, $4, $5, true, $6)
+           (tenant_id, flow_uuid, name, description, graph, is_active, created_by, organization_id)
+         VALUES ($1, $2, $3, $4, $5, true, $6, $7)
          RETURNING flow_uuid, name`,
         [
           tenantId,
@@ -796,6 +808,7 @@ export async function createFromTemplate(req, res) {
           tpl.description,
           JSON.stringify(tpl.graph),
           req.user.id,
+          organizationId,
         ]
       );
     }));

@@ -347,6 +347,7 @@ export default function IvrBuilder() {
         <BindNumbersModal
           flowUuid={uuid}
           flowName={graph.flowMeta?.name || ''}
+          flowTenantId={graph.flowMeta?.tenant_id ?? null}
           boundNumbers={graph.flowMeta?.bound_numbers || []}
           onClose={() => setShowBind(false)}
           onChanged={handleBindChanged}

@@ -9,6 +9,7 @@ import PageHeader from '../../components/ui/PageHeader.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { can, needsTenantSelection } from '../../auth/permissions.js';
 import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
 function fmt(iso) {
@@ -34,7 +35,11 @@ export default function IvrList() {
   const navigate = useNavigate();
   const user           = useAuthStore(s => s.user);
   const activeTenantId = useAuthStore(s => s.activeTenantId);
-  const canEdit = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR';
+  const canEdit = can(user, 'ivr.edit');
+  // A new flow belongs to one tenant: SUPER_ADMIN must select it in the header first
+  // (the backend rejects a create without one). Existing flows stay manageable under All Tenants.
+  const needsTenant = needsTenantSelection(user, activeTenantId);
+  const NEEDS_TENANT_HINT = 'Select a tenant in the header to create a flow';
 
   // ── Create flow modal ────────────────────────────────────────────────────────
   const [showCreate,  setShowCreate]  = useState(false);
@@ -95,7 +100,7 @@ export default function IvrList() {
         setCreateOrgId(sys ? sys.id : (list[0]?.id ?? ''));
       })
       .catch((e) => notify(`Organizations could not be loaded: ${e.message}`));
-  }, [canEdit]);
+  }, [canEdit, activeTenantId]); // reload when SUPER_ADMIN switches tenant
 
   // ── Create flow ──────────────────────────────────────────────────────────────
 
@@ -196,11 +201,20 @@ export default function IvrList() {
         icon={Workflow}
       >
         {canEdit && (
-          <button onClick={openCreateModal} className="btn-primary">
+          <button
+            onClick={openCreateModal}
+            className="btn-primary disabled:opacity-50"
+            disabled={needsTenant}
+            title={needsTenant ? NEEDS_TENANT_HINT : undefined}
+          >
             <Plus size={14} /> New Flow
           </button>
         )}
       </PageHeader>
+
+      {canEdit && needsTenant && (
+        <p className="text-xs text-text-muted">{NEEDS_TENANT_HINT}.</p>
+      )}
 
       {/* Search */}
       <div className="relative max-w-xs">
@@ -222,7 +236,7 @@ export default function IvrList() {
         <div className="card text-center py-12">
           <Workflow size={32} className="mx-auto text-text-muted mb-3" />
           <p className="text-sm text-text-muted">{search ? 'No flows match your search' : 'No IVR flows yet'}</p>
-          {canEdit && !search && (
+          {canEdit && !needsTenant && !search && (
             <button onClick={openCreateModal} className="mt-3 text-xs text-brand hover:underline">
               Create your first flow
             </button>
@@ -329,7 +343,7 @@ export default function IvrList() {
       )}
 
       {/* Templates */}
-      {!loading && canEdit && !search && templates.length > 0 && (
+      {!loading && canEdit && !needsTenant && !search && templates.length > 0 && (
         <div className="mt-6 space-y-2">
           <div className="flex items-center gap-2 text-text-muted text-xs mb-3">
             <LayoutTemplate size={12} />

@@ -2,7 +2,7 @@ import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { validateGraph } from '../utils/ivrGraphValidator.js';
 import { guardMediaReferences, mediaGuardErrorResponse, MediaLockError } from '../services/mediaDependencyService.js';
-import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
+import { effectiveTenantId, resolveCreateTenant } from '../middleware/tenantScope.js';
 import { publicNodeTypes } from '../nodeTypes/registry.js';
 import {
   CreateFlowSchema,
@@ -122,7 +122,9 @@ export const createFlow = asyncHandler(async (req, res) => {
   }
 
   const { name, description, organization_id } = parsed.data;
-  const tenantId = requireTenantForWrite(req);
+  // SUPER_ADMIN: the selected tenant must exist and be active. Any role: the
+  // organization (if given) must belong to the flow's tenant.
+  const tenantId = await resolveCreateTenant(req, query, organization_id || null);
 
   const emptyGraph = JSON.stringify({ entry_node_id: '', nodes: {} });
 
@@ -358,11 +360,13 @@ export const bindNumber = asyncHandler(async (req, res) => {
   const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-  const tenantId = effectiveTenantId(req);
+  // The number must belong to the FLOW's tenant, not the caller's scope: a SUPER_ADMIN
+  // under "All Tenants" has no caller tenant, and must never bind one tenant's IVR to
+  // another tenant's number. For every other role the two are equal (fetchFlow above).
   const { rows: [num] } = await query(
     `SELECT id, number, type FROM emergency_numbers
-     WHERE id = $1 AND ($2::int IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
-    [parsed.data.emergency_number_id, tenantId]
+     WHERE id = $1 AND tenant_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+    [parsed.data.emergency_number_id, flow.tenant_id]
   );
   if (!num) return res.status(404).json({ error: 'Emergency number not found' });
 
@@ -385,12 +389,12 @@ export const unbindNumber = asyncHandler(async (req, res) => {
   const flow = await fetchFlow(req.params.uuid, effectiveTenantId(req));
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-  const tenantId = effectiveTenantId(req);
+  // Scoped to the FLOW's tenant (see bindNumber).
   const { rows: [num] } = await query(
     `UPDATE emergency_numbers SET ivr_flow_id = NULL
-     WHERE id = $1 AND ivr_flow_id = $2 AND ($3::int IS NULL OR tenant_id = $3)
+     WHERE id = $1 AND ivr_flow_id = $2 AND tenant_id IS NOT DISTINCT FROM $3
      RETURNING id, number`,
-    [parsed.data.emergency_number_id, flow.id, tenantId]
+    [parsed.data.emergency_number_id, flow.id, flow.tenant_id]
   );
 
   if (!num) return res.status(404).json({ error: 'Number not bound to this flow' });

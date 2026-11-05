@@ -15,12 +15,23 @@ export const CAPABILITIES = Object.freeze({
   'recordings.annotate': ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'], // notes/tags, archive
   'recordings.delete':   ['SUPER_ADMIN', 'ADMIN'],
   'reports.view':        ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'], // routes/v1/reports.js: adminOrOp
+  'ivr.edit':            ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'], // routes/v1/ivr.js: adminOrSuper
+  'ivr.deploy':          ['SUPER_ADMIN', 'ADMIN'],               // routes/v1/deployment.js: adminOnly
 });
 
 /** True when `user` (shape { role }) holds `capability`. Unknown capabilities are denied. */
 export function can(user, capability) {
   const roles = CAPABILITIES[capability];
   return !!(user && roles && roles.includes(user.role));
+}
+
+/**
+ * Creating a tenant-owned resource needs a target tenant: SUPER_ADMIN must select one
+ * in the header first (the server rejects the create otherwise). Tenant users always
+ * have their own.
+ */
+export function needsTenantSelection(user, activeTenantId) {
+  return user?.role === 'SUPER_ADMIN' && !activeTenantId;
 }
 
 /**

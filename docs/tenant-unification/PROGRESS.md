@@ -62,3 +62,27 @@
 **Security-hardening item SH-1 (future phase, separately approved):** validate `organization_id` against the caller's tenant on ERS configuration create/update (`ersController.js` `createConfiguration` / `updateConfiguration`), and review the same pattern on the ENS, IVR flow and media endpoints. It is deliberately not part of the Part 1 commit.
 
 **Next:** waiting for review and commit approval. Step 5, deployment, Docker and customer DBs are not started.
+
+## SUPER_ADMIN IVR administration (approved 2026-11-05, uncommitted)
+
+Audit: SUPER_ADMIN was restricted by the UI (IVR list editable only for ADMIN/SUPERVISOR, Deployment only for ADMIN) and by deploy/preview, which needed a selected tenant. The audit also found that bind/unbind checked the number against the caller's scope, so a SUPER_ADMIN under "All Tenants" could bind one tenant's IVR to another tenant's number.
+
+**Changes**
+- Backend:
+  - `tenantScope.resolveCreateTenant`: create needs a tenant (as before); for SUPER_ADMIN it must exist and be active; a supplied organization must belong to that tenant. Used by `POST /ivr/flows` and template create (which now also stores a supplied `organization_id`).
+  - Deploy/preview: SUPER_ADMIN under "All Tenants" uses the flow's own tenant; unknown flow → 404. A selected tenant and every other role are unchanged.
+  - Bind/unbind: number scoped to the flow's tenant.
+  - Additive fields: `tenant_id` on `/settings/emergency-numbers`; `tenant_id`, `tenant_name` on `/deployment/flows`.
+- Frontend:
+  - `ivr.edit` / `ivr.deploy` capabilities (mirror `adminOrSuper` / `adminOnly`); create disabled with a hint until SUPER_ADMIN selects a tenant.
+  - Organizations reload on tenant switch; tenant shown on deployment rows for SUPER_ADMIN.
+  - Bind dialog lists only the flow tenant's numbers.
+- Unchanged: route RBAC, dialplan/Lua generation, deployment engine, routing.
+
+**Evidence**
+- `superAdminIvr` TU-7..TU-12: 24 tests. On unchanged code 11 fail exactly at the defects (template org, unknown/inactive tenant, foreign org ×2, cross-tenant bind/unbind, numbers tenant, deploy, preview, unknown flow); on the tree 24/24, and with `tenantUnification` 35/35.
+- Full regression, HEAD `8ad0b7d` vs tree under the same harness: integration same 7 failures; unit + Lua failures on the tree are a subset of HEAD's.
+- Frontend 298/298; lint 0 errors; build OK.
+- Generated output vs HEAD with the same bindings: executor Lua byte-identical; dialplan XML (plain and nested) identical apart from the `Generated:` timestamp. Generator, deployment engine and Lua sources are not in the diff.
+- DEV (read-only): 0 existing cross-tenant bindings, 0 flows without a tenant.
+- `BEHAVIOUR_CHANGES.md`: three rows (deploy/preview, bind/unbind, create validation).

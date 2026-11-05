@@ -349,10 +349,12 @@ export const listFlowStatus = asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT f.flow_uuid, f.name, f.last_deployed_at,
             f.last_deployment_status, f.last_deployed_version,
+            f.tenant_id, t.name AS tenant_name,
             v.version_number AS latest_version,
             COUNT(en.id)::int AS bound_number_count,
             ARRAY_AGG(en.number) FILTER (WHERE en.id IS NOT NULL) AS bound_numbers
      FROM ivr_flows f
+     LEFT JOIN tenants t ON t.id = f.tenant_id
      LEFT JOIN ivr_flow_versions v ON v.ivr_flow_id = f.id
        AND v.version_number = (
          SELECT MAX(v2.version_number) FROM ivr_flow_versions v2
@@ -363,25 +365,49 @@ export const listFlowStatus = asyncHandler(async (req, res) => {
      WHERE f.deleted_at IS NULL
        AND ($1::int IS NULL OR f.tenant_id = $1)
      GROUP BY f.flow_uuid, f.name, f.last_deployed_at,
-              f.last_deployment_status, f.last_deployed_version, v.version_number
+              f.last_deployment_status, f.last_deployed_version, v.version_number,
+              f.tenant_id, t.name
      ORDER BY f.name`,
     [effectiveTenantId(req)]
   );
   res.json({ flows: rows });
 });
 
+const FLOW_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Tenant to deploy/preview a flow under.
+//   SUPER_ADMIN, no tenant selected ("All Tenants"): the flow's OWN tenant, so the
+//     deploy uses that tenant's bindings and validation. null if the flow does not
+//     exist (or has no tenant).
+//   SUPER_ADMIN with a tenant selected: that tenant only (unchanged).
+//   Every other role: the token tenant (unchanged).
+async function deployScopeTenantId(req, flowUuid) {
+  const tenantId = effectiveTenantId(req);
+  if (tenantId !== null || req.user?.role !== 'SUPER_ADMIN') return tenantId;
+  if (!FLOW_UUID_RE.test(flowUuid)) return null;
+  const { rows: [flow] } = await query(
+    `SELECT tenant_id FROM ivr_flows WHERE flow_uuid = $1 AND deleted_at IS NULL`,
+    [flowUuid]
+  );
+  return flow?.tenant_id ?? null;
+}
+
 /** GET /deployment/flows/:uuid/preview */
 export const previewDeploy = asyncHandler(async (req, res) => {
-  const preview = await previewDeployment(req.params.uuid, effectiveTenantId(req));
+  const preview = await previewDeployment(req.params.uuid, await deployScopeTenantId(req, req.params.uuid));
   if (!preview) return res.status(404).json({ error: 'Flow not found or not published' });
   res.json(preview);
 });
 
 /** POST /deployment/flows/:uuid/deploy */
 export const triggerDeploy = asyncHandler(async (req, res) => {
+  const tenantId = await deployScopeTenantId(req, req.params.uuid);
+  if (tenantId === null && req.user?.role === 'SUPER_ADMIN') {
+    return res.status(404).json({ error: 'Flow not found' });
+  }
   const report = await deployFlow(req.params.uuid, {
     deployedBy: req.user.id,
-    tenantId:   effectiveTenantId(req),
+    tenantId,
   });
   const status = report.status === 'success' ? 200 : 422;
   res.status(status).json(report);

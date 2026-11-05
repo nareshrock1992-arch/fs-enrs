@@ -32,7 +32,7 @@ router.get('/test-mode', asyncHandler(async (req, res) => {
 // Available to ADMIN and SUPERVISOR — consumed by BindNumbersModal in IVR Builder
 router.get('/emergency-numbers', adminOrSuper, asyncHandler(async (req, res) => {
   const { rows: numbers } = await query(
-    `SELECT id, number, type, description, is_active
+    `SELECT id, number, type, description, is_active, tenant_id
      FROM emergency_numbers
      WHERE ($1::int IS NULL OR tenant_id = $1) AND deleted_at IS NULL AND is_active = true
      ORDER BY number`,

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
+import { can } from '../../auth/permissions.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
 
@@ -58,7 +59,7 @@ function FlowDeployStatus({ flow }) {
 
 // ── Flow Row ──────────────────────────────────────────────────────────────────
 
-function FlowRow({ flow, onDeploy, deploying }) {
+function FlowRow({ flow, onDeploy, deploying, showTenant = false }) {
   const [expanded, setExpanded] = useState(false);
   const [history, setHistory]   = useState(null);
 
@@ -91,6 +92,9 @@ function FlowRow({ flow, onDeploy, deploying }) {
             <FlowDeployStatus flow={flow} />
           </div>
           <div className="flex items-center gap-3 mt-0.5 text-[10px] text-text-muted">
+            {showTenant && (
+              <span data-testid="flow-tenant">Tenant: {flow.tenant_name || '—'}</span>
+            )}
             {flow.bound_numbers?.length > 0 ? (
               <span className="flex items-center gap-1">
                 <Phone size={9} />
@@ -367,7 +371,9 @@ export default function DeploymentDashboard() {
 
   const user           = useAuthStore(s => s.user);
   const activeTenantId = useAuthStore(s => s.activeTenantId);
-  const canEdit = user?.role === 'ADMIN';
+  // SUPER_ADMIN deploys any tenant's flow; under All Tenants the backend uses the flow's own tenant.
+  const canEdit = can(user, 'ivr.deploy');
+  const showTenant = user?.role === 'SUPER_ADMIN';
 
   const loadFlows = useCallback(async () => {
     setLoading(true);
@@ -492,6 +498,7 @@ export default function DeploymentDashboard() {
                   flow={f}
                   onDeploy={handleDeploy}
                   deploying={deploying}
+                  showTenant={showTenant}
                 />
               ))}
             </div>

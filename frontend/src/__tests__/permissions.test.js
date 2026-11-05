@@ -11,6 +11,8 @@ const EXPECTED = {
   'recordings.annotate': ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],
   'recordings.delete':   ['SUPER_ADMIN', 'ADMIN'],
   'reports.view':        ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],   // reports.js: adminOrOp
+  'ivr.edit':            ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'], // ivr.js: adminOrSuper
+  'ivr.deploy':          ['SUPER_ADMIN', 'ADMIN'],               // deployment.js: adminOnly
 };
 const ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER'];
 

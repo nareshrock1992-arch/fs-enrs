@@ -100,3 +100,26 @@ export async function validateTargetTenant(queryFn, tenantId) {
   if (!t) throw Object.assign(new Error('Tenant not found or inactive'), { status: 400 });
   return t;
 }
+
+// Tenant (and optional organization) for a new tenant-owned resource, e.g. an IVR flow.
+// The tenant is resolved exactly as requireTenantForWrite. In addition:
+//   SUPER_ADMIN: the selected tenant must exist and be active (400 otherwise).
+//   Any role:    a supplied organization must belong to that tenant (400 otherwise).
+// Returns the tenant id.
+export async function resolveCreateTenant(req, queryFn, organizationId) {
+  const tenantId = requireTenantForWrite(req);
+  if (req.user?.role === 'SUPER_ADMIN') await validateTargetTenant(queryFn, tenantId);
+  if (organizationId !== undefined && organizationId !== null) {
+    const { rows: [org] } = await queryFn(
+      `SELECT id FROM organizations WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+      [organizationId, tenantId]
+    );
+    if (!org) {
+      throw Object.assign(
+        new Error('organization_id does not belong to the selected tenant'),
+        { status: 400 }
+      );
+    }
+  }
+  return tenantId;
+}

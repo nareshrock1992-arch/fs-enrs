@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { Phone, Link, Unlink } from 'lucide-react';
 import Modal from '../../ui/Modal.jsx';
 import { api } from '../../../api/client.js';
+import { numbersForFlowTenant } from './bindNumbers.js';
 
-export default function BindNumbersModal({ flowUuid, flowName, boundNumbers, onClose, onChanged }) {
+export default function BindNumbersModal({ flowUuid, flowName, flowTenantId, boundNumbers, onClose, onChanged }) {
   const [allNumbers, setAllNumbers] = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [busy,       setBusy]       = useState(null); // id being processed
@@ -11,12 +12,12 @@ export default function BindNumbersModal({ flowUuid, flowName, boundNumbers, onC
   const boundIds = new Set((boundNumbers || []).map(n => n.id));
 
   useEffect(() => {
-    // Fetch all emergency numbers for this tenant
+    // Fetch the emergency numbers of this flow's tenant
     api.settings.emergencyNumbers()
-      .then(r => setAllNumbers(r.numbers || []))
+      .then(r => setAllNumbers(numbersForFlowTenant(r.numbers, flowTenantId)))
       .catch(() => setAllNumbers([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [flowTenantId]);
 
   async function toggle(num) {
     setBusy(num.id);
