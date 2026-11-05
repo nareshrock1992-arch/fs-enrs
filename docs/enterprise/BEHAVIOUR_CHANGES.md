@@ -77,6 +77,9 @@ Independent re-verification found these rules still stricter than the risk requi
 | ENS Campaigns "All" tab | Lists campaigns (sent `status=undefined` and showed none) | fixed | Operators | browser |
 | UI | Navigation regrouped, shared confirm dialog, notices, Audit Log, phone layout, accessibility | UI only | Everyone | browser |
 | API (additive) | `/campaigns` adds `outcomes`; `/audit` adds `entity_types`; internal calls accept optional `ivr_number` | additive | — | unit |
+| ERS overflow-queued incidents | Stored with their configuration's tenant (was NULL); migration 050 backfills existing NULL-tenant incidents from their own configuration | fixed (tenant unification Step 1) | Tenant ADMINs: ERS reports, lists and exports now include queued incidents (DEV: 8 → 15) | `tenantUnification` TU-5, TU-6; DEV migration log |
+| IVR config pickers | Refetched each time the builder opens (no page-load cache); all pages fetched, no silent cut at 200 | fixed (Step 2) | Admins see configurations created after the builder was loaded | `configOptions` (frontend) |
+| IVR save / validate / publish | Config references checked against the flow's own tenant (was the caller's); identical for tenant users | fixed (Step 3) | SUPER_ADMIN: a tenant's own configurations are no longer reported as "wrong tenant" | `tenantUnification` TU-3, TU-4 |
 
 ## Release gate (updated 2026-11-04, Cycle 5)
 

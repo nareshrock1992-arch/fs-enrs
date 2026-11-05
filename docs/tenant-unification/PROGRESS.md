@@ -21,3 +21,44 @@
   - `tenant_mappings` is in `schema.sql` but missing from the live DB.
 
 **Next:** waiting for approval of PLAN.md Part 1 (Steps 1–5) and a decision on Part 2 (collapsing organizations into tenants).
+
+## 2026-11-05 — Part 1, Steps 1–4 implemented (Step 5 deferred by decision; nothing committed)
+
+**Changes (uncommitted on `fix/tenant-unification`)**
+- **Step 1:**
+  - `ersInternalController.js`: the overflow enqueue INSERT writes `tenant_id = (SELECT tenant_id FROM ers_configurations WHERE id = $2)`.
+  - New `050_ers_incident_tenant_backfill.sql`: backfills only NULL tenants, from the incident's own configuration; reports anything left; idempotent.
+- **Step 2:** `frontend/src/hooks/useConfigOptions.js`:
+  - refetches on every mount, showing the cached list until the new one arrives;
+  - concurrent pickers share one request;
+  - fetches every page (200 each) until `total` is reached.
+- **Step 3:** `ivrController.js`: save, validate and publish check config references against `flow.tenant_id`. Flows without a tenant fall back to the old behaviour.
+- **Step 4:** new tests:
+  - `backend/src/__tests__/integration/tenantUnification.test.js` (11);
+  - `frontend/src/__tests__/configOptions.test.js` (6).
+
+**Evidence**
+- New tests:
+  - on the tree: 11/11 pass;
+  - on HEAD (`cedf011`) with the same tests: TU-4 and both TU-5 tests fail, which shows they detect the bugs.
+- Regression:
+  - integration 271 tests, 216 pass, the same 7 failures as the baseline;
+  - unit + Lua 1991 tests, the same 23 failures;
+  - frontend 282/282; build OK; lint 0 errors.
+- Generated output, built from HEAD and from the tree with the same DEV bindings:
+  - executor Lua byte-identical;
+  - dialplan XML (plain and nested) identical apart from the `Generated:` timestamp.
+- DEV DB:
+  - backup `/home/user/fs_enrs_backup_20261105_063622.dump` (pg_dump -Fc, 371,751 bytes);
+  - migration 050 applied by `migrate.js`;
+  - NULL-tenant incidents 7 → 0, tenant-1 incidents 8 → 15;
+  - a second direct run of the SQL changed nothing (checksum unchanged);
+  - the runner skips 050 on a re-run;
+  - configs, flows, numbers and versions checksum unchanged.
+- API, as `admin@enrs.local`: `/reports/ers` total = 15.
+
+**Found, not fixed (out of scope):** ERS config create/update accepts any `organization_id` from the body without checking that the organization belongs to the caller's tenant.
+
+**Security-hardening item SH-1 (future phase, separately approved):** validate `organization_id` against the caller's tenant on ERS configuration create/update (`ersController.js` `createConfiguration` / `updateConfiguration`), and review the same pattern on the ENS, IVR flow and media endpoints. It is deliberately not part of the Part 1 commit.
+
+**Next:** waiting for review and commit approval. Step 5, deployment, Docker and customer DBs are not started.

@@ -1127,11 +1127,15 @@ export const ersOverflowEnqueue = asyncHandler(async (req, res) => {
 
   const result = await withTransaction(async tq => {
     const incidentUuid = uuidv4();
+    // tenant_id comes from the configuration (no logged-in user on the call path),
+    // like the ring-all and classic incident inserts; without it the incident is
+    // invisible to the tenant's reports and lists.
     const { rows: [incident] } = await tq(
       `INSERT INTO ers_incidents
-         (incident_uuid, ers_configuration_id, status, caller_number, caller_name,
+         (incident_uuid, ers_configuration_id, tenant_id, status, caller_number, caller_name,
           group_type, started_at, queued_at)
-       VALUES ($1, $2, 'QUEUED', $3, $4, 'primary', now(), now())
+       VALUES ($1, $2, (SELECT tenant_id FROM ers_configurations WHERE id = $2), 'QUEUED', $3, $4,
+               'primary', now(), now())
        RETURNING id, incident_uuid`,
       [incidentUuid, d.configuration_id, d.caller_number, d.caller_name ?? null]
     );

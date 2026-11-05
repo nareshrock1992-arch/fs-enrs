@@ -22,6 +22,12 @@ export const getNodeTypes = asyncHandler(async (req, res) => {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+// Config/media references in a flow are checked against the tenant that OWNS the flow,
+// not the caller: a SUPER_ADMIN editing tenant 1's flow is validated against tenant 1.
+// For a non-SUPER_ADMIN the two are always equal (fetchFlow is scoped to their tenant).
+// Legacy flows without a tenant keep the previous behaviour (the caller's scope).
+export const flowTenantId = (flow, req) => flow.tenant_id ?? effectiveTenantId(req);
+
 async function fetchFlow(flowUuid, tenantId) {
   const { rows } = await query(
     `SELECT f.*,
@@ -163,7 +169,7 @@ export const updateFlow = asyncHandler(async (req, res) => {
     // An empty graph (nodes:{}) is accepted — it represents a cleared canvas draft.
     const fullCheck = GraphSchema.safeParse(graph);
     if (fullCheck.success) {
-      const result = await validateGraph(graph, effectiveTenantId(req));
+      const result = await validateGraph(graph, flowTenantId(flow, req));
       const dependency = new Set(result.dependencyErrors || []);   // publish-only gates
       const structural = (result.errors || []).filter(e => !dependency.has(e) && !e.includes('not found') && !e.includes('wrong tenant'));
       if (structural.length > 0) {
@@ -244,7 +250,7 @@ export const validateFlow = asyncHandler(async (req, res) => {
 
   // Allow validating a candidate graph without saving it
   const graphToCheck = req.body?.graph ?? flow.graph;
-  const result = await validateGraph(graphToCheck, effectiveTenantId(req));
+  const result = await validateGraph(graphToCheck, flowTenantId(flow, req));
 
   res.json(result);
 });
@@ -261,7 +267,7 @@ export const publishFlow = asyncHandler(async (req, res) => {
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   // Full validation (all DB checks) must pass before publish
-  const result = await validateGraph(flow.graph, effectiveTenantId(req));
+  const result = await validateGraph(flow.graph, flowTenantId(flow, req));
   if (!result.valid) {
     return res.status(400).json({
       error:    'Graph validation failed — fix errors before publishing',
