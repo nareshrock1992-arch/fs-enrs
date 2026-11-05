@@ -13,6 +13,8 @@ const EXPECTED = {
   'reports.view':        ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],   // reports.js: adminOrOp
   'ivr.edit':            ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'], // ivr.js: adminOrSuper
   'ivr.deploy':          ['SUPER_ADMIN', 'ADMIN'],               // deployment.js: adminOnly
+  'contacts.view':       ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],   // contacts.js: adminOrOp
+  'contacts.edit':       ['SUPER_ADMIN', 'ADMIN'],               // contacts.js: adminOnly
 };
 const ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR', 'OPERATOR', 'VIEWER'];
 

@@ -96,8 +96,9 @@ Never mix auth middleware between these two surfaces.
 ### Authentication flow
 
 - Login issues a short-lived JWT access token (15m, Bearer) + long-lived refresh token (7d, httpOnly cookie).
-- `req.user` shape set by `requireAuth`: `{ id, email, role, tenantId }`. The `tenantId` is read from the JWT payload — **always use `req.user.tenantId` when inserting rows that need tenant scoping, never trust the request body for it.**
-- Roles: `ADMIN > SUPERVISOR > OPERATOR > VIEWER`. Named middleware exports in `rbac.js` (e.g. `adminOrSuper`, `canTriggerEns`) should be used instead of inline role checks.
+- `req.user` shape set by `requireAuth`: `{ id, email, role, tenantId }`. The `tenantId` is read from the JWT payload — **never trust the request body for a tenant user's tenant.** Resolve the tenant through `middleware/tenantScope.js` (`effectiveTenantId`, `requireTenantForWrite`, `resolveCreateTenant`), which binds tenant users to their token and handles SUPER_ADMIN.
+- Roles: `SUPER_ADMIN > ADMIN > SUPERVISOR > OPERATOR > VIEWER`. Named middleware exports in `rbac.js` (e.g. `adminOrSuper`, `canTriggerEns`) should be used instead of inline role checks.
+- **SUPER_ADMIN has full administrative access to all tenants and every tenant-scoped feature, in "All Tenants" mode and with a tenant selected.** This is a permanent rule for every module — see `GOVERNANCE.md` → "SUPER_ADMIN Global Administrative Access — Permanent Governance Rule" (behaviour, safeguards, required tests) before adding or changing any authorization.
 
 ### Database patterns
 
@@ -108,7 +109,7 @@ Never mix auth middleware between these two surfaces.
 
 ### Multi-tenancy scope
 
-Every configuration row (`ers_configurations`, `ens_configurations`, IVR flows, emergency numbers) must have `tenant_id` set at INSERT time from `req.user.tenantId`. The `ivrGraphValidator.js` validates that ERS/ENS node references belong to the same tenant — inserts that omit `tenant_id` will cause validation failures downstream.
+Every configuration row (`ers_configurations`, `ens_configurations`, IVR flows, emergency numbers) must have `tenant_id` set at INSERT time (tenant users: from the token; SUPER_ADMIN: the explicit target tenant — see `tenantScope.js`). The `ivrGraphValidator.js` validates that ERS/ENS node references belong to the same tenant — inserts that omit `tenant_id` will cause validation failures downstream.
 
 ### ENS campaign engine (`src/services/campaignEngine.js`)
 

@@ -12,6 +12,9 @@ Updated Cycle 2, 2026-11-02.
 
 SUPER_ADMIN gets no bypass of authentication, input validation or auditing.
 
+The permanent rule for SUPER_ADMIN access (All Tenants vs selected tenant, safeguards, required tests) is in
+`GOVERNANCE.md` → "SUPER_ADMIN Global Administrative Access — Permanent Governance Rule".
+
 ### Reviewed
 
 | Path | Result |

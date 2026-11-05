@@ -366,6 +366,93 @@ across server restarts.
 
 ---
 
+### SUPER_ADMIN Global Administrative Access — Permanent Governance Rule
+
+**Status:** permanent platform invariant (approved 2026-11-05). Applies to every existing
+and future module, page, route and API. It is not a feature-specific exception.
+
+#### 1. Principle
+
+SUPER_ADMIN is the highest administrative role. It has **full administrative access to all
+tenants and to every tenant-scoped feature**: view, search, filter, sort, create, configure,
+edit, delete, bulk operations, import, export, activate/deactivate, associations and
+assignments, deployment and operational management, reports and administrative
+configuration. SUPER_ADMIN must never be restricted by tenant selection, "All Tenants"
+mode, organization selection, frontend visibility conditions, capability matrices, route
+middleware, feature checks, or read-only rules written for lower roles.
+
+#### 2. "All Tenants" (no tenant selected)
+
+- Lists, search, filters, sorting, reports and exports span all tenants. Where rows of
+  several tenants appear together, the tenant is shown (e.g. a Tenant column).
+- Records of any tenant can be opened, edited, deleted and included in bulk operations.
+- An operation on an existing record takes its tenant **from the record** (or from the
+  record it references), never from the caller — it must not be refused merely because no
+  tenant is selected.
+- Creating a tenant-owned record requires an **explicit, valid target tenant**: either the
+  selected tenant or an owning reference that determines it (e.g. an organization). The
+  UI must make the target visible (e.g. organization options labelled with their tenant).
+
+#### 3. A tenant selected
+
+- Full administrative access within that tenant; never silently reduced to lower-role
+  permissions. Records of other tenants are out of scope (404) while it is selected.
+- The selection travels with every request (`?tenant_id` / `body.tenant_id`, including
+  multipart uploads) so the server, not the UI, applies it.
+
+#### 4. Other roles
+
+ADMIN stays bound to its own tenant (from the token; request `tenant_id` is ignored).
+SUPERVISOR, OPERATOR and VIEWER keep exactly their defined permissions. A change made for
+SUPER_ADMIN must never widen another role.
+
+#### 5. Frontend requirements
+
+- Use the capability matrix (`frontend/src/auth/permissions.js`, `can()`); every
+  capability that grants an administrative action includes `SUPER_ADMIN`. No inline
+  `role === 'ADMIN'` checks that leave SUPER_ADMIN out.
+- Actions SUPER_ADMIN may perform are visible and usable in both modes; when a create
+  needs a target tenant, the UI asks for it (`needsTenantSelection`) instead of hiding the
+  feature.
+- On tenant switch, pages clear selections, filters and rows of the previous tenant.
+
+#### 6. Backend requirements (authoritative)
+
+- Every role middleware in `middleware/rbac.js` includes `SUPER_ADMIN`; routes use the
+  named middleware, not ad-hoc role lists.
+- Tenant scope comes only from `middleware/tenantScope.js`: `effectiveTenantId` (reads:
+  null = all tenants for SUPER_ADMIN), `requireTenantForWrite` / `resolveCreateTenant`
+  (creates), and record-derived tenants for updates, deletes and operations.
+- Queries use `($n::int IS NULL OR tenant_id = $n)` so the same code serves both modes.
+
+#### 7. Safeguards that still apply to SUPER_ADMIN
+
+Full access is not a validation bypass. Always enforce: authentication; valid, active
+tenant and organization references; department / location (and similar child) ownership
+by the owning organization; a record never moves to another tenant through an edit;
+referential integrity; required fields and business rules; safe 400/404 handling of
+invalid or unknown identifiers; explicit confirmation of destructive actions in the UI;
+audit logging of sensitive administrative operations where the module supports it. Never
+weaken a check for other roles to make SUPER_ADMIN work.
+
+#### 8. Required test coverage for every tenant-scoped feature
+
+Backend integration tests, against real authenticated requests, must show:
+1. SUPER_ADMIN under All Tenants performs each supported operation on records of at least
+   two tenants (read, create with an explicit target, update, delete, bulk, import/export);
+2. SUPER_ADMIN with a tenant selected is limited to that tenant (other tenant → 404 /
+   not affected);
+3. ADMIN of one tenant cannot read or change another tenant's records, including through
+   forged `tenant_id`, filters, search, exports and bulk ids;
+4. lower roles get 403 where the route requires it;
+5. invalid / unknown / foreign references are refused for every role, SUPER_ADMIN included.
+
+Frontend tests must pin the capability matrix to the route middleware
+(`frontend/src/__tests__/permissions.test.js`). Examples: `superAdminIvr.test.js`,
+`contactsEnterprise.test.js`, `tenantUnification.test.js`.
+
+---
+
 ## Platform Observability & Logging Governance
 
 **This section is a permanent mandatory governance rule.**

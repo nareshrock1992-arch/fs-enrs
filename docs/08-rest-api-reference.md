@@ -315,11 +315,45 @@ Soft-delete.
 
 `adminOrOp` for reads; `adminOnly` for writes.
 
+**Audit:** every successful create, update, delete, bulk delete and CSV import writes an `audit_logs` row (`entity_type` `emergency_contact`; `details` = `role`, `tenant_id` of the affected contacts, `scope_tenant_id` of the caller, and ids, changed field names or counts — never contact details or file contents). Bulk delete writes one summary per affected tenant. The write is best effort after the change (a failure is logged as an error), like the other audit writers.
+
 ### `GET /contacts`
 
-**Query parameters:** `page`, `limit`, `org_id`, `active`, `search`.
+All parameters are optional. Without `sort`, the order is last name, first name (as before).
 
-**Response `200`:** Paginated list of contacts.
+| Parameter | Notes |
+|---|---|
+| `page`, `limit` | Default 1 / 50; `limit` is capped at 200 |
+| `organization_id`, `department_id`, `location_id` | Positive integers (otherwise 400) |
+| `is_active` | `true` / `false` |
+| `role` | Exact role, case-insensitive |
+| `search` | Substring of first, last or full name, mobile, extension, email or role; `%` and `_` are literal |
+| `sort` | `name`, `mobile`, `extension`, `email`, `role`, `organization`, `department`, `location`, `status`, `tenant`, `created_at`, `updated_at` (otherwise 400); empty values sort last |
+| `dir` | `asc` (default) / `desc` |
+
+Scope: the caller's tenant; SUPER_ADMIN: `?tenant_id=` or all tenants.
+
+**Response `200`:** `{ contacts, total, page, limit }`. Each contact carries `organization_name`, `department_name`, `location_name`, `tenant_id`, `tenant_name`.
+
+---
+
+### `GET /contacts/roles`
+
+Distinct roles in the caller's scope (for the Role filter). **Response `200`:** `{ "roles": ["Manager", "Security"] }`
+
+---
+
+### `GET /contacts/export`
+
+CSV (UTF-8 with BOM) of **every** contact matching the same parameters as `GET /contacts` (`page` / `limit` are ignored), same authorization and tenant scope. Columns: `first_name, last_name, mobile_number, extension_number, email, role, organization, department, location, is_active, created_at, updated_at`, plus `tenant` for SUPER_ADMIN under all tenants. Values are quoted per RFC 4180; cells starting with `=`, `@`, `-`, tab, or `+` followed by non-phone characters are prefixed with `'`. More than 50,000 matching contacts → `422` (narrow the filters).
+
+---
+
+### `POST /contacts/bulk-delete`
+
+`adminOnly`. **Request:** `{ "ids": [1, 2, 3] }` (1–500 positive integers). Soft-deletes, in one statement, the listed contacts in the caller's tenant scope (same rule as `DELETE /contacts/:id`).
+
+**Response `200`:** `{ "deleted": 2, "deleted_ids": [1, 2], "not_found": [3] }` — `not_found` lists ids that are unknown, already deleted or outside the caller's scope; they are never touched.
 
 ---
 
@@ -335,17 +369,18 @@ Soft-delete.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `organization_id` | `integer` | Yes | — |
-| `first_name` | `string` | Yes | — |
-| `last_name` | `string` | Yes | — |
-| `mobile_number` | `string` | Yes | — |
-| `role` | `string` | No | — |
-| `location_id` | `integer` | No | — |
-| `department_id` | `integer` | No | — |
-| `internal_extension` | `string` | No | — |
-| `extension_number` | `string` | No | Dialed alongside mobile for ENS dual-channel blasts. |
-| `email` | `string` | No | — |
-| `gateway_id` | `integer` | No | Per-contact SIP gateway override. |
+| `organization_id` | `integer` | Yes | Must be a live organization in the caller's tenant (404 otherwise) |
+| `first_name` | `string` | Yes | Max 64 |
+| `last_name` | `string` | Yes | Max 64 |
+| `mobile_number` | `string` | One of mobile / extension | Max 32 |
+| `extension_number` | `string` | One of mobile / extension | Max 32. Dialed alongside mobile for ENS dual-channel blasts. |
+| `role` | `string` | No | Max 64 |
+| `email` | `string` | No | Valid e-mail, max 255 |
+| `department_id` | `integer` | No | Must belong to the organization (400) |
+| `location_id` | `integer` | No | Must belong to the organization (400) |
+| `is_active` | `boolean` | No | Default `true` |
+
+Other fields are ignored (the per-contact `gateway_id` override is not set through this API).
 
 **Response `201`:** Created contact object.
 
@@ -353,17 +388,19 @@ Soft-delete.
 
 ### `PUT /contacts/:id`
 
-**Request:** Partial contact object.
+**Request:** Partial contact object. Only the fields present are changed; `null` clears an optional field. `organization_id` may change to another organization of the contact's own tenant (otherwise 400); `department_id` / `location_id` must belong to the resulting organization (400). The contact must keep a mobile or an extension number (400).
 
 **Response `200`:** Updated contact object.
+
+On create and update, a department or location of another organization is refused (400). A malformed `:id` → 400.
 
 ---
 
 ### `DELETE /contacts/:id`
 
-Soft-delete.
+Soft-delete, in the caller's tenant scope.
 
-**Response `200`:** `{ "ok": true }`
+**Response `204`:** no content. Unknown, already deleted or another tenant's contact → `404`.
 
 ---
 
@@ -375,18 +412,25 @@ Upload contacts via CSV. Multipart `form-data`. Maximum file size: 5 MB.
 
 | Field | Notes |
 |---|---|
-| `file` | CSV file. Required columns: `first_name`, `last_name`, `mobile_number`. |
-| `organization_id` | Target organization ID. |
+| `file` | CSV with a header row. Columns: `first_name`, `last_name` (required), `mobile_number`, `extension_number` (at least one), `email`, `role`, `is_active` (`true/false/yes/no/1/0`). Header names are case-insensitive; `phone`/`mobile` and `extension` are accepted as aliases; other columns are ignored. |
+| `organization_id` | Target organization ID (in the caller's tenant). |
+| `tenant_id` | SUPER_ADMIN only, optional: the selected tenant (the UI sends it). The organization must belong to it (404 otherwise). Without it, SUPER_ADMIN may import into any live organization, whose tenant becomes the contacts' tenant. Ignored for other roles. |
+
+**Duplicates:** a row is skipped when a live contact of the same organization, or an earlier row of the file, has the same first and last name (case-insensitive, trimmed) and the same mobile and extension numbers (spaces, dots, dashes and brackets ignored). Imports into one organization are serialised (transaction advisory lock); contacts created individually at the same moment are not covered (no database uniqueness constraint).
 
 **Response `200`:**
 
 ```json
 {
-  "imported": 42,
+  "inserted": 42,
   "skipped": 3,
-  "errors": [{ "row": 7, "error": "Invalid mobile_number" }]
+  "duplicates": [{ "line": 5, "reason": "Contact already exists" }],
+  "errors": [{ "line": 7, "error": "At least one of mobile_number or extension_number is required" }],
+  "total": 46
 }
 ```
+
+`line` is the line number in the file (the header is line 1).
 
 ---
 

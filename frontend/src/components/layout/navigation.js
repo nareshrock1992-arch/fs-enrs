@@ -38,7 +38,7 @@ export const NAV = [
       { label: 'Organizations',      to: '/organizations' },
       { label: 'Locations',          to: '/locations' },
       { label: 'Departments',        to: '/departments' },
-      { label: 'Emergency Contacts', to: '/contacts' },
+      { label: 'Emergency Contacts', to: '/contacts', capability: 'contacts.view' },
       { label: 'Responder Groups',   to: '/groups' },
     ],
   },

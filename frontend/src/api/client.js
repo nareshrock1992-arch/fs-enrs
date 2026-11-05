@@ -151,10 +151,19 @@ export const api = {
     create:     (d)      => request('POST',   '/contacts', d),
     update:     (id, d)  => request('PUT',    `/contacts/${id}`, d),
     remove:     (id)     => request('DELETE', `/contacts/${id}`),
+    // Emergency Contacts page: one server-side page (no forced limit, unlike list()).
+    page:       (q)      => request('GET',    `/contacts?${qs(q || {})}`),
+    roles:      ()       => request('GET',    '/contacts/roles'),
+    exportCsv:  (q)      => request('GET',    `/contacts/export?${qs(q || {})}`, undefined, { blob: true }),
+    bulkDelete: (ids)    => request('POST',   '/contacts/bulk-delete', { ids }),
     bulkUpload: (orgId, file) => {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('organization_id', orgId);
+      // request() does not add the selected tenant to multipart bodies; the server must
+      // still see it so a SUPER_ADMIN with a tenant selected imports only into that tenant.
+      const tenantId = getActiveTenantId();
+      if (tenantId) fd.append('tenant_id', tenantId);
       return request('POST', '/contacts/bulk-upload', fd);
     },
   },

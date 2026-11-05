@@ -17,6 +17,8 @@ export const CAPABILITIES = Object.freeze({
   'reports.view':        ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'], // routes/v1/reports.js: adminOrOp
   'ivr.edit':            ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'], // routes/v1/ivr.js: adminOrSuper
   'ivr.deploy':          ['SUPER_ADMIN', 'ADMIN'],               // routes/v1/deployment.js: adminOnly
+  'contacts.view':       ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],   // routes/v1/contacts.js: adminOrOp (list, export)
+  'contacts.edit':       ['SUPER_ADMIN', 'ADMIN'],               // routes/v1/contacts.js: adminOnly (create, edit, delete, upload)
 });
 
 /** True when `user` (shape { role }) holds `capability`. Unknown capabilities are denied. */
