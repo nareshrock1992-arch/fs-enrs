@@ -1,9 +1,15 @@
-// ── Minimal STORE-only ZIP writer (no compression, no dependency) ─────────────
+// ── Minimal ZIP support (no dependency) ───────────────────────────────────────
 //
-// Audio (WAV/MP3) barely compresses, so entries are stored. CRC-32 uses a bundled
-// table: zlib.crc32 only exists from Node 20.15 / 22.2 and package.json allows
-// Node >= 20. Classic ZIP limits apply (no ZIP64): < 65 535 entries and every
-// size/offset < 4 GiB — callers enforce far smaller caps. Names are UTF-8 (flag 11).
+// Writer: STORE-only (no compression). Audio (WAV/MP3) barely compresses, so entries
+// are stored. CRC-32 uses a bundled table: zlib.crc32 only exists from Node 20.15 /
+// 22.2 and package.json allows Node >= 20. Classic ZIP limits apply (no ZIP64):
+// < 65 535 entries and every size/offset < 4 GiB — callers enforce far smaller caps.
+// Names are UTF-8 (flag 11).
+//
+// Reader (readZip, below): bounded reader for uploaded archives (stored and deflated
+// entries), used for .xlsx imports. Every limit is checked before data is inflated.
+
+import { inflateRawSync } from 'zlib';
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -89,6 +95,113 @@ export function buildStoredZip(entries) {
   end.writeUInt32LE(cd.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, cd, end]);
+}
+
+// ── Bounded ZIP reader ────────────────────────────────────────────────────────
+
+export class ZipReadError extends Error {
+  /** code: 'ZIP_INVALID' (not a usable archive) or 'ZIP_LIMIT' (a size / count limit) */
+  constructor(message, code = 'ZIP_INVALID') {
+    super(message);
+    this.name = 'ZipReadError';
+    this.code = code;
+  }
+}
+
+const SIG_EOCD = 0x06054b50;
+const SIG_CENTRAL = 0x02014b50;
+const SIG_LOCAL = 0x04034b50;
+const MB = 1024 * 1024;
+
+// Relative, normalised names only: no absolute paths, drive letters, backslashes,
+// control characters or "." / ".." segments (path traversal).
+function safeEntryName(name) {
+  if (!name || name.length > 1024 || name.startsWith('/') || /^[A-Za-z]:/.test(name)) return false;
+  // eslint-disable-next-line no-control-regex -- control characters are refused
+  if (/[\\\u0000-\u001f]/.test(name)) return false;
+  return name.split('/').every((seg, i, all) => seg !== '.' && seg !== '..' && (seg !== '' || i === all.length - 1));
+}
+
+/**
+ * Read the directory of a ZIP archive held in memory. Nothing is inflated until
+ * `read(name)` is called, and every limit is checked first:
+ *   - at most `maxEntries` entries;
+ *   - each entry at most `maxEntryBytes` uncompressed (declared and actual size);
+ *   - declared total and actually inflated total at most `maxTotalBytes`;
+ *   - stored or deflated entries only; no encryption, ZIP64, multi-disk archives,
+ *     duplicate or unsafe names, overlapping data or checksum mismatches.
+ * @returns {{ names: string[], has(name): boolean, read(name): Buffer|null }}
+ */
+export function readZip(buf, { maxEntries = 200, maxEntryBytes = 64 * MB, maxTotalBytes = 128 * MB } = {}) {
+  const invalid = (msg = 'The file is not a valid ZIP archive') => new ZipReadError(msg, 'ZIP_INVALID');
+  const limit = (msg) => new ZipReadError(msg, 'ZIP_LIMIT');
+  if (!Buffer.isBuffer(buf) || buf.length < 22) throw invalid();
+
+  let eocd = -1;
+  for (let i = buf.length - 22, stop = Math.max(0, buf.length - 22 - 0xFFFF); i >= stop; i--) {
+    if (buf.readUInt32LE(i) === SIG_EOCD) { eocd = i; break; }
+  }
+  if (eocd < 0) throw invalid();
+  const count = buf.readUInt16LE(eocd + 10);
+  const cdSize = buf.readUInt32LE(eocd + 12);
+  const cdOffset = buf.readUInt32LE(eocd + 16);
+  if (buf.readUInt16LE(eocd + 4) !== 0 || buf.readUInt16LE(eocd + 6) !== 0 || buf.readUInt16LE(eocd + 8) !== count) {
+    throw invalid('Multi-part ZIP archives are not supported');
+  }
+  if (count === 0xFFFF || cdSize === MAX || cdOffset === MAX) throw invalid('ZIP64 archives are not supported');
+  if (count > maxEntries) throw limit(`The archive has more than ${maxEntries} parts`);
+  if (cdOffset + cdSize > eocd) throw invalid();
+
+  const entries = new Map();
+  let declaredTotal = 0;
+  let p = cdOffset;
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > cdOffset + cdSize || buf.readUInt32LE(p) !== SIG_CENTRAL) throw invalid();
+    const flags = buf.readUInt16LE(p + 8);
+    const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const end = p + 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    if (end > cdOffset + cdSize) throw invalid();
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    p = end;
+    if (flags & 0x0001) throw invalid('Encrypted (password-protected) archives are not supported');
+    if (method !== 0 && method !== 8) throw invalid('The archive uses an unsupported compression method');
+    if (csize === MAX || usize === MAX || local === MAX) throw invalid('ZIP64 archives are not supported');
+    if (!safeEntryName(name)) throw invalid('The archive contains an unsafe file path');
+    if (entries.has(name)) throw invalid('The archive contains the same part twice');
+    if (method === 0 && csize !== usize) throw invalid();
+    if (usize > maxEntryBytes) throw limit(`A part of the archive is larger than ${maxEntryBytes / MB} MB uncompressed`);
+    declaredTotal += usize;
+    if (declaredTotal > maxTotalBytes) throw limit(`The archive is larger than ${maxTotalBytes / MB} MB uncompressed`);
+    entries.set(name, { method, crc, csize, usize, local });
+  }
+
+  let inflatedTotal = 0;
+  function read(name) {
+    const e = entries.get(name);
+    if (!e) return null;
+    if (e.local + 30 > cdOffset || buf.readUInt32LE(e.local) !== SIG_LOCAL) throw invalid();
+    const start = e.local + 30 + buf.readUInt16LE(e.local + 26) + buf.readUInt16LE(e.local + 28);
+    if (start + e.csize > cdOffset) throw invalid();
+    const raw = buf.subarray(start, start + e.csize);
+    let data;
+    if (e.method === 0) {
+      data = Buffer.from(raw);
+    } else {
+      // maxOutputLength stops a part that inflates beyond its declared size (zip bomb).
+      try { data = inflateRawSync(raw, { maxOutputLength: Math.max(1, e.usize) }); } catch { throw invalid('A part of the archive is corrupt or larger than declared'); }
+    }
+    if (data.length !== e.usize || crc32(data) !== e.crc) throw invalid('A part of the archive is corrupt');
+    inflatedTotal += data.length;
+    if (inflatedTotal > maxTotalBytes) throw limit(`The archive is larger than ${maxTotalBytes / MB} MB uncompressed`);
+    return data;
+  }
+
+  return { names: [...entries.keys()], has: (name) => entries.has(name), read };
 }
 
 /**

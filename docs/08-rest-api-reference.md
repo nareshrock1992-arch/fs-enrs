@@ -315,7 +315,7 @@ Soft-delete.
 
 `adminOrOp` for reads; `adminOnly` for writes.
 
-**Audit:** every successful create, update, delete, bulk delete and CSV import writes an `audit_logs` row (`entity_type` `emergency_contact`; `details` = `role`, `tenant_id` of the affected contacts, `scope_tenant_id` of the caller, and ids, changed field names or counts — never contact details or file contents). Bulk delete writes one summary per affected tenant. The write is best effort after the change (a failure is logged as an error), like the other audit writers.
+**Audit:** every successful create, update, delete, bulk delete and import (CSV or Excel, `mode=commit`) writes an `audit_logs` row (`entity_type` `emergency_contact`; `details` = `role`, `tenant_id` of the affected contacts, `scope_tenant_id` of the caller, and ids, changed field names or counts — never contact details or file contents). Bulk delete writes one summary per affected tenant, an import one per organization. The write is best effort after the change (a failure is logged as an error), like the other audit writers.
 
 ### `GET /contacts`
 
@@ -404,33 +404,57 @@ Soft-delete, in the caller's tenant scope.
 
 ---
 
+### `GET /contacts/import-template`
+
+`adminOnly`. **Query:** `format` = `xlsx` (default) or `csv`. A static file — no tenant or contact data — so every caller gets the same content.
+
+- **`xlsx`** (`emergency-contacts-template.xlsx`): sheet **Emergency Contacts** with the columns `first_name, last_name, mobile_number, extension_number, email, role, organization, department, location, is_active` (bold frozen header, filter, widths), four example rows, `mobile_number` / `extension_number` formatted as Text (leading zeros, `+` and long numbers are kept), an `is_active` drop-down (`true` / `false`, informational: `yes/no/1/0` can still be typed); sheet **Instructions** with the rules. Inline strings only, no formulas or macros.
+- **`csv`** (`emergency-contacts-template.csv`): the same header and example rows, UTF-8 with BOM, CRLF line ends, RFC 4180 quoting.
+
+Unknown `format` → `400`.
+
+---
+
 ### `POST /contacts/bulk-upload`
 
-Upload contacts via CSV. Multipart `form-data`. Maximum file size: 5 MB.
+Import contacts from an Excel workbook (`.xlsx`) or a CSV file (`.csv`). Multipart `form-data`. `adminOnly`.
 
 **Form fields:**
 
 | Field | Notes |
 |---|---|
-| `file` | CSV with a header row. Columns: `first_name`, `last_name` (required), `mobile_number`, `extension_number` (at least one), `email`, `role`, `is_active` (`true/false/yes/no/1/0`). Header names are case-insensitive; `phone`/`mobile` and `extension` are accepted as aliases; other columns are ignored. |
-| `organization_id` | Target organization ID (in the caller's tenant). |
-| `tenant_id` | SUPER_ADMIN only, optional: the selected tenant (the UI sends it). The organization must belong to it (404 otherwise). Without it, SUPER_ADMIN may import into any live organization, whose tenant becomes the contacts' tenant. Ignored for other roles. |
+| `file` | `.xlsx` or `.csv` (decided from the name and the content). Other types — `.xls`, `.xlsm`, `.ods`, binary files, a name that does not match the content, password-protected workbooks — are refused (`400`). |
+| `mode` | `commit` (default; existing callers unchanged) or `preview`: every check runs, nothing is written and no audit record is made. |
+| `organization_id` | Only for files **without** an `organization` column (older CSV files): the organization all rows go to (live, in the caller's tenant; `404` otherwise). Ignored when the file has the column. |
+| `tenant_id` | SUPER_ADMIN only: the selected or explicitly chosen target tenant (must exist and be active, `400` otherwise). **Required** under "All Tenants" for a file with an `organization` column. Ignored for other roles, whose tenant always comes from their token. |
 
-**Duplicates:** a row is skipped when a live contact of the same organization, or an earlier row of the file, has the same first and last name (case-insensitive, trimmed) and the same mobile and extension numbers (spaces, dots, dashes and brackets ignored). Imports into one organization are serialised (transaction advisory lock); contacts created individually at the same moment are not covered (no database uniqueness constraint).
+**Columns** (header names case-insensitive; `phone`/`mobile` and `extension` are aliases; other columns, e.g. `created_at`, are ignored): `first_name`, `last_name` (required), `mobile_number`, `extension_number` (at least one per row), `email`, `role`, `organization` (required on every row when the column exists), `department`, `location`, `is_active` (`true/false/yes/no/1/0`; blank = true). A missing required column or a column given twice → `400`.
+
+**Rows:** values are trimmed; empty rows are ignored. `organization` is resolved by name (case-insensitive) among the live organizations of the target tenant only; `department` / `location` by name within that organization. A name that is unknown, belongs to another organization or tenant, or matches more than one record is a row error — there is no fallback. Excel: the worksheet named "Emergency Contacts" is read (otherwise the first one); values only — a formula or error cell is a row error and is never evaluated; numbers become plain digits (never scientific notation). An unchanged example row of the template is a row error ("remove it before importing").
+
+**Duplicates:** a row is skipped when a live contact of the same organization, or an earlier row of the file, has the same first and last name (case-insensitive, trimmed) and the same mobile and extension numbers (spaces, dots, dashes and brackets ignored). Imports are serialised per organization (transaction advisory locks); contacts created individually at the same moment are not covered (no database uniqueness constraint).
+
+**Limits:** 5 MB per file (`413`); 10,000 data rows (`413`); workbooks: at most 200 archive parts, 64 MB uncompressed per part and 128 MB in total (`413`); compressed parts are never inflated beyond their declared size (zip bombs), unsafe paths, encryption, document type declarations and malformed XML are refused (`400`).
 
 **Response `200`:**
 
 ```json
 {
-  "inserted": 42,
-  "skipped": 3,
+  "preview": true,
+  "format": "xlsx",
+  "total": 46,
+  "valid": 42,
+  "invalid": 3,
+  "inserted": 0,
+  "skipped": 1,
   "duplicates": [{ "line": 5, "reason": "Contact already exists" }],
-  "errors": [{ "line": 7, "error": "At least one of mobile_number or extension_number is required" }],
-  "total": 46
+  "errors": [{ "line": 7, "error": "Organization not found" }]
 }
 ```
 
-`line` is the line number in the file (the header is line 1).
+`preview` is present only for `mode=preview`. After a commit, `inserted` = `valid` = rows imported. `line` is the row number as a spreadsheet shows it (the header is row 1). Row messages are sentences such as "First name is required", "Both mobile number and extension number are empty", "Department does not belong to the specified organization".
+
+**Audit (commit only):** one `contacts_imported` record per organization written to (plus one with `organization_id: null` for rows whose organization could not be resolved): `tenant_id`, `organization_id`, `format`, `total_rows`, `inserted`, `skipped_duplicates`, `error_rows`, `file_rows` — counts only.
 
 ---
 

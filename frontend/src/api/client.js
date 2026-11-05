@@ -22,6 +22,10 @@ function getToken() {
   return localStorage.getItem('enrs_token');
 }
 
+function isSuperAdmin() {
+  try { return JSON.parse(localStorage.getItem('enrs_user') || 'null')?.role === 'SUPER_ADMIN'; } catch { return false; }
+}
+
 function getActiveTenantId() {
   try {
     const user = JSON.parse(localStorage.getItem('enrs_user') || 'null');
@@ -156,13 +160,17 @@ export const api = {
     roles:      ()       => request('GET',    '/contacts/roles'),
     exportCsv:  (q)      => request('GET',    `/contacts/export?${qs(q || {})}`, undefined, { blob: true }),
     bulkDelete: (ids)    => request('POST',   '/contacts/bulk-delete', { ids }),
-    bulkUpload: (orgId, file) => {
+    importTemplate: (format) => request('GET', `/contacts/import-template?${qs({ format })}`, undefined, { blob: true }),
+    // opts.mode: 'preview' (check only) | 'commit'; opts.tenantId: explicit target tenant
+    // (SUPER_ADMIN under All Tenants). orgId: only for files without an organization column.
+    bulkUpload: (orgId, file, opts = {}) => {
       const fd = new FormData();
       fd.append('file', file);
-      fd.append('organization_id', orgId);
+      if (orgId) fd.append('organization_id', orgId);
+      if (opts.mode) fd.append('mode', opts.mode);
       // request() does not add the selected tenant to multipart bodies; the server must
-      // still see it so a SUPER_ADMIN with a tenant selected imports only into that tenant.
-      const tenantId = getActiveTenantId();
+      // still see it so a SUPER_ADMIN imports only into the selected or chosen tenant.
+      const tenantId = getActiveTenantId() || (opts.tenantId && isSuperAdmin() ? Number(opts.tenantId) : null);
       if (tenantId) fd.append('tenant_id', tenantId);
       return request('POST', '/contacts/bulk-upload', fd);
     },

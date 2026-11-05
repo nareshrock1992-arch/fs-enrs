@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { parse } from 'csv-parse/sync';
+import { readTabularFile } from '../utils/tabularFile.js';
 import { query, withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { effectiveTenantId } from '../middleware/tenantScope.js';
+import { effectiveTenantId, validateTargetTenant } from '../middleware/tenantScope.js';
 import { toCsv } from '../utils/csv.js';
+import { buildWorkbook, columnLetter } from '../utils/xlsxWriter.js';
 import { logger } from '../infrastructure/index.js';
 
 // ── Audit trail ──────────────────────────────────────────────────────────────
@@ -430,122 +431,424 @@ export const bulkDeleteContacts = asyncHandler(async (req, res) => {
   });
 });
 
-// ── CSV import ───────────────────────────────────────────────────────────────
-// Accepted columns: first_name, last_name, mobile_number, extension_number, email, role,
-// optional is_active (true/false/yes/no/1/0). Header names are case-insensitive;
-// "phone"/"mobile" and "extension" are accepted as aliases. Other columns are ignored.
+// ── Bulk import (CSV and Excel) and import templates ─────────────────────────
+// One pipeline for both formats: utils/tabularFile.js turns the upload (.csv or .xlsx)
+// into numbered rows; everything below is the same for both.
+//
+// Columns (header names case-insensitive; "phone"/"mobile" and "extension" are accepted
+// as aliases; other columns are ignored): first_name, last_name, mobile_number,
+// extension_number, email, role, organization, department, location, is_active.
+//
+// Organization: with an `organization` column every row names its organization, resolved
+// by name among the live organizations of the target tenant — a tenant user's own tenant,
+// or the tenant a SUPER_ADMIN selected / chose explicitly (never a value from the file).
+// Without the column (older CSV files) the organization chosen in the import dialog is
+// used. A value that cannot be resolved is a row error; there is no fallback.
+// Department / location: resolved by name within the row's organization.
 //
 // Duplicate detection: a row is skipped as a duplicate when a live contact of the same
 // organization (or an earlier row of the same file) has the same first and last name
 // (case-insensitive, trimmed) and the same mobile and extension numbers, compared with
-// spaces, dots, dashes and brackets removed. Imports into the same organization are
-// serialised with a transaction-scoped advisory lock, so two concurrent imports cannot
-// both insert the same person. Contacts created one by one at the same moment are not
-// covered (there is no database uniqueness constraint).
+// spaces, dots, dashes and brackets removed. Imports are serialised per organization
+// with transaction-scoped advisory locks (taken in id order), so two concurrent imports
+// cannot both insert the same person. Contacts created one by one at the same moment are
+// not covered (there is no database uniqueness constraint).
+//
+// mode=preview runs every check without writing; mode=commit (default) re-runs them in
+// the transaction and inserts the valid rows. Limits: 5 MB (route), 10,000 data rows,
+// workbook archive limits below.
+
+export const IMPORT_MAX_ROWS = 10000;
+const IMPORT_ZIP_LIMITS = { maxEntries: 200, maxEntryBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 };
+export const IMPORT_SHEET = 'Emergency Contacts';
+export const IMPORT_FIELDS = ['first_name', 'last_name', 'mobile_number', 'extension_number', 'email',
+  'role', 'organization', 'department', 'location', 'is_active'];
+const FIELD_LABEL = {
+  first_name: 'First name', last_name: 'Last name', mobile_number: 'Mobile number',
+  extension_number: 'Extension number', email: 'Email', role: 'Role', organization: 'Organization',
+  department: 'Department', location: 'Location', is_active: 'Status (is_active)',
+};
 
 const HEADER_ALIASES = { phone: 'mobile_number', mobile: 'mobile_number', extension: 'extension_number' };
-
-function importHeaders(header) {
-  const names = header.map(h => String(h).trim().toLowerCase());
-  return names.map(n => (HEADER_ALIASES[n] && !names.includes(HEADER_ALIASES[n]) ? HEADER_ALIASES[n] : n));
-}
-
 const ACTIVE_WORDS = { true: true, yes: true, 1: true, active: true, false: false, no: false, 0: false, inactive: false };
-
-function importRow(row) {
-  const out = { ...row };
-  if (row.is_active === undefined || row.is_active === '') delete out.is_active;
-  else {
-    const v = ACTIVE_WORDS[String(row.is_active).trim().toLowerCase()];
-    out.is_active = v === undefined ? row.is_active : v;
-  }
-  return out;
-}
 
 const normName  = (v) => String(v ?? '').trim().toLowerCase();
 const normPhone = (v) => String(v ?? '').replace(/[\s().-]/g, '');
 const dupKey = (r) => [normName(r.first_name), normName(r.last_name),
   normPhone(r.mobile_number), normPhone(r.extension_number)].join('\u0000');
 
-function rowError(err) {
-  if (err?.name === 'ZodError') {
-    return err.errors.map(e => (e.path.length ? `${e.path.join('.')}: ${e.message}` : e.message)).join('; ');
-  }
-  return err?.message || 'Could not be saved';
+// The template's example rows. An unchanged example row (all ten columns exactly as in
+// the template; is_active compared as true/false) is refused, so a forgotten example can
+// never be imported. A real contact that merely shares some example values is not affected.
+export const TEMPLATE_EXAMPLES = [
+  { first_name: 'User1', last_name: 'Test', mobile_number: '1000', extension_number: '1000', email: '', role: 'IT',
+    organization: 'Default Organization', department: 'IT', location: '', is_active: 'true' },
+  { first_name: 'User2', last_name: 'Test', mobile_number: '1001', extension_number: '1001', email: '', role: '',
+    organization: 'Default Organization', department: 'IT', location: '', is_active: 'true' },
+  { first_name: 'User3', last_name: 'Test', mobile_number: '1002', extension_number: '1002', email: '', role: 'Security',
+    organization: 'Default Organization', department: 'IT', location: 'Bengaluru', is_active: 'true' },
+  { first_name: 'User4', last_name: 'Test', mobile_number: '1003', extension_number: '1003', email: '', role: '',
+    organization: 'Default Organization', department: 'IT', location: '', is_active: 'true' },
+];
+const exampleKey = (r) => IMPORT_FIELDS.map((f) => {
+  const v = String(r[f] ?? '').trim();
+  return f === 'is_active' ? String(ACTIVE_WORDS[v.toLowerCase()] ?? v) : v;
+}).join('\u0000');
+const EXAMPLE_KEYS = new Set(TEMPLATE_EXAMPLES.map(exampleKey));
+
+// Header row → column index of every known field.
+function mapHeader(values) {
+  const names = values.map((h) => String(h ?? '').trim().toLowerCase());
+  const canonical = names.map((n) => (HEADER_ALIASES[n] && !names.includes(HEADER_ALIASES[n]) ? HEADER_ALIASES[n] : n));
+  const cols = {};
+  const repeated = new Set();
+  canonical.forEach((n, i) => {
+    if (!IMPORT_FIELDS.includes(n)) return;
+    if (cols[n] !== undefined) repeated.add(n); else cols[n] = i;
+  });
+  if (repeated.size) throw badRequest(`The column ${[...repeated].join(', ')} appears more than once in the header row`);
+  const missing = ['first_name', 'last_name'].filter((f) => cols[f] === undefined);
+  if (cols.mobile_number === undefined && cols.extension_number === undefined) missing.push('mobile_number or extension_number');
+  if (missing.length) throw badRequest(`Missing required column: ${missing.join(', ')}. Keep the header row of the import template.`);
+  return { cols, named: canonical.map((n) => n !== '') };
 }
 
-// POST /api/v1/contacts/bulk-upload
-export const bulkUpload = asyncHandler(async (req, res) => {
-  if (req.body.organization_id === undefined || req.body.organization_id === '') {
-    return res.status(400).json({ error: 'organization_id required' });
+// Zod issues → administrator-friendly sentences.
+function friendlyIssues(error) {
+  return error.errors.map((i) => {
+    const f = i.path[0];
+    if (!f) return i.message === MOBILE_OR_EXTENSION ? 'Both mobile number and extension number are empty' : i.message;
+    const label = FIELD_LABEL[f] || f;
+    if (i.code === 'too_small') return `${label} is required`;
+    if (i.code === 'too_big') return `${label} is longer than ${i.maximum} characters`;
+    if (i.code === 'invalid_string' && i.validation === 'email') return 'Email is not a valid email address';
+    if (i.code === 'invalid_type' && (i.received === 'null' || i.received === 'undefined')) return `${label} is required`;
+    return `${label}: ${i.message}`;
+  });
+}
+
+// Target tenant and organization context of an import (authorization rules above).
+async function importContext(req, cols) {
+  const scope = effectiveTenantId(req);
+  if (req.user.role === 'SUPER_ADMIN' && scope !== null) await validateTargetTenant(query, scope);
+  if (cols.organization !== undefined) {
+    if (scope === null) throw badRequest('Select the target tenant for this import: the file has an organization column');
+    return { perRow: true, tenantId: scope };
   }
-  const orgId = optionalId(req.body.organization_id, 'organization_id');
-  if (!req.file) return res.status(400).json({ error: 'CSV file required' });
-
-  const org = await verifyContactRefs(query, effectiveTenantId(req), orgId);
-
-  let records;
-  try {
-    records = parse(req.file.buffer, {
-      columns: importHeaders, bom: true, skip_empty_lines: true, trim: true,
-    });
-  } catch (err) {
-    return res.status(400).json({ error: `The CSV file could not be read: ${err.message}` });
+  const raw = req.body.organization_id;
+  if (raw === undefined || raw === '') {
+    throw badRequest('Choose the organization for this file in the import dialog: the file has no organization column');
   }
+  const org = await verifyContactRefs(query, scope, optionalId(raw, 'organization_id'));
+  return { perRow: false, tenantId: org.tenant_id, fallbackOrg: { id: org.id } };
+}
 
-  const result = await withTransaction(async (tq) => {
-    await tq(`SELECT pg_advisory_xact_lock(hashtext('enrs:contacts-import'), $1)`, [orgId]);
-    const { rows: existing } = await tq(
-      `SELECT first_name, last_name, mobile_number, extension_number
-       FROM emergency_contacts WHERE organization_id = $1 AND deleted_at IS NULL`,
-      [orgId]);
-    const seen = new Map(existing.map(r => [dupKey(r), 0]));
+function byName(list) {
+  const map = new Map();
+  for (const x of list) {
+    const k = normName(x.name);
+    map.set(k, [...(map.get(k) || []), x]);
+  }
+  return map;
+}
 
-    let inserted = 0;
-    const errors = [];
-    const duplicates = [];
-    for (const [i, row] of records.entries()) {
-      const line = i + 2;
-      let d;
-      try {
-        d = ContactSchema.parse({ ...importRow(row), organization_id: orgId });
-      } catch (err) {
-        errors.push({ line, error: rowError(err) });
-        continue;
+// Organizations of the target tenant (or the chosen one) and their departments / locations.
+async function loadDirectory(q, ctx, cols) {
+  const orgs = ctx.perRow
+    ? (await q(`SELECT id, name FROM organizations WHERE tenant_id = $1 AND deleted_at IS NULL`, [ctx.tenantId])).rows
+    : [ctx.fallbackOrg];
+  const ids = orgs.map((o) => o.id);
+  const children = async (table, needed) => {
+    const lists = new Map(ids.map((id) => [id, []]));
+    if (needed && ids.length) {
+      const { rows } = await q(`SELECT id, organization_id, name FROM ${table} WHERE organization_id = ANY($1::int[]) AND deleted_at IS NULL`, [ids]);
+      for (const r of rows) lists.get(r.organization_id).push(r);
+    }
+    return new Map([...lists].map(([id, list]) => [id, byName(list)]));
+  };
+  return {
+    orgsByName: byName(orgs),
+    depts: await children('departments', cols.department !== undefined),
+    locs: await children('locations', cols.location !== undefined),
+  };
+}
+
+function resolveOne(index, name, notFound, ambiguous) {
+  const hits = index?.get(normName(name)) || [];
+  if (!hits.length) return { error: notFound };
+  if (hits.length > 1) return { error: ambiguous };
+  return { id: hits[0].id };
+}
+
+// Validate and resolve every data row. Returns [{ row, status: 'valid'|'invalid', errors?, orgId, record? }].
+function evaluateRows(table, header, ctx, dir) {
+  const { cols, named } = header;
+  const hasAllColumns = IMPORT_FIELDS.every((f) => cols[f] !== undefined);
+  return table.rows.map((r) => {
+    const get = (f) => (cols[f] === undefined ? '' : (r.values[cols[f]] ?? ''));
+    const problems = [];
+    for (const f of IMPORT_FIELDS) {
+      if (cols[f] === undefined) continue;
+      if (r.formulas.includes(cols[f])) problems.push(`${FIELD_LABEL[f]} contains a formula; enter the value itself`);
+      else if (r.errors.includes(cols[f])) problems.push(`${FIELD_LABEL[f]} contains a spreadsheet error value`);
+    }
+    // A formula or error cell has no usable value: report only that for the row.
+    if (problems.length) return { row: r.row, status: 'invalid', orgId: ctx.perRow ? null : ctx.fallbackOrg.id, errors: problems };
+    const stray = r.values.findIndex((v, i) => v !== '' && !named[i]);
+    if (stray >= 0) problems.push(`Column ${columnLetter(stray)} has a value but no column heading`);
+
+    if (hasAllColumns && EXAMPLE_KEYS.has(exampleKey(Object.fromEntries(IMPORT_FIELDS.map((f) => [f, get(f)]))))) {
+      return { row: r.row, status: 'invalid', orgId: null, errors: ['This is an example row from the template; remove it before importing'] };
+    }
+
+    const input = {
+      organization_id: 1, // replaced by the resolved organization below
+      first_name: get('first_name'), last_name: get('last_name'), role: get('role'),
+      mobile_number: get('mobile_number'), extension_number: get('extension_number'), email: get('email'),
+    };
+    const active = get('is_active');
+    if (active !== '') {
+      const v = ACTIVE_WORDS[active.toLowerCase()];
+      if (v === undefined) problems.push('Status (is_active) must be true/false, yes/no or 1/0'); else input.is_active = v;
+    }
+    if (!input.mobile_number && !input.extension_number) problems.push('Both mobile number and extension number are empty');
+    const parsed = ContactSchema.safeParse(input);
+    if (!parsed.success) problems.push(...friendlyIssues(parsed.error));
+
+    let orgId = null;
+    if (ctx.perRow) {
+      const name = get('organization');
+      if (!name) problems.push('Organization is required');
+      else {
+        const o = resolveOne(dir.orgsByName, name, 'Organization not found', 'Organization name matches more than one organization');
+        if (o.error) problems.push(o.error); else orgId = o.id;
       }
-      const key = dupKey(d);
-      if (seen.has(key)) {
-        const first = seen.get(key);
-        duplicates.push({ line, reason: first ? `Same contact as line ${first}` : 'Contact already exists' });
-        continue;
+    } else {
+      orgId = ctx.fallbackOrg.id;
+    }
+    let deptId = null;
+    let locId = null;
+    if (orgId !== null) {
+      if (get('department')) {
+        const d = resolveOne(dir.depts.get(orgId), get('department'),
+          'Department does not belong to the specified organization', 'Department name matches more than one department of the organization');
+        if (d.error) problems.push(d.error); else deptId = d.id;
       }
-      await tq('SAVEPOINT contact_row');
-      try {
-        await tq(
-          `INSERT INTO emergency_contacts
-             (organization_id, first_name, last_name, role, mobile_number,
-              extension_number, email, is_active)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [orgId, d.first_name, d.last_name, d.role, d.mobile_number,
-           d.extension_number, d.email, d.is_active]
-        );
-        await tq('RELEASE SAVEPOINT contact_row');
-        seen.set(key, line);
-        inserted++;
-      } catch (err) {
-        await tq('ROLLBACK TO SAVEPOINT contact_row');
-        errors.push({ line, error: rowError(err) });
+      if (get('location')) {
+        const l = resolveOne(dir.locs.get(orgId), get('location'),
+          'Location does not belong to the specified organization', 'Location name matches more than one location of the organization');
+        if (l.error) problems.push(l.error); else locId = l.id;
       }
     }
-    return { inserted, skipped: duplicates.length, duplicates, errors };
+    if (problems.length) return { row: r.row, status: 'invalid', orgId, errors: [...new Set(problems)] };
+    return { row: r.row, status: 'valid', orgId, record: { ...parsed.data, organization_id: orgId, department_id: deptId, location_id: locId } };
   });
+}
 
-  // Summary only: counts, never the file name, rows or contact details.
-  await auditContacts(req, 'contacts_imported', null, {
-    tenant_id: org.tenant_id, organization_id: orgId, total_rows: records.length,
-    inserted: result.inserted, skipped_duplicates: result.skipped, error_rows: result.errors.length,
+// Mark duplicates (existing live contacts of the same organization, or an earlier row).
+// With `lock`, the organizations are locked first (id order), inside the caller's transaction.
+async function markDuplicates(q, evaluated, { lock }) {
+  const orgIds = [...new Set(evaluated.filter((e) => e.status === 'valid').map((e) => e.orgId))].sort((a, b) => a - b);
+  if (lock) for (const id of orgIds) await q(`SELECT pg_advisory_xact_lock(hashtext('enrs:contacts-import'), $1)`, [id]);
+  const seen = new Map(orgIds.map((id) => [id, new Map()]));
+  if (orgIds.length) {
+    const { rows } = await q(
+      `SELECT organization_id, first_name, last_name, mobile_number, extension_number
+       FROM emergency_contacts WHERE organization_id = ANY($1::int[]) AND deleted_at IS NULL`, [orgIds]);
+    for (const r of rows) seen.get(r.organization_id).set(dupKey(r), 0);
+  }
+  for (const e of evaluated) {
+    if (e.status !== 'valid') continue;
+    const s = seen.get(e.orgId);
+    const key = dupKey(e.record);
+    if (s.has(key)) {
+      e.status = 'duplicate';
+      e.reason = s.get(key) ? `Same contact as row ${s.get(key)}` : 'Contact already exists';
+    } else {
+      s.set(key, e.row);
+    }
+  }
+}
+
+async function insertValidRows(tq, evaluated) {
+  for (const e of evaluated) {
+    if (e.status !== 'valid') continue;
+    const d = e.record;
+    await tq('SAVEPOINT contact_row');
+    try {
+      await tq(
+        `INSERT INTO emergency_contacts
+           (organization_id, department_id, location_id, first_name, last_name, role,
+            mobile_number, extension_number, email, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [d.organization_id, d.department_id, d.location_id, d.first_name, d.last_name, d.role,
+         d.mobile_number, d.extension_number, d.email, d.is_active]
+      );
+      await tq('RELEASE SAVEPOINT contact_row');
+      e.status = 'inserted';
+    } catch (err) {
+      await tq('ROLLBACK TO SAVEPOINT contact_row');
+      e.status = 'invalid';
+      e.errors = [err?.message || 'Could not be saved'];
+    }
+  }
+}
+
+function summarise(evaluated, format, preview) {
+  const errors = [];
+  const duplicates = [];
+  let inserted = 0;
+  let valid = 0;
+  for (const e of evaluated) {
+    if (e.status === 'invalid') errors.push({ line: e.row, error: e.errors.join('; ') });
+    else if (e.status === 'duplicate') duplicates.push({ line: e.row, reason: e.reason });
+    else if (e.status === 'inserted') inserted++;
+    else valid++;
+  }
+  return {
+    ...(preview ? { preview: true } : {}),
+    format, total: evaluated.length, valid: valid + inserted, invalid: errors.length,
+    inserted, skipped: duplicates.length, duplicates, errors,
+  };
+}
+
+// POST /api/v1/contacts/bulk-upload  (multipart: file, organization_id?, tenant_id?, mode?)
+export const bulkUpload = asyncHandler(async (req, res) => {
+  const started = Date.now();
+  const mode = String(req.body?.mode ?? req.query?.mode ?? 'commit').toLowerCase();
+  if (mode !== 'preview' && mode !== 'commit') throw badRequest('mode must be preview or commit');
+  if (!req.file) throw badRequest('A file is required: upload an Excel workbook (.xlsx) or a CSV file (.csv)');
+
+  const table = readTabularFile(req.file.buffer, {
+    filename: req.file.originalname, maxDataRows: IMPORT_MAX_ROWS, sheetName: IMPORT_SHEET, zip: IMPORT_ZIP_LIMITS,
   });
-  res.json({ ...result, total: records.length });
+  if (!table.header) throw badRequest('The file has no header row. Use the import template.');
+  const header = mapHeader(table.header.values);
+  const ctx = await importContext(req, header.cols);
+
+  let evaluated;
+  if (mode === 'preview') {
+    const dir = await loadDirectory(query, ctx, header.cols);
+    evaluated = evaluateRows(table, header, ctx, dir);
+    await markDuplicates(query, evaluated, { lock: false });
+  } else {
+    evaluated = await withTransaction(async (tq) => {
+      const dir = await loadDirectory(tq, ctx, header.cols);
+      const rows = evaluateRows(table, header, ctx, dir);
+      await markDuplicates(tq, rows, { lock: true });
+      await insertValidRows(tq, rows);
+      return rows;
+    });
+
+    // Audit: one summary per organization (counts only — never contact details or the file).
+    const groups = new Map();
+    for (const e of evaluated) {
+      const g = groups.get(e.orgId) || { total_rows: 0, inserted: 0, skipped_duplicates: 0, error_rows: 0 };
+      g.total_rows++;
+      if (e.status === 'inserted') g.inserted++;
+      else if (e.status === 'duplicate') g.skipped_duplicates++;
+      else if (e.status === 'invalid') g.error_rows++;
+      groups.set(e.orgId, g);
+    }
+    if (!groups.size) groups.set(ctx.perRow ? null : ctx.fallbackOrg.id, { total_rows: 0, inserted: 0, skipped_duplicates: 0, error_rows: 0 });
+    const order = [...groups.keys()].sort((a, b) => (a === null) - (b === null) || a - b);
+    for (const orgId of order) {
+      await auditContacts(req, 'contacts_imported', null, {
+        tenant_id: ctx.tenantId, organization_id: orgId, format: table.format, ...groups.get(orgId), file_rows: evaluated.length,
+      });
+    }
+  }
+
+  const result = summarise(evaluated, table.format, mode === 'preview');
+  logger.info({
+    module: 'contacts', mode, format: table.format, rows: result.total, valid: result.valid,
+    invalid: result.invalid, duplicates: result.skipped, inserted: result.inserted,
+    organizations: new Set(evaluated.map((e) => e.orgId).filter((id) => id !== null)).size,
+    durationMs: Date.now() - started,
+  }, mode === 'preview' ? 'Contacts import checked' : 'Contacts import committed');
+  res.json(result);
+});
+
+// ── Import templates ─────────────────────────────────────────────────────────
+
+const TEMPLATE_COLUMNS = [
+  { key: 'first_name', width: 16 }, { key: 'last_name', width: 16 },
+  { key: 'mobile_number', width: 18, format: 'text' }, { key: 'extension_number', width: 18, format: 'text' },
+  { key: 'email', width: 28 }, { key: 'role', width: 18 }, { key: 'organization', width: 26 },
+  { key: 'department', width: 20 }, { key: 'location', width: 20 }, { key: 'is_active', width: 12 },
+];
+const LAST_TEMPLATE_ROW = IMPORT_MAX_ROWS + 1;
+
+const TEMPLATE_RULES = [
+  'Enter one contact per row on the "Emergency Contacts" sheet.',
+  'Do not rename or remove the column headers.',
+  'first_name and last_name are mandatory.',
+  'At least one of mobile_number or extension_number is mandatory.',
+  'organization is mandatory: the exact name of an organization of the tenant you import into.',
+  'Department and location must belong to the selected organization.',
+  'Email is optional.',
+  'Role is optional.',
+  'is_active accepts true/false, yes/no, and 1/0 (blank means true).',
+  'Leave optional fields blank when not applicable.',
+  'Rows 2 to 5 (User1 Test to User4 Test) are sample records. Do not modify sample values without understanding that they are examples.',
+  'Remove the sample rows before uploading actual records. Unchanged sample rows are rejected.',
+  'Do not enter created_at or updated_at; the application manages these fields.',
+  'mobile_number and extension_number are text columns, so leading zeros, a leading + and long numbers are kept.',
+  'Save as Excel Workbook (.xlsx) or CSV UTF-8 (.csv). At most 10,000 contacts and 5 MB per file.',
+];
+const COLUMN_RULES = [
+  ['first_name', 'Required. Up to 64 characters.'],
+  ['last_name', 'Required. Up to 64 characters.'],
+  ['mobile_number', 'Required unless extension_number is filled in. Up to 32 characters.'],
+  ['extension_number', 'Required unless mobile_number is filled in. Up to 32 characters.'],
+  ['email', 'Optional. A valid e-mail address, up to 255 characters.'],
+  ['role', 'Optional. Up to 64 characters.'],
+  ['organization', 'Required. Name of an organization of the target tenant.'],
+  ['department', 'Optional. Name of a department of that organization.'],
+  ['location', 'Optional. Name of a location of that organization.'],
+  ['is_active', 'Optional. true/false, yes/no or 1/0; blank means true.'],
+];
+
+function templateWorkbook() {
+  return buildWorkbook([
+    {
+      name: IMPORT_SHEET,
+      columns: TEMPLATE_COLUMNS.map((c) => ({ header: c.key, key: c.key, width: c.width, format: c.format, empty: null })),
+      rows: TEMPLATE_EXAMPLES,
+      validations: [{
+        sqref: `J2:J${LAST_TEMPLATE_ROW}`, list: ['true', 'false'], errorStyle: 'information',
+        promptTitle: 'is_active', prompt: 'true or false (yes/no and 1/0 are also accepted; blank = true)',
+        errorTitle: 'is_active', error: 'Use true or false. yes/no and 1/0 are also accepted.',
+      }],
+      ignoredErrors: [{ sqref: `C2:D${LAST_TEMPLATE_ROW}`, numberStoredAsText: true }],
+    },
+    {
+      name: 'Instructions',
+      title: 'Emergency Contacts import — instructions',
+      items: [
+        { section: 'How to fill in the template' },
+        ...TEMPLATE_RULES.map((label) => ({ label, value: null, empty: null })),
+        { section: 'Columns' },
+        ...COLUMN_RULES.map(([label, value]) => ({ label, value })),
+      ],
+    },
+  ]);
+}
+
+// GET /api/v1/contacts/import-template?format=xlsx|csv — static: no tenant or contact data.
+export const importTemplate = asyncHandler(async (req, res) => {
+  const format = String(req.query.format ?? 'xlsx').toLowerCase();
+  res.setHeader('Cache-Control', 'no-store');
+  if (format === 'csv') {
+    const csv = toCsv(IMPORT_FIELDS, TEMPLATE_EXAMPLES.map((e) => IMPORT_FIELDS.map((f) => e[f])));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="emergency-contacts-template.csv"');
+    return res.send(String.fromCharCode(0xFEFF) + csv); // UTF-8 byte-order mark: Excel opens the file as UTF-8
+  }
+  if (format !== 'xlsx') throw badRequest('format must be xlsx or csv');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="emergency-contacts-template.xlsx"');
+  return res.send(templateWorkbook());
 });
 
 // GET /api/v1/contacts/by-pin?pin=XXX — DEPRECATED

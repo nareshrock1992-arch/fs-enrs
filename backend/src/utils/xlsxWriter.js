@@ -5,14 +5,20 @@
 // auto-filter, column widths, and real date / number / percent / duration cells.
 //
 // Missing data is never written as 0: a null value becomes the column's `empty` text
-// (default "Not recorded") in a muted style. Text uses inline strings, which Excel
-// never evaluates as formulas. Times are written in UTC; say so in the column heading.
+// (default "Not recorded") in a muted style; `empty: null` leaves the cell blank. Text
+// uses inline strings, which Excel never evaluates as formulas. Times are written in
+// UTC; say so in the column heading.
+//
+// Import templates (optional, additive): a column with `format: 'text'` uses the Text
+// number format for its cells and as the column default, so values typed later keep
+// leading zeros and long digit strings; a table sheet can carry drop-down `validations`
+// and `ignoredErrors` (e.g. "number stored as text" for those columns).
 
 import { URL } from 'url';
 import { Worker } from 'worker_threads';
 import { buildStoredZip } from './zipStore.js';
 
-const XF = { default: 0, header: 1, datetime: 2, int: 3, percent: 4, title: 5, label: 6, muted: 7, duration: 8, note: 9 };
+const XF = { default: 0, header: 1, datetime: 2, int: 3, percent: 4, title: 5, label: 6, muted: 7, duration: 8, note: 9, text: 10 };
 
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -35,6 +41,12 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </cellXfs>
 </styleSheet>`;
 
+// The same styles plus XF.text (built-in format 49 "@" = Text). Only workbooks that use a
+// text column get it, so every existing report keeps exactly the styles part above.
+const STYLES_WITH_TEXT = STYLES
+  .replace('<cellXfs count="10">', '<cellXfs count="11">')
+  .replace('</cellXfs>', '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>\n</cellXfs>');
+
 const escapeXml = (v) => String(v)
   // eslint-disable-next-line no-control-regex -- characters XML 1.0 cannot carry
   .replace(/[^\u0009\u000A\u000D -퟿-�]/g, '')
@@ -53,8 +65,8 @@ const numberCell = (ref, value, style) => `<c r="${ref}" s="${style}"><v>${value
 // Excel serial date: days since 1899-12-30.
 const excelDate = (d) => d.getTime() / 86_400_000 + 25569;
 
-function cell(ref, value, type, empty) {
-  if (value === null || value === undefined || value === '') return textCell(ref, empty, XF.muted);
+function cell(ref, value, type, empty, textStyle = XF.default) {
+  if (value === null || value === undefined || value === '') return empty === null ? '' : textCell(ref, empty, XF.muted);
   switch (type) {
     case 'datetime': {
       const d = value instanceof Date ? value : new Date(value);
@@ -63,9 +75,12 @@ function cell(ref, value, type, empty) {
     case 'int':      return Number.isFinite(Number(value)) ? numberCell(ref, Number(value), XF.int) : textCell(ref, empty, XF.muted);
     case 'percent':  return Number.isFinite(Number(value)) ? numberCell(ref, Number(value), XF.percent) : textCell(ref, empty, XF.muted);
     case 'duration': return Number.isFinite(Number(value)) ? numberCell(ref, Number(value) / 86_400, XF.duration) : textCell(ref, empty, XF.muted);
-    default:         return textCell(ref, value, XF.default);
+    default:         return textCell(ref, value, textStyle);
   }
 }
+
+// `empty` as given by the caller; only undefined means the default text.
+const emptyText = (empty) => (empty === undefined ? 'Not recorded' : empty);
 
 // Key/value worksheet: title, then label | value rows, then the chart's data rows (when the
 // sheet has a chart), then notes. Returns the XML and, with a chart, the rows it plots.
@@ -78,7 +93,7 @@ function summarySheetXml({ title, items = [], notes = [], chart }) {
       r += 1;
       rows.push(`<row r="${r}">${textCell(`A${r}`, it.section, XF.label)}</row>`);
     } else {
-      rows.push(`<row r="${r}">${textCell(`A${r}`, it.label, XF.default)}${cell(`B${r}`, it.value, it.type, it.empty ?? 'Not recorded')}</row>`);
+      rows.push(`<row r="${r}">${textCell(`A${r}`, it.label, XF.default)}${cell(`B${r}`, it.value, it.type, emptyText(it.empty))}</row>`);
     }
     r += 1;
   }
@@ -128,18 +143,37 @@ function pieChartXml(chart, sheetName, { first, last }) {
 <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}"><c:roundedCorners val="0"/><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>${escapeXml(chart.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/><c:pieChart><c:varyColors val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>${escapeXml(chart.title)}</c:v></c:tx>${points}<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/><c:showLeaderLines val="1"/></c:dLbls><c:cat><c:strRef><c:f>${escapeXml(`${sheetRef}!$A$${first}:$A$${last}`)}</c:f><c:strCache><c:ptCount val="${n}"/>${strPts}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>${escapeXml(`${sheetRef}!$B$${first}:$B$${last}`)}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${n}"/>${numPts}</c:numCache></c:numRef></c:val></c:ser><c:firstSliceAng val="0"/></c:pieChart></c:plotArea><c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>`;
 }
 
-// Table worksheet: frozen header row + auto-filter.
-function tableSheetXml({ columns, rows }) {
+// Drop-down lists: [{ sqref: 'J2:J10001', list: ['true', 'false'], errorStyle?: 'stop'|'warning'|'information',
+//   prompt?, promptTitle?, error?, errorTitle? }]. The list is written as a literal formula ("a,b").
+function validationsXml(validations = []) {
+  if (!validations.length) return '';
+  const one = (v) => {
+    const opt = (name, value) => (value ? ` ${name}="${escapeXml(value)}"` : '');
+    const list = `"${v.list.map((x) => String(x).replace(/[",]/g, '')).join(',')}"`;
+    return `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1"${opt('errorStyle', v.errorStyle)}${
+      opt('errorTitle', v.errorTitle)}${opt('error', v.error)}${opt('promptTitle', v.promptTitle)}${opt('prompt', v.prompt)} sqref="${escapeXml(v.sqref)}"><formula1>${escapeXml(list)}</formula1></dataValidation>`;
+  };
+  return `<dataValidations count="${validations.length}">${validations.map(one).join('')}</dataValidations>`;
+}
+
+// [{ sqref: 'C2:D10001', numberStoredAsText: true }]
+function ignoredErrorsXml(items = []) {
+  if (!items.length) return '';
+  return `<ignoredErrors>${items.map((e) => `<ignoredError sqref="${escapeXml(e.sqref)}"${e.numberStoredAsText ? ' numberStoredAsText="1"' : ''}/>`).join('')}</ignoredErrors>`;
+}
+
+// Table worksheet: frozen header row + auto-filter (+ optional text columns, validations).
+function tableSheetXml({ columns, rows, validations, ignoredErrors }) {
   const last = columnLetter(columns.length - 1);
   const header = columns.map((c, i) => textCell(`${columnLetter(i)}1`, c.header, XF.header)).join('');
   const body = rows.map((row, idx) => {
     const r = idx + 2;
-    const cells = columns.map((c, i) => cell(`${columnLetter(i)}${r}`, row[c.key], c.type, c.empty ?? 'Not recorded')).join('');
+    const cells = columns.map((c, i) => cell(`${columnLetter(i)}${r}`, row[c.key], c.type, emptyText(c.empty), c.format === 'text' ? XF.text : XF.default)).join('');
     return `<row r="${r}">${cells}</row>`;
   }).join('');
-  const widths = columns.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${c.width ?? 16}" customWidth="1"/>`).join('');
+  const widths = columns.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${c.width ?? 16}"${c.format === 'text' ? ` style="${XF.text}"` : ''} customWidth="1"/>`).join('');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/></sheetView></sheetViews><cols>${widths}</cols><sheetData><row r="1" ht="30" customHeight="1">${header}</row>${body}</sheetData><autoFilter ref="A1:${last}${rows.length + 1}"/></worksheet>`;
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/></sheetView></sheetViews><cols>${widths}</cols><sheetData><row r="1" ht="30" customHeight="1">${header}</row>${body}</sheetData><autoFilter ref="A1:${last}${rows.length + 1}"/>${validationsXml(validations)}${ignoredErrorsXml(ignoredErrors)}</worksheet>`;
 }
 
 // Excel forbids these characters and more than 31 characters; names must be unique.
@@ -156,8 +190,11 @@ function sheetNames(sheets) {
 
 /**
  * @param sheets [{ name, title, items, notes, chart }]   summary sheet, or
- *               [{ name, columns: [{ header, key, type, width, empty }], rows }]  table sheet
+ *               [{ name, columns: [{ header, key, type, width, empty, format }], rows,
+ *                  validations?, ignoredErrors? }]  table sheet
  *               type: 'text' (default) | 'int' | 'percent' (0–1) | 'datetime' | 'duration' (seconds)
+ *               empty: text for a missing value (default "Not recorded"; null = blank cell)
+ *               format: 'text' → Text number format for the column (import templates)
  *               chart (optional, summary sheet): { title, dataTitle?, rows: [{ label, value, color? (RRGGBB) }] }
  *               → a pie chart beside the summary, plotting those rows (also written on the sheet)
  * @returns Buffer  an .xlsx file
@@ -190,7 +227,7 @@ export function buildWorkbook(sheets) {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${
       sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
     }<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
-    { name: 'xl/styles.xml', text: STYLES },
+    { name: 'xl/styles.xml', text: sheets.some((s) => s.columns?.some((c) => c.format === 'text')) ? STYLES_WITH_TEXT : STYLES },
     ...built.map((b, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: b.xml })),
     ...chartParts,
   ];

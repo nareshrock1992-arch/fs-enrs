@@ -111,13 +111,39 @@ export function orgLabel(org, showTenant) {
   return showTenant && org.tenant_name ? `${org.name} — ${org.tenant_name}` : org.name;
 }
 
-// ── CSV import ───────────────────────────────────────────────────────────────
+// ── Import (CSV and Excel) ────────────────────────────────────────────────────
 
-/** The columns the server accepts (backend/src/controllers/contactController.js). */
-export const IMPORT_COLUMNS = ['first_name', 'last_name', 'mobile_number', 'extension_number', 'email', 'role', 'is_active'];
+/** Template columns, in template order (the server's IMPORT_FIELDS; the templates are downloaded from the server). */
+export const TEMPLATE_COLUMNS = ['first_name', 'last_name', 'mobile_number', 'extension_number', 'email',
+  'role', 'organization', 'department', 'location', 'is_active'];
 
-export function importTemplate() {
-  return `${IMPORT_COLUMNS.join(',')}\r\nJane,Doe,+966501234567,1001,jane.doe@example.com,Security,true\r\n`;
+/** File picker filter and the server's upload limit. */
+export const IMPORT_ACCEPT = '.xlsx,.csv';
+export const IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Problem with the chosen file before it is sent (the server checks again), or null. */
+export function checkImportFile(file) {
+  if (!file) return 'Choose a file to import.';
+  const ext = (/\.([^.]+)$/.exec(file.name || '')?.[1] || '').toLowerCase();
+  if (ext !== 'xlsx' && ext !== 'csv') return 'Only Excel workbooks (.xlsx) and CSV files (.csv) can be imported.';
+  if (!file.size) return 'The file is empty.';
+  if (file.size > IMPORT_MAX_BYTES) return 'The file is larger than 5 MB.';
+  return null;
+}
+
+/** Counts of an import check (preview) or of a finished import. */
+export function importCounts(result) {
+  if (!result) return null;
+  const invalid = result.invalid ?? result.errors?.length ?? 0;
+  const duplicates = result.skipped ?? result.duplicates?.length ?? 0;
+  const inserted = result.inserted ?? 0;
+  return {
+    total: result.total ?? 0,
+    valid: result.preview ? (result.valid ?? 0) : inserted,
+    invalid,
+    duplicates,
+    inserted,
+  };
 }
 
 /** One line of text for an import problem ({ line, error } or { line, reason }), whatever its shape. */
@@ -126,5 +152,5 @@ export function importIssueText(issue) {
   if (typeof issue !== 'object') return String(issue);
   const msg = issue.error ?? issue.reason ?? '';
   const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
-  return issue.line ? `Line ${issue.line}: ${text}` : text;
+  return issue.line ? `Row ${issue.line}: ${text}` : text;
 }

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { can, visibleNav } from '../auth/permissions.js';
+import { can, visibleNav, needsTenantSelection } from '../auth/permissions.js';
 import { NAV } from '../components/layout/navigation.js';
 import {
   COLUMNS, DEFAULT_PREFS, PAGE_SIZES, prefsKey, loadPrefs, savePrefs, choosableColumns, visibleColumns,
   toggleColumn, nextSort, ariaSort, buildQuery, hasActiveFilters, EMPTY_FILTERS, cellText,
-  IMPORT_COLUMNS, importTemplate, importIssueText, orgLabel,
+  TEMPLATE_COLUMNS, IMPORT_ACCEPT, IMPORT_MAX_BYTES, checkImportFile, importCounts, importIssueText, orgLabel,
 } from '../pages/contacts/contactTable.js';
 
 const memoryStorage = () => {
@@ -114,18 +114,50 @@ describe('cells', () => {
   });
 });
 
-describe('CSV import help (D1, D2)', () => {
-  it('documents exactly the columns the server reads', () => {
-    expect(IMPORT_COLUMNS).toEqual(['first_name', 'last_name', 'mobile_number', 'extension_number', 'email', 'role', 'is_active']);
-    expect(importTemplate().split('\r\n')[0]).toBe(IMPORT_COLUMNS.join(','));
-    expect(importTemplate()).not.toMatch(/\bphone\b|\bpin\b/);
+describe('import help, file checks and results', () => {
+  it('lists the template columns in template order (the templates themselves come from the server)', () => {
+    expect(TEMPLATE_COLUMNS).toEqual(['first_name', 'last_name', 'mobile_number', 'extension_number', 'email',
+      'role', 'organization', 'department', 'location', 'is_active']);
+    expect(IMPORT_ACCEPT).toBe('.xlsx,.csv');
   });
-  it('turns any row problem into one line of text (never an object)', () => {
-    expect(importIssueText({ line: 4, error: 'mobile required' })).toBe('Line 4: mobile required');
-    expect(importIssueText({ line: 2, reason: 'Contact already exists' })).toBe('Line 2: Contact already exists');
-    expect(importIssueText({ line: 5, error: { nested: true } })).toBe('Line 5: {"nested":true}');
+
+  it('checks the chosen file before it is sent (type and 5 MB limit)', () => {
+    const f = (name, size) => ({ name, size });
+    expect(checkImportFile(null)).toBe('Choose a file to import.');
+    expect(checkImportFile(f('contacts.xlsx', 100))).toBeNull();
+    expect(checkImportFile(f('CONTACTS.CSV', 100))).toBeNull();
+    expect(checkImportFile(f('old.xls', 100))).toMatch(/Only Excel workbooks \(\.xlsx\) and CSV files/);
+    expect(checkImportFile(f('macro.xlsm', 100))).toMatch(/Only Excel workbooks/);
+    expect(checkImportFile(f('noextension', 100))).toMatch(/Only Excel workbooks/);
+    expect(checkImportFile(f('empty.csv', 0))).toBe('The file is empty.');
+    expect(checkImportFile(f('big.xlsx', IMPORT_MAX_BYTES + 1))).toBe('The file is larger than 5 MB.');
+    expect(checkImportFile(f('max.xlsx', IMPORT_MAX_BYTES))).toBeNull();
+  });
+
+  it('counts a check (preview) and a finished import', () => {
+    expect(importCounts(null)).toBeNull();
+    const preview = { preview: true, total: 10, valid: 6, invalid: 3, skipped: 1, inserted: 0, errors: [], duplicates: [] };
+    expect(importCounts(preview)).toEqual({ total: 10, valid: 6, invalid: 3, duplicates: 1, inserted: 0 });
+    const done = { total: 10, valid: 5, invalid: 4, skipped: 1, inserted: 5, errors: [], duplicates: [] };
+    expect(importCounts(done)).toEqual({ total: 10, valid: 5, invalid: 4, duplicates: 1, inserted: 5 });
+    // an older server response without the new counters
+    expect(importCounts({ inserted: 2, total: 4, errors: [{}], duplicates: [{}] })).toEqual({ total: 4, valid: 2, invalid: 1, duplicates: 1, inserted: 2 });
+  });
+
+  it('turns any row problem into one line of text with the spreadsheet row number (never an object)', () => {
+    expect(importIssueText({ line: 4, error: 'First name is required' })).toBe('Row 4: First name is required');
+    expect(importIssueText({ line: 2, reason: 'Contact already exists' })).toBe('Row 2: Contact already exists');
+    expect(importIssueText({ line: 5, error: { nested: true } })).toBe('Row 5: {"nested":true}');
     expect(importIssueText('plain')).toBe('plain');
     expect(importIssueText(null)).toBe('');
+  });
+
+  it('SUPER_ADMIN under All Tenants must pick a target tenant; with a tenant selected, or as ADMIN, not', () => {
+    expect(needsTenantSelection({ role: 'SUPER_ADMIN' }, null)).toBe(true);
+    expect(needsTenantSelection({ role: 'SUPER_ADMIN' }, 3)).toBe(false);
+    expect(needsTenantSelection({ role: 'ADMIN' }, null)).toBe(false);
+    expect(can({ role: 'SUPER_ADMIN' }, 'contacts.edit')).toBe(true);     // import / templates offered to SUPER_ADMIN
+    expect(can({ role: 'OPERATOR' }, 'contacts.edit')).toBe(false);       // not to read-only roles
   });
 });
 
@@ -168,5 +200,31 @@ describe('CSV upload carries the selected tenant (multipart)', () => {
     setUser({ role: 'ADMIN' }, { id: 9 });
     await api.contacts.bulkUpload(3, new Blob(['a']));
     expect(sent.get('tenant_id')).toBeNull();
+    await api.contacts.bulkUpload(undefined, new Blob(['a']), { mode: 'preview', tenantId: 9 });
+    expect(sent.get('tenant_id')).toBeNull();                              // explicit target only for SUPER_ADMIN
+  });
+
+  it('sends the mode, the organization only when chosen, and an explicit target tenant under All Tenants', async () => {
+    const { api } = await import('../api/client.js');
+    setUser({ role: 'SUPER_ADMIN' }, null);
+    await api.contacts.bulkUpload(undefined, new Blob(['a']), { mode: 'preview', tenantId: '12' });
+    expect(sent.get('mode')).toBe('preview');
+    expect(sent.get('organization_id')).toBeNull();
+    expect(sent.get('tenant_id')).toBe('12');
+    setUser({ role: 'SUPER_ADMIN' }, { id: 7 });
+    await api.contacts.bulkUpload(4, new Blob(['a']), { mode: 'commit', tenantId: '12' });
+    expect(sent.get('tenant_id')).toBe('7');                               // the selected tenant wins
+    expect(sent.get('organization_id')).toBe('4');
+    expect(sent.get('mode')).toBe('commit');
+  });
+
+  it('downloads the templates from the server as files', async () => {
+    const urls = [];
+    vi.stubGlobal('fetch', vi.fn(async (url) => { urls.push(url); return { ok: true, status: 200, blob: async () => new Blob(['x']) }; }));
+    const { api } = await import('../api/client.js');
+    setUser({ role: 'ADMIN' }, null);
+    expect(await api.contacts.importTemplate('xlsx')).toBeInstanceOf(Blob);
+    await api.contacts.importTemplate('csv');
+    expect(urls.map((u) => u.replace(/^.*\/api\/v1/, ''))).toEqual(['/contacts/import-template?format=xlsx', '/contacts/import-template?format=csv']);
   });
 });

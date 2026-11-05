@@ -1,6 +1,6 @@
 import { notify } from '../../components/ui/Toast.jsx';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Pencil, Trash2, Upload, CheckCircle2, XCircle, Search, ArrowUp, ArrowDown, ChevronsUpDown, Download, Users } from 'lucide-react';
+import { Plus, Pencil, Trash2, Upload, CheckCircle2, XCircle, Search, ArrowUp, ArrowDown, ChevronsUpDown, Users } from 'lucide-react';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { api } from '../../api/client.js';
 import { useAuthStore } from '../../store/authStore.js';
@@ -10,12 +10,13 @@ import Pagination from '../../components/ui/Pagination.jsx';
 import ExportButton from '../../components/ui/ExportButton.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
 import { confirmAction } from '../../components/ui/ConfirmDialog.jsx';
-import { can } from '../../auth/permissions.js';
+import { can, needsTenantSelection } from '../../auth/permissions.js';
 import ColumnChooser from './ColumnChooser.jsx';
 import {
-  PAGE_SIZES, DEFAULT_PREFS, EMPTY_FILTERS, IMPORT_COLUMNS,
+  PAGE_SIZES, DEFAULT_PREFS, EMPTY_FILTERS, TEMPLATE_COLUMNS, IMPORT_ACCEPT,
   loadPrefs, savePrefs, choosableColumns, visibleColumns, toggleColumn,
-  nextSort, ariaSort, hasActiveFilters, buildQuery, cellText, importTemplate, importIssueText, orgLabel,
+  nextSort, ariaSort, hasActiveFilters, buildQuery, cellText, importIssueText, orgLabel,
+  checkImportFile, importCounts,
 } from './contactTable.js';
 
 const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_number: '', extension_number: '', email: '', role: '', department_id: '', location_id: '' };
@@ -25,6 +26,168 @@ function SortIcon({ dir }) {
   if (dir === 'ascending')  return <ArrowUp size={11} aria-hidden="true" />;
   if (dir === 'descending') return <ArrowDown size={11} aria-hidden="true" />;
   return <ChevronsUpDown size={11} className="opacity-40" aria-hidden="true" />;
+}
+
+const XLSX_TEMPLATE = 'emergency-contacts-template.xlsx';
+const CSV_TEMPLATE = 'emergency-contacts-template.csv';
+
+// Counts and row messages of an import check (preview) or of a finished import.
+function ImportReport({ result }) {
+  const c = importCounts(result);
+  const preview = !!result.preview;
+  const cell = (label, value, tone = '') => (
+    <div className="rounded-lg bg-surface-hover px-2 py-1.5">
+      <dt className="text-[10px] uppercase tracking-wide text-text-muted">{label}</dt>
+      <dd className={`text-base font-semibold tabular-nums ${tone}`}>{value}</dd>
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-surface-border p-3 text-sm space-y-2" aria-live="polite">
+      <p className={`flex items-center gap-2 font-medium ${preview ? 'text-text-primary' : 'text-green-500'}`}>
+        {preview ? 'File checked — nothing has been imported yet.'
+          : <><CheckCircle2 size={14} aria-hidden="true" /> {c.inserted} of {c.total} rows imported</>}
+      </p>
+      <dl className="grid grid-cols-4 gap-2 text-center">
+        {cell('Rows', c.total)}
+        {cell(preview ? 'Valid' : 'Imported', c.valid, 'text-green-500')}
+        {cell('Invalid', c.invalid, c.invalid ? 'text-red-500' : '')}
+        {cell('Duplicates', c.duplicates)}
+      </dl>
+      {preview && (c.invalid > 0 || c.duplicates > 0) && (
+        <p className="text-xs text-text-muted">
+          Rows with errors and duplicates are not imported. Fix the file and check it again, or import only the valid rows.
+        </p>
+      )}
+      {result.errors?.length > 0 && (
+        <details className="text-xs mt-1" open>
+          <summary className="cursor-pointer text-red-500">{result.errors.length} row{result.errors.length === 1 ? '' : 's'} with errors</summary>
+          <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-48 overflow-y-auto text-text-muted">
+            {result.errors.map((e, i) => <li key={i}>{importIssueText(e)}</li>)}
+          </ul>
+        </details>
+      )}
+      {result.duplicates?.length > 0 && (
+        <details className="text-xs mt-1">
+          <summary className="cursor-pointer text-text-muted">{result.duplicates.length} duplicate{result.duplicates.length === 1 ? '' : 's'} (not imported)</summary>
+          <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto text-text-muted">
+            {result.duplicates.map((d, i) => <li key={i}>{importIssueText(d)}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// Import dialog: choose (target tenant and) file → "Check file" (nothing written) → confirm.
+function ImportDialog({ orgs, allTenants, initialOrg, onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [fileError, setFileError] = useState('');
+  const [orgId, setOrgId] = useState(initialOrg || '');
+  const [tenants, setTenants] = useState([]);
+  const [tenantId, setTenantId] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+
+  useEffect(() => {
+    if (!allTenants) return;
+    api.tenants.list().then((d) => setTenants(d.tenants || [])).catch((e) => setError(`Tenants could not be loaded: ${e.message}`));
+  }, [allTenants]);
+
+  const reset = () => { setPreview(null); setResult(null); setError(''); };
+  const missingTenant = allTenants && !tenantId;
+  const tenantOrgs = allTenants ? orgs.filter((o) => tenantId && String(o.tenant_id) === String(tenantId)) : orgs;
+  const counts = importCounts(preview);
+
+  function chooseFile(e) {
+    const f = e.target.files?.[0] || null;
+    setFile(f);
+    setFileError(f ? (checkImportFile(f) || '') : '');
+    reset();
+  }
+
+  async function send(mode) {
+    const problem = checkImportFile(file);
+    if (problem) { setFileError(problem); return; }
+    if (missingTenant) { setError('Select the target tenant first.'); return; }
+    setBusy(mode); setError('');
+    try {
+      const res = await api.contacts.bulkUpload(orgId || undefined, file, { mode, tenantId: allTenants ? tenantId : undefined });
+      if (mode === 'preview') { setPreview(res); setResult(null); } else { setResult(res); setPreview(null); onImported(); }
+    } catch (e) { setError(e.message); } finally { setBusy(''); }
+  }
+
+  return (
+    <Modal title="Import Contacts" onClose={onClose} size="lg">
+      <div className="space-y-4">
+        <div className="text-sm text-text-muted space-y-2">
+          <p>
+            Download a template, enter one contact per row, save it as an Excel Workbook (.xlsx) or CSV,
+            then upload it here. The file is checked first; nothing is imported until you confirm.
+          </p>
+          <p className="text-xs">
+            Columns: <code className="bg-surface-hover px-1 rounded">{TEMPLATE_COLUMNS.join(', ')}</code>.
+            first_name, last_name, organization and a mobile or extension number are required.
+            At most 10,000 rows and 5 MB per file.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <ExportButton run={() => api.contacts.importTemplate('xlsx')} filename={XLSX_TEMPLATE} label="Excel template (.xlsx)" />
+            <ExportButton run={() => api.contacts.importTemplate('csv')} filename={CSV_TEMPLATE} label="CSV template" />
+          </div>
+        </div>
+
+        {allTenants && (
+          <div>
+            <label className="label" htmlFor="import-tenant">Target tenant</label>
+            <select id="import-tenant" className="input" value={tenantId}
+                    onChange={(e) => { setTenantId(e.target.value); setOrgId(''); reset(); }}>
+              <option value="">Select…</option>
+              {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className="label" htmlFor="import-org">
+            Organization <span className="font-normal text-text-muted">(only for files without an organization column)</span>
+          </label>
+          <select id="import-org" className="input" value={orgId} disabled={missingTenant}
+                  onChange={(e) => { setOrgId(e.target.value); reset(); }}>
+            <option value="">None — use the organization column</option>
+            {tenantOrgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label" htmlFor="import-file">File (.xlsx or .csv)</label>
+          <input id="import-file" type="file" accept={IMPORT_ACCEPT} className="input" onChange={chooseFile} />
+          {fileError && <p className="text-xs text-red-500 mt-1" role="alert">{fileError}</p>}
+        </div>
+
+        {preview && <ImportReport result={preview} />}
+        {result && <ImportReport result={result} />}
+        {error && (
+          <p className="text-sm text-red-500 flex items-center gap-2" role="alert">
+            <XCircle size={14} aria-hidden="true" /> {error}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2 justify-end">
+          <button type="button" onClick={onClose} className="btn-secondary">{result ? 'Close' : 'Cancel'}</button>
+          {!preview && !result && (
+            <button type="button" onClick={() => send('preview')} className="btn-primary"
+                    disabled={!file || !!fileError || missingTenant || !!busy}>
+              {busy === 'preview' ? 'Checking…' : 'Check file'}
+            </button>
+          )}
+          {preview && (
+            <button type="button" onClick={() => send('commit')} className="btn-primary" disabled={!counts.valid || !!busy}>
+              {busy === 'commit' ? 'Importing…' : `Import ${counts.valid} valid contact${counts.valid === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 export default function ContactList() {
@@ -66,12 +229,8 @@ export default function ContactList() {
   const [form,     setForm]     = useState(EMPTY);
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState('');
-  const [csvModal, setCsvModal] = useState(false);
-  const [csvOrg,   setCsvOrg]   = useState('');
-  const [csvResult,setCsvResult]= useState(null);
-  const [uploading,setUploading]= useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const fileRef = useRef();
 
   const reload = () => setReloadTick(t => t + 1);
 
@@ -95,7 +254,7 @@ export default function ContactList() {
   // Tenant switch: start over. The previous tenant's rows, selection and lookups are cleared at
   // once, so nothing of that tenant is shown (or selectable) while the new page loads.
   useEffect(() => {
-    setModal(null); setCsvModal(false);
+    setModal(null); setImportOpen(false);
     setRows([]); setTotal(0); setSelected(new Set());
     setOrgs([]); setDepts([]); setLocs([]); setRoles([]);
     setFilters(EMPTY_FILTERS); setSearchInput(''); setSearch(''); setSort(null); setPage(1);
@@ -230,24 +389,6 @@ export default function ContactList() {
     } catch (e) { notify(e.message); } finally { setDeleting(false); }
   }
 
-  async function handleCsvUpload() {
-    const file = fileRef.current?.files?.[0];
-    if (!file || !csvOrg) return;
-    setUploading(true); setCsvResult(null);
-    try {
-      const result = await api.contacts.bulkUpload(csvOrg, file);
-      setCsvResult(result);
-      reload(); loadRoles();
-    } catch (e) { setCsvResult({ error: e.message }); } finally { setUploading(false); }
-  }
-
-  function downloadTemplate() {
-    const url = URL.createObjectURL(new Blob([importTemplate()], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = 'contacts-template.csv'; a.click();
-    URL.revokeObjectURL(url);
-  }
-
   if (!canView) {
     return (
       <div className="space-y-6">
@@ -267,9 +408,10 @@ export default function ContactList() {
                       label="Export CSV" disabled={loading || total === 0} />
         {canEdit && (
           <>
-            <button onClick={() => { setCsvModal(true); setCsvResult(null); setCsvOrg(filters.organization_id || ''); }}
-                    className="btn-secondary">
-              <Upload size={14} /> CSV Upload
+            <ExportButton run={() => api.contacts.importTemplate('xlsx')} filename={XLSX_TEMPLATE} label="Download Excel Template (.xlsx)" />
+            <ExportButton run={() => api.contacts.importTemplate('csv')} filename={CSV_TEMPLATE} label="Download CSV Template" />
+            <button onClick={() => setImportOpen(true)} className="btn-secondary">
+              <Upload size={14} /> Import Contacts
             </button>
             <button onClick={openCreate} className="btn-primary">
               <Plus size={15} /> Add Contact
@@ -480,73 +622,15 @@ export default function ContactList() {
         </Modal>
       )}
 
-      {/* CSV Upload Modal */}
-      {csvModal && (
-        <Modal title="Bulk Upload Contacts" onClose={() => setCsvModal(false)}>
-          <div className="space-y-4">
-            <div className="text-sm text-text-muted space-y-1">
-              <p>
-                Upload a CSV with a header row. Columns:{' '}
-                <code className="bg-surface-hover px-1 rounded text-xs">{IMPORT_COLUMNS.join(', ')}</code>
-              </p>
-              <p className="text-xs">
-                first_name and last_name are required, and each row needs a mobile_number or an extension_number.
-                is_active is optional (true / false). A row matching an existing contact of the organization
-                (same name, mobile and extension) is skipped as a duplicate.
-              </p>
-              <button type="button" className="btn-ghost btn-sm" onClick={downloadTemplate}>
-                <Download size={12} aria-hidden="true" /> Download template
-              </button>
-            </div>
-            <div>
-              <label className="label">Organization</label>
-              <select className="input" value={csvOrg} onChange={e => setCsvOrg(e.target.value)}>
-                <option value="">Select…</option>
-                {orgs.map(o => <option key={o.id} value={o.id}>{orgLabel(o, showTenant)}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">CSV File</label>
-              <input ref={fileRef} type="file" accept=".csv" className="input" />
-            </div>
-
-            {csvResult && !csvResult.error && (
-              <div className="rounded-lg border border-surface-border p-3 text-sm space-y-1">
-                <p className="flex items-center gap-2 text-green-500">
-                  <CheckCircle2 size={14} /> {csvResult.inserted} of {csvResult.total} rows inserted
-                </p>
-                {csvResult.duplicates?.length > 0 && (
-                  <details className="text-xs text-text-muted mt-2">
-                    <summary className="cursor-pointer">{csvResult.duplicates.length} duplicates skipped</summary>
-                    <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto">
-                      {csvResult.duplicates.map((d, i) => <li key={i}>{importIssueText(d)}</li>)}
-                    </ul>
-                  </details>
-                )}
-                {csvResult.errors?.length > 0 && (
-                  <details className="text-xs text-text-muted mt-2" open>
-                    <summary className="cursor-pointer text-red-500">{csvResult.errors.length} rows with errors</summary>
-                    <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto">
-                      {csvResult.errors.map((e, i) => <li key={i}>{importIssueText(e)}</li>)}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            )}
-            {csvResult?.error && (
-              <p className="text-sm text-red-500 flex items-center gap-2">
-                <XCircle size={14} /> {csvResult.error}
-              </p>
-            )}
-
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setCsvModal(false)} className="btn-secondary">Close</button>
-              <button onClick={handleCsvUpload} disabled={uploading || !csvOrg} className="btn-primary">
-                {uploading ? 'Uploading…' : 'Upload'}
-              </button>
-            </div>
-          </div>
-        </Modal>
+      {/* Import dialog (CSV or Excel): check first, then confirm */}
+      {importOpen && (
+        <ImportDialog
+          orgs={orgs}
+          allTenants={needsTenantSelection(user, activeTenantId)}
+          initialOrg={filters.organization_id || ''}
+          onClose={() => setImportOpen(false)}
+          onImported={() => { reload(); loadRoles(); }}
+        />
       )}
     </div>
   );

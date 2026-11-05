@@ -401,7 +401,7 @@ describe('CE-11: CSV import', () => {
     expect(res.body.errors).toHaveLength(1);
     expect(res.body.errors[0].line).toBe(4);
     expect(typeof res.body.errors[0].error).toBe('string');
-    expect(res.body.errors[0].error).toMatch(/mobile_number or extension_number/);
+    expect(res.body.errors[0].error).toBe('Both mobile number and extension number are empty');
     expect(res.body.errors[0].error).not.toMatch(/^\[/);           // not a raw JSON dump
     expect(await countOrg(orgA1)).toBe(before + 2);
   });
@@ -495,8 +495,8 @@ describe('CE-13: individual delete and CSV edge cases', () => {
       .field('organization_id', String(orgA2)).attach('file', Buffer.from(csv, 'utf8'), 'x.csv');
     expect(res.body.inserted).toBe(1);
     expect(res.body.errors.map(e => e.line)).toEqual([3, 4]);
-    expect(res.body.errors[0].error).toMatch(/^email: /);
-    expect(res.body.errors[1].error).toMatch(/^first_name: /);
+    expect(res.body.errors[0].error).toBe('Email is not a valid email address');
+    expect(res.body.errors[1].error).toBe('First name is longer than 64 characters');
   });
 });
 
@@ -691,10 +691,11 @@ describe('CE-16: export formula injection, phone numbers, Unicode and re-import'
 
   it('re-importing the export into the same organization skips every row; into another organization the values arrive as exported', async () => {
     const text = (await getCsv(adminA, { organization_id: orgX })).body;
+    // The export has an organization column, so each row goes to the organization it names.
     const same = await uploadAs(adminA, orgX, text);
     expect(same.body).toMatchObject({ inserted: 0, skipped: 9, errors: [] });
     const orgY = await makeOrg('CE Export Y', tenantA);
-    const other = await uploadAs(adminA, orgY, text);
+    const other = await uploadAs(adminA, orgY, text.replaceAll('CE Export X', 'CE Export Y'));
     expect(other.body).toMatchObject({ inserted: 9, errors: [] });
     const { rows } = await query(`SELECT last_name, role, mobile_number FROM emergency_contacts WHERE organization_id=$1`, [orgY]);
     const by = Object.fromEntries(rows.map(r => [r.last_name, r]));
@@ -847,8 +848,8 @@ describe('CE-18: audit trail of contact administration', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ user_id: superId, action: 'contacts_imported', entity_id: null });
     expect(rows[0].details).toEqual({
-      role: 'SUPER_ADMIN', scope_tenant_id: tenantA, tenant_id: tenantA, organization_id: orgA2,
-      total_rows: 3, inserted: 1, skipped_duplicates: 1, error_rows: 1,
+      role: 'SUPER_ADMIN', scope_tenant_id: tenantA, tenant_id: tenantA, organization_id: orgA2, format: 'csv',
+      total_rows: 3, inserted: 1, skipped_duplicates: 1, error_rows: 1, file_rows: 3,
     });
     noPii(rows);
   });
