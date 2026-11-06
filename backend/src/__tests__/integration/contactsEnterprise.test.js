@@ -414,19 +414,25 @@ describe('CE-11: CSV import', () => {
     expect(await countOrg(orgA1)).toBe(before);
   });
 
-  it('duplicates ignore case, surrounding spaces and phone punctuation; repeats inside a file are skipped', async () => {
+  it('a known number (any punctuation) updates its contact with the latest values; a repeat in the file updates the contact it created', async () => {
     const csv = 'first_name,last_name,mobile_number,extension_number\n'
-              + '  imp , ONE ,+96650-111-0001,\n'           // same as Imp One
+              + '  imp , ONE ,+96650-111-0001,\n'           // the mobile of Imp One
               + 'Imp,Three,0500 3,\n'
-              + 'imp,three,05003,\n';                        // repeat of the line above
+              + 'imp,three,05003,\n'                         // the same number as the line above
+              + 'imp,three,05003,\n';                        // identical repeat: nothing left to change
     const res = await upload(adminA, orgA1, csv);
-    expect(res.body).toMatchObject({ inserted: 1, skipped: 2 });
-    expect(res.body.duplicates.map(d => d.line)).toEqual([2, 4]);
+    expect(res.body).toMatchObject({ inserted: 1, created: 1, updated: 2, unchanged: 1, skipped: 1, duplicates_prevented: 3 });
+    expect(res.body.updates.map(d => d.line)).toEqual([2, 4]);
+    expect(res.body.duplicates.map(d => d.line)).toEqual([5]);
+    const { rows } = await query(`SELECT first_name, last_name FROM emergency_contacts WHERE organization_id=$1 AND mobile_norm=ANY($2)`,
+      [orgA1, ['+966501110001', '05003']]);
+    expect(rows.map(r => `${r.first_name} ${r.last_name}`).sort()).toEqual(['imp ONE', 'imp three']);
   });
 
-  it('the same person in another organization is not a duplicate', async () => {
+  it('a number held in another organization is refused (nothing created, no contact moved)', async () => {
     const res = await upload(adminA, orgA2, 'first_name,last_name,mobile_number\nImp,One,+966501110001\n');
-    expect(res.body).toMatchObject({ inserted: 1, skipped: 0 });
+    expect(res.body).toMatchObject({ inserted: 0, conflicts: 1 });
+    expect(res.body.errors).toEqual([{ line: 2, error: 'This mobile number is already assigned to a contact in another organization' }]);
   });
 
   it('accepts the legacy "phone" header, a UTF-8 BOM and is_active words', async () => {
@@ -601,9 +607,9 @@ describe('CE-14: SUPER_ADMIN full access (governance rule)', () => {
   });
 });
 
-describe('CE-15: CSV import concurrency (transaction-scoped advisory lock per organization)', () => {
-  const rowsCsv = (prefix, n) => 'first_name,last_name,mobile_number\n'
-    + Array.from({ length: n }, (_, i) => `${prefix},Person${i},05${String(i).padStart(6, '0')}`).join('\n') + '\n';
+describe('CE-15: CSV import concurrency (platform-wide contact identity lock)', () => {
+  const rowsCsv = (prefix, n, base = '05') => 'first_name,last_name,mobile_number\n'
+    + Array.from({ length: n }, (_, i) => `${prefix},Person${i},${base}${String(i).padStart(6, '0')}`).join('\n') + '\n';
 
   it('two simultaneous imports of the same file into one organization insert each person once', async () => {
     const org = await makeOrg('CE Conc Same', tenantA);
@@ -614,30 +620,40 @@ describe('CE-15: CSV import concurrency (transaction-scoped advisory lock per or
     expect(await countLive(org)).toBe(20);
   });
 
-  it('simultaneous imports into different organizations do not block or skip each other', async () => {
+  it('simultaneous imports of different numbers into different organizations both complete', async () => {
     const o1 = await makeOrg('CE Conc One', tenantA);
     const o2 = await makeOrg('CE Conc Two', tenantA);
-    const csv = rowsCsv('Diff', 15);
-    const [r1, r2] = await Promise.all([uploadAs(adminA, o1, csv), uploadAs(adminA, o2, csv)]);
+    const [r1, r2] = await Promise.all([uploadAs(adminA, o1, rowsCsv('Diff', 15, '06')), uploadAs(adminA, o2, rowsCsv('Diff', 15, '07'))]);
     expect([r1.body.inserted, r2.body.inserted]).toEqual([15, 15]);
     expect([await countLive(o1), await countLive(o2)]).toEqual([15, 15]);
   });
 
-  it('an import waits for one in progress; an individual create is not blocked by the lock', async () => {
+  it('simultaneous imports of the same numbers into two organizations: one owns them, the other is refused', async () => {
+    const o1 = await makeOrg('CE Conc Race One', tenantA);
+    const o2 = await makeOrg('CE Conc Race Two', tenantA);
+    const csv = rowsCsv('Race', 10, '04');
+    const [r1, r2] = await Promise.all([uploadAs(adminA, o1, csv), uploadAs(adminA, o2, csv)]);
+    expect([r1.body.inserted, r2.body.inserted].sort()).toEqual([0, 10]);
+    expect([r1.body.conflicts, r2.body.conflicts].sort()).toEqual([0, 10]);
+    expect((await countLive(o1)) + (await countLive(o2))).toBe(10);
+  });
+
+  it('imports and individual creates wait for the identity lock; the same person ends up once', async () => {
     const org = await makeOrg('CE Conc Lock', tenantA);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext('enrs:contacts-import'), $1)`, [org]);  // an import "in progress"
-      const pending = uploadAs(adminA, org, 'first_name,last_name,mobile_number\nLock,Person,0555\n').then(r => r);
-      const state = await Promise.race([pending.then(() => 'finished'), new Promise(r => setTimeout(() => r('waiting'), 800))]);
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('enrs:contact-identity'))`);  // a writer "in progress"
+      const imp = uploadAs(adminA, org, 'first_name,last_name,mobile_number\nLock,Person,0555\n').then(r => r);
+      const manual = request(server).post('/api/v1/contacts').set(auth(adminA))
+        .send({ organization_id: org, first_name: 'Lock', last_name: 'Person', mobile_number: '0555' }).then(r => r);
+      const state = await Promise.race([Promise.any([imp, manual]).then(() => 'finished'), new Promise(r => setTimeout(() => r('waiting'), 800))]);
       expect(state).toBe('waiting');
-      const manual = await request(server).post('/api/v1/contacts').set(auth(adminA))
-        .send({ organization_id: org, first_name: 'Lock', last_name: 'Person', mobile_number: '0555' });
-      expect(manual.status).toBe(201);                 // not serialised with imports (documented limitation)
       await client.query('COMMIT');
-      const res = await pending;
-      expect(res.body).toMatchObject({ inserted: 0, skipped: 1 });   // reads existing contacts only after the lock
+      const [ri, rm] = await Promise.all([imp, manual]);
+      expect(ri.status).toBe(200);
+      expect([200, 201]).toContain(rm.status);         // 201 if it ran first; 200 (upserted) if the import did
+      expect(ri.body.inserted + (rm.status === 201 ? 1 : 0)).toBe(1);             // exactly one creation
       expect(await countLive(org)).toBe(1);
     } finally {
       await client.query('ROLLBACK').catch(() => {});
@@ -689,19 +705,27 @@ describe('CE-16: export formula injection, phone numbers, Unicode and re-import'
     expect(text).toContain('"He said ""hi"", ok"');
   });
 
-  it('re-importing the export into the same organization skips every row; into another organization the values arrive as exported', async () => {
+  it('re-importing the export into the same organization changes nothing; into another organization every row is refused (numbers are platform-wide)', async () => {
     const text = (await getCsv(adminA, { organization_id: orgX })).body;
     // The export has an organization column, so each row goes to the organization it names.
+    // Known, documented effect (BEHAVIOUR_COMPATIBILITY_REPORT.md): the export's protective quote on
+    // formula-like roles is stored by import (unchanged behaviour), so the first same-organization
+    // re-import updates those six roles once; after that a re-import changes nothing.
     const same = await uploadAs(adminA, orgX, text);
-    expect(same.body).toMatchObject({ inserted: 0, skipped: 9, errors: [] });
+    expect(same.body).toMatchObject({ inserted: 0, created: 0, updated: 6, unchanged: 3, conflicts: 0, errors: [] });
+    const again = await uploadAs(adminA, orgX, (await getCsv(adminA, { organization_id: orgX })).body);
+    expect(again.body).toMatchObject({ inserted: 0, updated: 0, unchanged: 9, errors: [] });
+    expect(await query(`SELECT count(*)::int AS n FROM emergency_contacts WHERE organization_id=$1 AND deleted_at IS NULL`, [orgX]))
+      .toMatchObject({ rows: [{ n: 9 }] });                                        // no second contact for anyone
     const orgY = await makeOrg('CE Export Y', tenantA);
     const other = await uploadAs(adminA, orgY, text.replaceAll('CE Export X', 'CE Export Y'));
-    expect(other.body).toMatchObject({ inserted: 9, errors: [] });
-    const { rows } = await query(`SELECT last_name, role, mobile_number FROM emergency_contacts WHERE organization_id=$1`, [orgY]);
-    const by = Object.fromEntries(rows.map(r => [r.last_name, r]));
-    expect(by.Equals.mobile_number).toBe('+966 50 123 4567');
-    expect(by.Equals.role).toBe("'=1+1");                                          // the protective quote is kept
-    expect(by[UNICODE_LAST]).toBeDefined();
+    expect(other.body).toMatchObject({ inserted: 0, updated: 0, conflicts: 9 });
+    expect(other.body.errors.every(e => /another organization/.test(e.error))).toBe(true);
+    expect(JSON.stringify(other.body)).not.toContain('CE Export X');               // the owner is not disclosed
+    const { rows } = await query(`SELECT count(*)::int AS n FROM emergency_contacts WHERE organization_id=$1`, [orgY]);
+    expect(rows[0].n).toBe(0);
+    const { rows: kept } = await query(`SELECT role FROM emergency_contacts WHERE organization_id=$1 AND last_name='Equals'`, [orgX]);
+    expect(kept[0].role).toBe("'=1+1");                                             // the protective quote is kept
   });
 });
 
@@ -711,7 +735,7 @@ describe('CE-17: large directory (5,000 contacts)', () => {
     orgL = await makeOrg('CE Large', tenantA);
     await query(
       `INSERT INTO emergency_contacts (organization_id, first_name, last_name, mobile_number)
-       SELECT $1, 'Bulk', 'Person ' || lpad(g::text, 4, '0'), '05' || lpad(g::text, 8, '0')
+       SELECT $1, 'Bulk', 'Person ' || lpad(g::text, 4, '0'), '08' || lpad(g::text, 8, '0')
        FROM generate_series(1, 5000) g`, [orgL]);
   });
 
@@ -810,8 +834,8 @@ describe('CE-18: audit trail of contact administration', () => {
   });
 
   it('bulk delete across tenants: one summary per affected tenant with ids and counts', async () => {
-    const a = await makeContact('au_a', { org: orgA1, first: 'Gone', last: 'A', mobile: '11' });
-    const b = await makeContact('au_b', { org: orgB, first: 'Gone', last: 'B', mobile: '12' });
+    const a = await makeContact('au_a', { org: orgA1, first: 'Gone', last: 'A', mobile: '9911' });
+    const b = await makeContact('au_b', { org: orgB, first: 'Gone', last: 'B', mobile: '9912' });
     const since = await lastAuditId();
     const res = await request(server).post('/api/v1/contacts/bulk-delete').set(auth(superAdmin)).send({ ids: [b, a, 2147483001] });
     expect(res.body.deleted).toBe(2);
@@ -824,7 +848,7 @@ describe('CE-18: audit trail of contact administration', () => {
   });
 
   it('bulk delete with a tenant selected or by a tenant ADMIN never records other tenants\' contacts as deleted', async () => {
-    const a = await makeContact('au_a2', { org: orgA1, first: 'Gone', last: 'A2', mobile: '13' });
+    const a = await makeContact('au_a2', { org: orgA1, first: 'Gone', last: 'A2', mobile: '9913' });
     let since = await lastAuditId();
     await request(server).post('/api/v1/contacts/bulk-delete').set(auth(superAdmin)).send({ tenant_id: tenantA, ids: [a, c.bz1] });
     let rows = await auditsSince(since, 'contacts_bulk_deleted');
@@ -849,7 +873,7 @@ describe('CE-18: audit trail of contact administration', () => {
     expect(rows[0]).toMatchObject({ user_id: superId, action: 'contacts_imported', entity_id: null });
     expect(rows[0].details).toEqual({
       role: 'SUPER_ADMIN', scope_tenant_id: tenantA, tenant_id: tenantA, organization_id: orgA2, format: 'csv',
-      total_rows: 3, inserted: 1, skipped_duplicates: 1, error_rows: 1, file_rows: 3,
+      total_rows: 3, inserted: 1, updated: 0, skipped_duplicates: 1, error_rows: 1, conflicts: 0, file_rows: 3,
     });
     noPii(rows);
   });

@@ -6,6 +6,10 @@ import { effectiveTenantId, validateTargetTenant } from '../middleware/tenantSco
 import { toCsv } from '../utils/csv.js';
 import { buildWorkbook, columnLetter } from '../utils/xlsxWriter.js';
 import { logger } from '../infrastructure/index.js';
+import {
+  normalizeExtension, normalizeMobile, findIdentityMatches, classifyIdentity,
+  isIdentityViolation, IDENTITY_LOCK, OTHER_ORG_MESSAGE, CONFLICT_MESSAGE,
+} from '../services/contactIdentity.js';
 
 // ── Audit trail ──────────────────────────────────────────────────────────────
 // Same convention as the other audit writers (media, settings, reports): one audit_logs
@@ -290,20 +294,125 @@ export const getContact = asyncHandler(async (req, res) => {
   res.json(rows[0]);
 });
 
+// ── Contact identity (services/contactIdentity.js) ──────────────────────────
+// One extension / one mobile number = one live contact on the whole platform.
+
+const httpErr = (status, body) => Object.assign(new Error(body.error), { status, httpBody: body });
+const contactName = (c) => `${c.first_name || ''} ${c.last_name || ''}`.trim();
+
+// 409 body for a refused identifier. Another organization's contact is never described.
+function identityRejection(cls) {
+  if (cls.kind === 'other_organization') {
+    return httpErr(409, { error: OTHER_ORG_MESSAGE[cls.field], code: 'IDENTIFIER_IN_OTHER_ORGANIZATION', field: cls.field });
+  }
+  const body = { error: CONFLICT_MESSAGE, code: 'IDENTIFIER_CONFLICT' };
+  if (cls.sameOrganization) {
+    body.contacts = [
+      { matched: 'extension', id: cls.contacts[0].id, name: contactName(cls.contacts[0]) },
+      { matched: 'mobile', id: cls.contacts[1].id, name: contactName(cls.contacts[1]) },
+    ];
+  }
+  return httpErr(409, body);
+}
+
+// Another organization's contact is never referenced, not even by id.
+const identityAudit = (cls) => (cls.kind === 'other_organization'
+  ? { kind: 'other_organization', field: cls.field }
+  : { kind: 'conflict', ...(cls.sameOrganization ? { conflicting_contact_ids: cls.contacts.map((c) => c.id) } : {}) });
+
+// A unique-index violation means a concurrent writer took the identifier first.
+const identityTaken = () => httpErr(409, {
+  error: 'This extension or mobile number was just assigned to another contact; reload and try again',
+  code: 'IDENTIFIER_TAKEN',
+});
+
+async function withIdentityTransaction(fn) {
+  try {
+    return await withTransaction(async (tq) => { await tq(IDENTITY_LOCK); return fn(tq); });
+  } catch (err) {
+    if (isIdentityViolation(err)) throw identityTaken();
+    throw err;
+  }
+}
+
+// POST /api/v1/contacts — creates a contact, or, when the extension or mobile number
+// already belongs to a contact of the same organization, updates that contact with the
+// supplied fields (200, upserted: true). Another organization's identifier or a split
+// match (extension of one contact, mobile of another) is refused with 409.
 export const createContact = asyncHandler(async (req, res) => {
   const d = ContactSchema.parse(req.body);
   const org = await verifyContactRefs(query, effectiveTenantId(req), d.organization_id, d.department_id, d.location_id);
-  const { rows } = await query(
-    `INSERT INTO emergency_contacts
-       (organization_id, location_id, department_id, first_name, last_name,
-        role, mobile_number, extension_number, email, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [d.organization_id, d.location_id, d.department_id, d.first_name, d.last_name,
-     d.role, d.mobile_number, d.extension_number, d.email, d.is_active]
-  );
-  await auditContacts(req, 'contact_created', rows[0].id,
-    { tenant_id: org.tenant_id, organization_id: d.organization_id });
-  res.status(201).json(rows[0]);
+  const supplied = (k) => Object.prototype.hasOwnProperty.call(req.body ?? {}, k);
+
+  const out = await withIdentityTransaction(async (tq) => {
+    const cls = classifyIdentity(
+      await findIdentityMatches(tq, { extension: d.extension_number, mobile: d.mobile_number }), d.organization_id);
+    if (cls.kind === 'other_organization' || cls.kind === 'conflict') return { rejected: cls };
+
+    if (cls.kind === 'new') {
+      const { rows: [row] } = await tq(
+        `INSERT INTO emergency_contacts
+           (organization_id, location_id, department_id, first_name, last_name,
+            role, mobile_number, extension_number, email, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [d.organization_id, d.location_id, d.department_id, d.first_name, d.last_name,
+         d.role, d.mobile_number, d.extension_number, d.email, d.is_active]
+      );
+      return { created: row };
+    }
+
+    // Same organization: update the existing contact with the supplied fields only.
+    const { rows: [cur] } = await tq(`SELECT * FROM emergency_contacts WHERE id = $1 FOR UPDATE`, [cls.contact.id]);
+    const next = {};
+    for (const k of UPDATABLE) next[k] = supplied(k) ? (d[k] ?? null) : cur[k];
+    next.organization_id = cur.organization_id;
+    if (!next.mobile_number && !next.extension_number) throw badRequest(MOBILE_OR_EXTENSION);
+    const { rows: [row] } = await tq(
+      `UPDATE emergency_contacts SET
+         organization_id = $2, location_id = $3, department_id = $4,
+         first_name = $5, last_name = $6, role = $7, mobile_number = $8,
+         extension_number = $9, email = $10, is_active = $11, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [cur.id, ...UPDATABLE.map((k) => next[k])]
+    );
+    return { updated: row, matchedBy: cls.matchedBy, changed: UPDATABLE.filter((k) => (next[k] ?? null) !== (cur[k] ?? null)) };
+  });
+
+  if (out.rejected) {
+    await auditContacts(req, 'contact_identifier_conflict', null,
+      { tenant_id: org.tenant_id, organization_id: d.organization_id, source: 'manual', ...identityAudit(out.rejected) });
+    throw identityRejection(out.rejected);
+  }
+  if (out.created) {
+    await auditContacts(req, 'contact_created', out.created.id,
+      { tenant_id: org.tenant_id, organization_id: d.organization_id, source: 'manual' });
+    return res.status(201).json(out.created);
+  }
+  await auditContacts(req, 'contact_duplicate_prevented', out.updated.id, {
+    tenant_id: org.tenant_id, organization_id: out.updated.organization_id, source: 'manual',
+    matched_by: out.matchedBy, changed_fields: out.changed,
+  });
+  res.json({ ...out.updated, upserted: true, matched_by: out.matchedBy });
+});
+
+// GET /api/v1/contacts/identity-check?organization_id=&extension_number=&mobile_number=&exclude_id=
+// What saving these identifiers would do (feedback while typing; the save re-checks).
+export const identityCheck = asyncHandler(async (req, res) => {
+  const orgId = optionalId(req.query.organization_id, 'organization_id');
+  if (orgId === null) throw badRequest('organization_id is required');
+  const excludeId = optionalId(req.query.exclude_id, 'exclude_id');
+  const extension = optionalText(req.query.extension_number, 'extension_number', 32);
+  const mobile = optionalText(req.query.mobile_number, 'mobile_number', 32);
+  await verifyContactRefs(query, effectiveTenantId(req), orgId);
+  const matches = await findIdentityMatches(query, { extension, mobile, excludeId });
+  const cls = classifyIdentity(matches, orgId);
+  if (cls.kind === 'new') return res.json({ status: 'new' });
+  if (cls.kind === 'other_organization') return res.json({ status: 'other_organization', field: cls.field, message: OTHER_ORG_MESSAGE[cls.field] });
+  if (cls.kind === 'conflict') {
+    return res.json({ status: 'conflict', message: CONFLICT_MESSAGE,
+      ...(cls.sameOrganization ? { contacts: cls.contacts.map((c) => ({ id: c.id, name: contactName(c) })) } : {}) });
+  }
+  res.json({ status: 'update', matched_by: cls.matchedBy, contact: { id: cls.contact.id, name: contactName(cls.contact) } });
 });
 
 // PUT /api/v1/contacts/:id — fields present in the body are applied (null clears an
@@ -314,7 +423,7 @@ export const updateContact = asyncHandler(async (req, res) => {
   const tenantId = effectiveTenantId(req);
   const has = (k) => Object.prototype.hasOwnProperty.call(d, k) && d[k] !== undefined;
 
-  const updated = await withTransaction(async (tq) => {
+  const updated = await withIdentityTransaction(async (tq) => {
     const { rows: [cur] } = await tq(
       `SELECT c.*, o.tenant_id AS org_tenant_id
        FROM emergency_contacts c JOIN organizations o ON o.id = c.organization_id
@@ -344,6 +453,19 @@ export const updateContact = asyncHandler(async (req, res) => {
     }
     if (!next.mobile_number && !next.extension_number) throw badRequest(MOBILE_OR_EXTENSION);
 
+    // An extension / mobile number held by any other live contact is refused.
+    const extChanged = normalizeExtension(next.extension_number) !== normalizeExtension(cur.extension_number);
+    const mobChanged = normalizeMobile(next.mobile_number) !== normalizeMobile(cur.mobile_number);
+    if (extChanged || mobChanged) {
+      const m = await findIdentityMatches(tq, {
+        extension: extChanged ? next.extension_number : null, mobile: mobChanged ? next.mobile_number : null, excludeId: cur.id });
+      const other = m.byExtension || m.byMobile;
+      if (other) {
+        const field = m.byExtension && m.byMobile ? 'both' : m.byExtension ? 'extension' : 'mobile';
+        return { rejected: { field, contact: other, sameOrganization: other.organization_id === next.organization_id }, cur };
+      }
+    }
+
     const { rows: [row] } = await tq(
       `UPDATE emergency_contacts SET
          organization_id = $2, location_id = $3, department_id = $4,
@@ -363,6 +485,19 @@ export const updateContact = asyncHandler(async (req, res) => {
   });
 
   if (!updated) return res.status(404).json({ error: 'Contact not found' });
+  if (updated.rejected) {
+    const r = updated.rejected;
+    await auditContacts(req, 'contact_identifier_conflict', updated.cur.id, {
+      tenant_id: updated.cur.org_tenant_id, organization_id: updated.cur.organization_id, source: 'manual',
+      kind: r.sameOrganization ? 'in_use' : 'other_organization', field: r.field,
+      ...(r.sameOrganization ? { conflicting_contact_ids: [r.contact.id] } : {}),
+    });
+    const what = { extension: 'extension', mobile: 'mobile number', both: 'extension and mobile number' }[r.field];
+    throw r.sameOrganization
+      ? httpErr(409, { error: `This ${what} already belongs to another contact in this organization (${contactName(r.contact)})`,
+        code: 'IDENTIFIER_IN_USE', field: r.field, contact: { id: r.contact.id, name: contactName(r.contact) } })
+      : httpErr(409, { error: OTHER_ORG_MESSAGE[r.field], code: 'IDENTIFIER_IN_OTHER_ORGANIZATION', field: r.field });
+  }
   await auditContacts(req, 'contact_updated', updated.row.id, updated.audit);
   res.json(updated.row);
 });
@@ -446,13 +581,13 @@ export const bulkDeleteContacts = asyncHandler(async (req, res) => {
 // used. A value that cannot be resolved is a row error; there is no fallback.
 // Department / location: resolved by name within the row's organization.
 //
-// Duplicate detection: a row is skipped as a duplicate when a live contact of the same
-// organization (or an earlier row of the same file) has the same first and last name
-// (case-insensitive, trimmed) and the same mobile and extension numbers, compared with
-// spaces, dots, dashes and brackets removed. Imports are serialised per organization
-// with transaction-scoped advisory locks (taken in id order), so two concurrent imports
-// cannot both insert the same person. Contacts created one by one at the same moment are
-// not covered (there is no database uniqueness constraint).
+// Contact identity (services/contactIdentity.js; the same rules as POST /contacts): an
+// extension or mobile number already held by a contact of the row's organization updates
+// that contact with the filled-in cells (blank cells keep the current value); one held in
+// another organization, or an extension and a mobile of two different contacts, makes the
+// row a conflict. Rows are applied in file order, so a repeated person is created once and
+// then updated. The commit holds the platform-wide identity lock; unique indexes on the
+// normalised identifiers (migration 051) are the final guard.
 //
 // mode=preview runs every check without writing; mode=commit (default) re-runs them in
 // the transaction and inserts the valid rows. Limits: 5 MB (route), 10,000 data rows,
@@ -473,9 +608,6 @@ const HEADER_ALIASES = { phone: 'mobile_number', mobile: 'mobile_number', extens
 const ACTIVE_WORDS = { true: true, yes: true, 1: true, active: true, false: false, no: false, 0: false, inactive: false };
 
 const normName  = (v) => String(v ?? '').trim().toLowerCase();
-const normPhone = (v) => String(v ?? '').replace(/[\s().-]/g, '');
-const dupKey = (r) => [normName(r.first_name), normName(r.last_name),
-  normPhone(r.mobile_number), normPhone(r.extension_number)].join('\u0000');
 
 // The template's example rows. An unchanged example row (all ten columns exactly as in
 // the template; is_active compared as true/false) is refused, so a forgotten example can
@@ -641,74 +773,139 @@ function evaluateRows(table, header, ctx, dir) {
       }
     }
     if (problems.length) return { row: r.row, status: 'invalid', orgId, errors: [...new Set(problems)] };
-    return { row: r.row, status: 'valid', orgId, record: { ...parsed.data, organization_id: orgId, department_id: deptId, location_id: locId } };
+    // Fields that a match may update: filled-in cells only (a blank cell keeps the current value).
+    const supplied = new Set(['first_name', 'last_name']);
+    for (const f of ['mobile_number', 'extension_number', 'email', 'role']) if (get(f) !== '') supplied.add(f);
+    if (get('department') !== '') supplied.add('department_id');
+    if (get('location') !== '') supplied.add('location_id');
+    if (active !== '') supplied.add('is_active');
+    return { row: r.row, status: 'valid', orgId, supplied,
+      record: { ...parsed.data, organization_id: orgId, department_id: deptId, location_id: locId } };
   });
 }
 
-// Mark duplicates (existing live contacts of the same organization, or an earlier row).
-// With `lock`, the organizations are locked first (id order), inside the caller's transaction.
-async function markDuplicates(q, evaluated, { lock }) {
-  const orgIds = [...new Set(evaluated.filter((e) => e.status === 'valid').map((e) => e.orgId))].sort((a, b) => a - b);
-  if (lock) for (const id of orgIds) await q(`SELECT pg_advisory_xact_lock(hashtext('enrs:contacts-import'), $1)`, [id]);
-  const seen = new Map(orgIds.map((id) => [id, new Map()]));
-  if (orgIds.length) {
+// Apply the contact identity rules (services/contactIdentity.js) to the valid rows, in file
+// order: create, update a same-organization contact with the filled-in cells, leave it
+// unchanged, or refuse (identifier of another organization / split match). Later rows see
+// contacts created or changed by earlier ones. With `write` (commit, inside the caller's
+// transaction holding IDENTITY_LOCK) the changes are made; otherwise they are simulated.
+async function applyIdentities(q, evaluated, { write }) {
+  const valid = evaluated.filter((e) => e.status === 'valid');
+  const exts = [...new Set(valid.map((e) => normalizeExtension(e.record.extension_number)).filter(Boolean))];
+  const mobs = [...new Set(valid.map((e) => normalizeMobile(e.record.mobile_number)).filter(Boolean))];
+  const byExt = new Map();
+  const byMob = new Map();
+  // prev: the contact's identifiers before an update (their entries are removed; O(1) per row).
+  const index = (c, prev = null) => {
+    if (prev?.ext && prev.ext !== c.extension_norm && byExt.get(prev.ext) === c) byExt.delete(prev.ext);
+    if (prev?.mob && prev.mob !== c.mobile_norm && byMob.get(prev.mob) === c) byMob.delete(prev.mob);
+    if (c.extension_norm) byExt.set(c.extension_norm, c);
+    if (c.mobile_norm) byMob.set(c.mobile_norm, c);
+  };
+  if (exts.length || mobs.length) {
     const { rows } = await q(
-      `SELECT organization_id, first_name, last_name, mobile_number, extension_number
-       FROM emergency_contacts WHERE organization_id = ANY($1::int[]) AND deleted_at IS NULL`, [orgIds]);
-    for (const r of rows) seen.get(r.organization_id).set(dupKey(r), 0);
+      `SELECT * FROM emergency_contacts
+       WHERE deleted_at IS NULL AND (extension_norm = ANY($1::text[]) OR mobile_norm = ANY($2::text[]))`, [exts, mobs]);
+    rows.forEach((r) => index({ ...r, ref: `db:${r.id}` }));
   }
+
   for (const e of evaluated) {
     if (e.status !== 'valid') continue;
-    const s = seen.get(e.orgId);
-    const key = dupKey(e.record);
-    if (s.has(key)) {
-      e.status = 'duplicate';
-      e.reason = s.get(key) ? `Same contact as row ${s.get(key)}` : 'Contact already exists';
-    } else {
-      s.set(key, e.row);
+    const ext = normalizeExtension(e.record.extension_number);
+    const mob = normalizeMobile(e.record.mobile_number);
+    const cls = classifyIdentity({ byExtension: ext ? byExt.get(ext) || null : null, byMobile: mob ? byMob.get(mob) || null : null }, e.orgId);
+    if (cls.kind === 'other_organization' || cls.kind === 'conflict') {
+      e.status = 'invalid';
+      e.conflict = true;
+      e.errors = [cls.kind === 'other_organization' ? OTHER_ORG_MESSAGE[cls.field] : CONFLICT_MESSAGE];
+      continue;
     }
+    if (cls.kind === 'new') {
+      const fresh = { ...e.record, extension_norm: ext, mobile_norm: mob, ref: `row:${e.row}`, fromRow: e.row };
+      if (write) {
+        const row = await savepoint(q, e, () => q(
+          `INSERT INTO emergency_contacts
+             (organization_id, department_id, location_id, first_name, last_name, role,
+              mobile_number, extension_number, email, is_active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [e.record.organization_id, e.record.department_id, e.record.location_id, e.record.first_name, e.record.last_name,
+           e.record.role, e.record.mobile_number, e.record.extension_number, e.record.email, e.record.is_active]));
+        if (!row) continue;
+        Object.assign(fresh, row);
+      }
+      e.status = 'created';
+      index(fresh);
+      continue;
+    }
+    // Same organization: the filled-in cells overwrite, blank cells keep the current value.
+    const target = cls.contact;
+    const next = {};
+    for (const k of UPDATABLE) next[k] = e.supplied.has(k) ? (e.record[k] ?? null) : (target[k] ?? null);
+    next.organization_id = target.organization_id;
+    const changed = UPDATABLE.filter((k) => (next[k] ?? null) !== (target[k] ?? null));
+    e.matchedBy = cls.matchedBy;
+    e.sourceRow = target.fromRow || null;
+    if (!changed.length) { e.status = 'unchanged'; continue; }
+    const prev = { ext: target.extension_norm, mob: target.mobile_norm };
+    if (write) {
+      const row = await savepoint(q, e, () => q(
+        `UPDATE emergency_contacts SET
+           organization_id = $2, location_id = $3, department_id = $4,
+           first_name = $5, last_name = $6, role = $7, mobile_number = $8,
+           extension_number = $9, email = $10, is_active = $11, updated_at = now()
+         WHERE id = $1 RETURNING *`,
+        [target.id, ...UPDATABLE.map((k) => next[k])]));
+      if (!row) continue;
+      Object.assign(target, row);
+    } else {
+      Object.assign(target, next, { extension_norm: normalizeExtension(next.extension_number), mobile_norm: normalizeMobile(next.mobile_number) });
+    }
+    e.status = 'updated';
+    e.changed = changed;
+    index(target, prev);
   }
 }
 
-async function insertValidRows(tq, evaluated) {
-  for (const e of evaluated) {
-    if (e.status !== 'valid') continue;
-    const d = e.record;
-    await tq('SAVEPOINT contact_row');
-    try {
-      await tq(
-        `INSERT INTO emergency_contacts
-           (organization_id, department_id, location_id, first_name, last_name, role,
-            mobile_number, extension_number, email, is_active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [d.organization_id, d.department_id, d.location_id, d.first_name, d.last_name, d.role,
-         d.mobile_number, d.extension_number, d.email, d.is_active]
-      );
-      await tq('RELEASE SAVEPOINT contact_row');
-      e.status = 'inserted';
-    } catch (err) {
-      await tq('ROLLBACK TO SAVEPOINT contact_row');
-      e.status = 'invalid';
-      e.errors = [err?.message || 'Could not be saved'];
-    }
+// One row's write inside a savepoint; a database error makes only that row invalid.
+async function savepoint(q, e, fn) {
+  await q('SAVEPOINT contact_row');
+  try {
+    const { rows: [row] } = await fn();
+    await q('RELEASE SAVEPOINT contact_row');
+    return row;
+  } catch (err) {
+    await q('ROLLBACK TO SAVEPOINT contact_row');
+    e.status = 'invalid';
+    e.errors = [isIdentityViolation(err) ? 'This extension or mobile number was just assigned to another contact' : (err?.message || 'Could not be saved')];
+    return null;
   }
 }
 
 function summarise(evaluated, format, preview) {
   const errors = [];
   const duplicates = [];
-  let inserted = 0;
-  let valid = 0;
+  const updates = [];
+  let created = 0;
+  let conflicts = 0;
+  const by = (e) => (e.sourceRow ? `the contact from row ${e.sourceRow}` : `an existing contact (matched by ${e.matchedBy})`);
   for (const e of evaluated) {
-    if (e.status === 'invalid') errors.push({ line: e.row, error: e.errors.join('; ') });
-    else if (e.status === 'duplicate') duplicates.push({ line: e.row, reason: e.reason });
-    else if (e.status === 'inserted') inserted++;
-    else valid++;
+    if (e.status === 'invalid') {
+      errors.push({ line: e.row, error: e.errors.join('; ') });
+      if (e.conflict) conflicts++;
+    } else if (e.status === 'unchanged') {
+      duplicates.push({ line: e.row, reason: `Same as ${by(e)}; nothing to update` });
+    } else if (e.status === 'updated') {
+      updates.push({ line: e.row, reason: `Updates ${by(e)}` });
+    } else if (e.status === 'created') {
+      created++;
+    }
   }
   return {
     ...(preview ? { preview: true } : {}),
-    format, total: evaluated.length, valid: valid + inserted, invalid: errors.length,
-    inserted, skipped: duplicates.length, duplicates, errors,
+    format, total: evaluated.length, valid: created + updates.length, invalid: errors.length,
+    inserted: preview ? 0 : created, created, updated: updates.length, unchanged: duplicates.length, conflicts,
+    duplicates_prevented: updates.length + duplicates.length,
+    skipped: duplicates.length, duplicates, updates, errors,
   };
 }
 
@@ -730,27 +927,28 @@ export const bulkUpload = asyncHandler(async (req, res) => {
   if (mode === 'preview') {
     const dir = await loadDirectory(query, ctx, header.cols);
     evaluated = evaluateRows(table, header, ctx, dir);
-    await markDuplicates(query, evaluated, { lock: false });
+    await applyIdentities(query, evaluated, { write: false });
   } else {
-    evaluated = await withTransaction(async (tq) => {
+    evaluated = await withIdentityTransaction(async (tq) => {
       const dir = await loadDirectory(tq, ctx, header.cols);
       const rows = evaluateRows(table, header, ctx, dir);
-      await markDuplicates(tq, rows, { lock: true });
-      await insertValidRows(tq, rows);
+      await applyIdentities(tq, rows, { write: true });
       return rows;
     });
 
     // Audit: one summary per organization (counts only — never contact details or the file).
+    const empty = () => ({ total_rows: 0, inserted: 0, updated: 0, skipped_duplicates: 0, error_rows: 0, conflicts: 0 });
     const groups = new Map();
     for (const e of evaluated) {
-      const g = groups.get(e.orgId) || { total_rows: 0, inserted: 0, skipped_duplicates: 0, error_rows: 0 };
+      const g = groups.get(e.orgId) || empty();
       g.total_rows++;
-      if (e.status === 'inserted') g.inserted++;
-      else if (e.status === 'duplicate') g.skipped_duplicates++;
-      else if (e.status === 'invalid') g.error_rows++;
+      if (e.status === 'created') g.inserted++;
+      else if (e.status === 'updated') g.updated++;
+      else if (e.status === 'unchanged') g.skipped_duplicates++;
+      else if (e.status === 'invalid') { g.error_rows++; if (e.conflict) g.conflicts++; }
       groups.set(e.orgId, g);
     }
-    if (!groups.size) groups.set(ctx.perRow ? null : ctx.fallbackOrg.id, { total_rows: 0, inserted: 0, skipped_duplicates: 0, error_rows: 0 });
+    if (!groups.size) groups.set(ctx.perRow ? null : ctx.fallbackOrg.id, empty());
     const order = [...groups.keys()].sort((a, b) => (a === null) - (b === null) || a - b);
     for (const orgId of order) {
       await auditContacts(req, 'contacts_imported', null, {
@@ -762,7 +960,8 @@ export const bulkUpload = asyncHandler(async (req, res) => {
   const result = summarise(evaluated, table.format, mode === 'preview');
   logger.info({
     module: 'contacts', mode, format: table.format, rows: result.total, valid: result.valid,
-    invalid: result.invalid, duplicates: result.skipped, inserted: result.inserted,
+    invalid: result.invalid, created: result.created, updated: result.updated, unchanged: result.unchanged,
+    conflicts: result.conflicts,
     organizations: new Set(evaluated.map((e) => e.orgId).filter((id) => id !== null)).size,
     durationMs: Date.now() - started,
   }, mode === 'preview' ? 'Contacts import checked' : 'Contacts import committed');

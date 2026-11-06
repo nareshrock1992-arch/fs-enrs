@@ -5,6 +5,7 @@ import {
   COLUMNS, DEFAULT_PREFS, PAGE_SIZES, prefsKey, loadPrefs, savePrefs, choosableColumns, visibleColumns,
   toggleColumn, nextSort, ariaSort, buildQuery, hasActiveFilters, EMPTY_FILTERS, cellText,
   TEMPLATE_COLUMNS, IMPORT_ACCEPT, IMPORT_MAX_BYTES, checkImportFile, importCounts, importIssueText, orgLabel,
+  contactPayload, identityHint, savedNotice,
 } from '../pages/contacts/contactTable.js';
 
 const memoryStorage = () => {
@@ -136,12 +137,48 @@ describe('import help, file checks and results', () => {
 
   it('counts a check (preview) and a finished import', () => {
     expect(importCounts(null)).toBeNull();
+    const same = { created: 0, updated: 0, conflicts: 0 };
     const preview = { preview: true, total: 10, valid: 6, invalid: 3, skipped: 1, inserted: 0, errors: [], duplicates: [] };
-    expect(importCounts(preview)).toEqual({ total: 10, valid: 6, invalid: 3, duplicates: 1, inserted: 0 });
+    expect(importCounts(preview)).toMatchObject({ total: 10, valid: 6, invalid: 3, duplicates: 1, inserted: 0, ...same, otherInvalid: 3 });
     const done = { total: 10, valid: 5, invalid: 4, skipped: 1, inserted: 5, errors: [], duplicates: [] };
-    expect(importCounts(done)).toEqual({ total: 10, valid: 5, invalid: 4, duplicates: 1, inserted: 5 });
+    expect(importCounts(done)).toMatchObject({ total: 10, valid: 5, invalid: 4, duplicates: 1, inserted: 5, created: 5, updated: 0 });
     // an older server response without the new counters
-    expect(importCounts({ inserted: 2, total: 4, errors: [{}], duplicates: [{}] })).toEqual({ total: 4, valid: 2, invalid: 1, duplicates: 1, inserted: 2 });
+    expect(importCounts({ inserted: 2, total: 4, errors: [{}], duplicates: [{}] }))
+      .toMatchObject({ total: 4, valid: 2, invalid: 1, duplicates: 1, inserted: 2, created: 2, updated: 0, conflicts: 0, duplicatesPrevented: 1 });
+  });
+
+  it('counts created, updated, duplicates prevented, conflicts and other invalid rows (identity rules)', () => {
+    const done = { total: 9, valid: 5, invalid: 3, inserted: 3, created: 3, updated: 2, unchanged: 1, skipped: 1,
+      conflicts: 2, duplicates_prevented: 3, errors: [{}, {}, {}], duplicates: [{}], updates: [{}, {}] };
+    expect(importCounts(done)).toEqual({ total: 9, valid: 5, invalid: 3, duplicates: 1, inserted: 3, created: 3, updated: 2,
+      conflicts: 2, duplicatesPrevented: 3, otherInvalid: 1 });
+    expect(importCounts({ ...done, preview: true, inserted: 0 }).valid).toBe(5);
+  });
+
+  it('Add sends only filled-in fields (an existing contact keeps what is blank); Edit sends every field', () => {
+    const form = { organization_id: '7', first_name: 'A', last_name: 'B', mobile_number: '0501', extension_number: '',
+      email: '', role: '  ', department_id: '', location_id: '3' };
+    expect(contactPayload(form, false)).toEqual({ organization_id: 7, first_name: 'A', last_name: 'B', mobile_number: '0501', location_id: 3 });
+    expect(contactPayload(form, true)).toEqual({ organization_id: 7, first_name: 'A', last_name: 'B', mobile_number: '0501',
+      extension_number: null, email: null, role: '  ', department_id: null, location_id: 3 });
+  });
+
+  it('explains what saving will do with the typed numbers, and blocks what the server refuses', () => {
+    expect(identityHint(null, false)).toBeNull();
+    expect(identityHint({ status: 'new' }, false)).toBeNull();
+    const upd = { status: 'update', matched_by: 'mobile', contact: { id: 4, name: 'Ann One' } };
+    expect(identityHint(upd, false)).toMatchObject({ tone: 'info', blocks: false });
+    expect(identityHint(upd, false).text).toMatch(/belongs to Ann One\. Saving will update that contact/);
+    expect(identityHint(upd, true)).toMatchObject({ tone: 'error', blocks: true, text: 'This mobile number already belongs to Ann One in this organization.' });
+    const other = { status: 'other_organization', field: 'extension', message: 'This extension is already assigned to a contact in another organization' };
+    expect(identityHint(other, false)).toEqual({ tone: 'error', blocks: true, text: other.message });
+    expect(identityHint({ status: 'conflict', message: 'm' }, false)).toEqual({ tone: 'error', blocks: true, text: 'm' });
+  });
+
+  it('says when Add updated an existing contact instead of creating a duplicate', () => {
+    expect(savedNotice({ id: 1, upserted: true, first_name: 'Ann', last_name: 'One' }, false)).toMatch(/existing contact \(Ann One\).*updated instead of creating a duplicate/);
+    expect(savedNotice({ id: 1 }, false)).toBe('Contact created.');
+    expect(savedNotice({ id: 1 }, true)).toBe('Contact updated.');
   });
 
   it('turns any row problem into one line of text with the spreadsheet row number (never an object)', () => {

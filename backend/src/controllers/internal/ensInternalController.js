@@ -6,6 +6,7 @@ import { emitInternal } from '../../services/socketService.js';
 import { ensConfigTenant, ensNotificationTenant } from '../../services/eventTenant.js';
 import { createCampaign, createCampaignByConfigId } from '../../services/campaignEngine.js';
 import { logger } from '../../infrastructure/index.js';
+import { uniqueByDialTarget } from '../../services/contactIdentity.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -86,7 +87,8 @@ async function resolveEnsContacts(configId) {
     if (r.mobile_number)    numbers.add(r.mobile_number);
     if (r.extension_number) numbers.add(r.extension_number);
   }
-  return [...numbers].sort();
+  // A number written two ways ("+966 50…" / "+96650…") is still one recipient.
+  return uniqueByDialTarget([...numbers].sort(), (n) => n).kept;
 }
 
 // ── PIN Verification ──────────────────────────────────────────────────────────

@@ -137,13 +137,77 @@ export function importCounts(result) {
   const invalid = result.invalid ?? result.errors?.length ?? 0;
   const duplicates = result.skipped ?? result.duplicates?.length ?? 0;
   const inserted = result.inserted ?? 0;
+  // created / updated / conflicts come from servers with contact identity rules; an older
+  // response (only inserted / skipped) reads as before.
+  const created = result.created ?? inserted;
+  const updated = result.updated ?? 0;
+  const conflicts = result.conflicts ?? 0;
   return {
     total: result.total ?? 0,
-    valid: result.preview ? (result.valid ?? 0) : inserted,
+    valid: result.preview ? (result.valid ?? 0) : created + updated,
     invalid,
     duplicates,
     inserted,
+    created,
+    updated,
+    conflicts,
+    duplicatesPrevented: result.duplicates_prevented ?? updated + duplicates,
+    otherInvalid: Math.max(0, invalid - conflicts),
   };
+}
+
+/**
+ * Add / Edit request body. Add sends only the fields that were filled in: when the
+ * number belongs to an existing contact of the organization, that contact is updated
+ * and a blank field must not wipe what it already has. Edit sends every field, so a
+ * cleared field is cleared (unchanged behaviour).
+ */
+export function contactPayload(form, isEdit) {
+  const num = (v) => (v ? Number(v) : null);
+  const all = {
+    organization_id:  Number(form.organization_id) || undefined,
+    first_name:       form.first_name,
+    last_name:        form.last_name,
+    mobile_number:    form.mobile_number,
+    extension_number: form.extension_number || null,
+    email:            form.email || null,
+    role:             form.role || null,
+    department_id:    num(form.department_id),
+    location_id:      num(form.location_id),
+  };
+  if (isEdit) return all;
+  const out = {};
+  for (const [k, v] of Object.entries(all)) {
+    const keep = k === 'organization_id' || k === 'first_name' || k === 'last_name';
+    if (keep || (v !== null && v !== undefined && String(v).trim() !== '')) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Feedback for the identifiers typed in the Add / Edit dialog (GET /contacts/identity-check).
+ * blocks: saving is not possible (the server would refuse it as well).
+ */
+export function identityHint(check, isEdit) {
+  if (!check || check.status === 'new') return null;
+  if (check.status === 'update') {
+    const name = check.contact?.name || 'an existing contact';
+    const what = { extension: 'extension', mobile: 'mobile number', both: 'extension and mobile number' }[check.matched_by] || 'number';
+    return isEdit
+      ? { tone: 'error', blocks: true, text: `This ${what} already belongs to ${name} in this organization.` }
+      : { tone: 'info', blocks: false, text: `This ${what} belongs to ${name}. Saving will update that contact with the details entered here (blank fields keep their current values).` };
+  }
+  return { tone: 'error', blocks: true, text: check.message || 'This number cannot be used.' };
+}
+
+/** Message after Add: created, or an existing contact updated instead of a second one. */
+export function savedNotice(res, isEdit) {
+  if (isEdit) return 'Contact updated.';
+  if (res?.upserted) {
+    const name = [res.first_name, res.last_name].filter(Boolean).join(' ');
+    return `An existing contact${name ? ` (${name})` : ''} already had this number, so it was updated instead of creating a duplicate.`;
+  }
+  return 'Contact created.';
 }
 
 /** One line of text for an import problem ({ line, error } or { line, reason }), whatever its shape. */

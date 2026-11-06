@@ -23,6 +23,7 @@ import { resolveDialString } from './dialResolver.js';
 import { emitInternal } from './socketService.js';
 import { fsPathService } from './freeSwitchPathService.js';
 import { config } from '../config/index.js';
+import { uniqueByDialTarget } from './contactIdentity.js';
 
 // Safety cap when ring_timeout_seconds is NULL (= "indefinite" per spec).
 // This is a runaway-loop guard, not a user-facing limit: 2h of continuous
@@ -94,8 +95,18 @@ async function resolveTierResponders(configId, tier) {
        )`,
     [configId, tier]
   );
-  return contactRows;
+  // One leg per person per wave: contacts resolving to the same normalised number (the
+  // number each leg is recorded under) are rung once. The lowest contact id is kept so the
+  // choice is stable; the order of the remaining rows is left exactly as returned.
+  const byId = [...contactRows].sort((a, b) => a.id - b.id);
+  const { dropped } = uniqueByDialTarget(byId, (c) => c.extension_number || c.mobile_number);
+  if (!dropped.length) return contactRows;
+  const droppedIds = new Set(dropped.map((c) => c.id));
+  console.log(`[ers-ring] ${dropped.length} responder(s) share a number with another responder — rung once (contacts ${[...droppedIds].join(', ')})`);
+  return contactRows.filter((c) => !droppedIds.has(c.id));
 }
+
+export const __test = { resolveTierResponders };
 
 // Caller identity variables for a responder leg. Exported for tests: the values come
 // from the caller and are placed inside an originate {...} block.

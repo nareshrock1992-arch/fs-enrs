@@ -382,7 +382,19 @@ CSV (UTF-8 with BOM) of **every** contact matching the same parameters as `GET /
 
 Other fields are ignored (the per-contact `gateway_id` override is not set through this API).
 
-**Response `201`:** Created contact object.
+**Contact identity (platform-wide):** an extension and a mobile number each belong to at most one live contact on the whole platform. Numbers are compared normalised — extension: spaces and `( ) . -` ignored, case-insensitive; mobile: only digits and a leading `+` count, a leading `00` equals `+`. Local and international forms (`0501234567` / `+966501234567`) are different numbers.
+
+**Response `201`:** Created contact object (no contact holds the extension or mobile number).
+
+**Response `200`:** The extension or mobile number already belongs to a contact of the **same organization**: that contact is updated instead of creating a second one — same `id`, group memberships and ERS / ENS assignments kept, organization never changed. Fields present in the request overwrite (an empty string or `null` clears an optional field, as in `PUT`); omitted fields keep their values. Body: the updated contact plus `"upserted": true` and `"matched_by": "extension" | "mobile" | "both"`.
+
+**Response `409`** (nothing is written):
+
+| `code` | When | Body |
+|---|---|---|
+| `IDENTIFIER_IN_OTHER_ORGANIZATION` | The number belongs to a contact of another organization (any tenant) | `error`, `field` (`extension` / `mobile` / `both`) — nothing about the other contact or organization |
+| `IDENTIFIER_CONFLICT` | The extension belongs to one contact and the mobile number to another (never merged) | `error`; `contacts` (`matched`, `id`, `name`) only when both are in the request's organization |
+| `IDENTIFIER_TAKEN` | A simultaneous request took the number first | `error` |
 
 ---
 
@@ -392,7 +404,17 @@ Other fields are ignored (the per-contact `gateway_id` override is not set throu
 
 **Response `200`:** Updated contact object.
 
+**Response `409`:** a changed extension / mobile number held by another live contact — `IDENTIFIER_IN_USE` (same organization; `field`, `contact` `{ id, name }`) or `IDENTIFIER_IN_OTHER_ORGANIZATION` (`field` only). Keeping or re-formatting the contact's own numbers is fine.
+
 On create and update, a department or location of another organization is refused (400). A malformed `:id` → 400.
+
+---
+
+### `GET /contacts/identity-check`
+
+`adminOnly`. Feedback for the Add / Edit dialog before saving (the save checks again). **Query:** `organization_id` (required; live, in the caller's tenant, `404` otherwise), `extension_number`, `mobile_number`, `exclude_id` (the contact being edited). Writes nothing.
+
+**Response `200`:** `{ "status": "new" }` | `{ "status": "update", "matched_by", "contact": { "id", "name" } }` (same organization) | `{ "status": "other_organization", "field", "message" }` | `{ "status": "conflict", "message", "contacts"? }` (`contacts` only when both are in the organization).
 
 ---
 
@@ -432,7 +454,7 @@ Import contacts from an Excel workbook (`.xlsx`) or a CSV file (`.csv`). Multipa
 
 **Rows:** values are trimmed; empty rows are ignored. `organization` is resolved by name (case-insensitive) among the live organizations of the target tenant only; `department` / `location` by name within that organization. A name that is unknown, belongs to another organization or tenant, or matches more than one record is a row error — there is no fallback. Excel: the worksheet named "Emergency Contacts" is read (otherwise the first one); values only — a formula or error cell is a row error and is never evaluated; numbers become plain digits (never scientific notation). An unchanged example row of the template is a row error ("remove it before importing").
 
-**Duplicates:** a row is skipped when a live contact of the same organization, or an earlier row of the file, has the same first and last name (case-insensitive, trimmed) and the same mobile and extension numbers (spaces, dots, dashes and brackets ignored). Imports are serialised per organization (transaction advisory locks); contacts created individually at the same moment are not covered (no database uniqueness constraint).
+**Contact identity:** the same platform-wide rules as `POST /contacts`, row by row in file order (earlier rows count). A row whose extension or mobile number belongs to a contact of the row's organization **updates** that contact: filled-in cells overwrite, blank cells keep the current value (`updated`; `unchanged` when nothing differs). A number of another organization, or an extension and a mobile number of two different contacts, is a row error (`conflicts`; the other contact is not disclosed). Preview and commit decide identically. All contact writers (imports, Add / Edit, the ERS broadcast API) are serialised by one transaction advisory lock, and the unique indexes of migration 051 are the final guard.
 
 **Limits:** 5 MB per file (`413`); 10,000 data rows (`413`); workbooks: at most 200 archive parts, 64 MB uncompressed per part and 128 MB in total (`413`); compressed parts are never inflated beyond their declared size (zip bombs), unsafe paths, encryption, document type declarations and malformed XML are refused (`400`).
 
@@ -446,15 +468,24 @@ Import contacts from an Excel workbook (`.xlsx`) or a CSV file (`.csv`). Multipa
   "valid": 42,
   "invalid": 3,
   "inserted": 0,
+  "created": 39,
+  "updated": 3,
+  "unchanged": 1,
+  "conflicts": 1,
+  "duplicates_prevented": 4,
   "skipped": 1,
-  "duplicates": [{ "line": 5, "reason": "Contact already exists" }],
-  "errors": [{ "line": 7, "error": "Organization not found" }]
+  "updates": [{ "line": 4, "reason": "Updates an existing contact (matched by mobile)" }],
+  "duplicates": [{ "line": 5, "reason": "Same as an existing contact (matched by extension); nothing to update" }],
+  "errors": [{ "line": 7, "error": "Organization not found" },
+             { "line": 9, "error": "This mobile number is already assigned to a contact in another organization" }]
 }
 ```
 
-`preview` is present only for `mode=preview`. After a commit, `inserted` = `valid` = rows imported. `line` is the row number as a spreadsheet shows it (the header is row 1). Row messages are sentences such as "First name is required", "Both mobile number and extension number are empty", "Department does not belong to the specified organization".
+`preview` is present only for `mode=preview`. `valid` = `created` + `updated`; `inserted` = `created` (0 in a preview); `skipped` = `unchanged`; `duplicates_prevented` = `updated` + `unchanged`; `invalid` includes `conflicts`. Older fields keep their names. `line` is the row number as a spreadsheet shows it (the header is row 1). Row messages are sentences such as "First name is required", "Both mobile number and extension number are empty", "Department does not belong to the specified organization".
 
-**Audit (commit only):** one `contacts_imported` record per organization written to (plus one with `organization_id: null` for rows whose organization could not be resolved): `tenant_id`, `organization_id`, `format`, `total_rows`, `inserted`, `skipped_duplicates`, `error_rows`, `file_rows` — counts only.
+**Audit (commit only):** one `contacts_imported` record per organization written to (plus one with `organization_id: null` for rows whose organization could not be resolved): `tenant_id`, `organization_id`, `format`, `total_rows`, `inserted`, `updated`, `skipped_duplicates`, `error_rows`, `conflicts`, `file_rows` — counts only.
+
+Single contacts: `contact_created`, `contact_updated`, `contact_duplicate_prevented` (Add updated an existing contact: `matched_by`, `changed_fields`) and `contact_identifier_conflict` (a refused save: `kind`, `field`, and contact ids only within the caller's organization) — never numbers or names.
 
 ---
 

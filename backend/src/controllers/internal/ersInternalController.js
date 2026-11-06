@@ -8,6 +8,7 @@ import { getConferenceMemberCount } from '../../services/eslService.js';
 import { startRingAll, lookupCallerIdentity } from '../../services/ersRingService.js';
 import { resolveConferenceRoom, getConferenceProfile } from '../../services/conferenceManager.js';
 import { config } from '../../config/index.js';
+import { uniqueByDialTarget } from '../../services/contactIdentity.js';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,8 @@ async function resolveResponders(configId, tier) {
     ...groupRows.map(r => r.mobile_number),
   ]);
 
-  if (merged.size > 0) return [...merged].sort();
+  // A number written two ways ("+966 50…" / "+96650…") is still one responder.
+  if (merged.size > 0) return uniqueByDialTarget([...merged].sort(), (n) => n).kept;
 
   // Legacy fallback — old configs that used direct group FK columns
   const ersGroupCol  = `${tier}_ers_group_id`;

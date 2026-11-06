@@ -25,6 +25,7 @@ import { config } from '../config/index.js';
 import { logger } from '../infrastructure/index.js';
 import { synthesize, PiperError } from './piperClient.js';
 import { fsConfig } from '../config/fsConfig.js';
+import { uniqueByDialTarget, maskIdentifier } from './contactIdentity.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -310,7 +311,17 @@ async function resolveDialTargets(contacts, cfg) {
     }
   }
 
-  return { resolved, skipped };
+  // One call per person per campaign: two contacts that resolve to the same normalised
+  // number (e.g. one contact's extension is another's mobile, or the same number written
+  // differently) produce a single destination. Retries of that destination are unchanged.
+  const { kept, dropped } = uniqueByDialTarget(resolved, (r) => r.phone_number);
+  if (dropped.length) {
+    logger.info({
+      module: 'campaignEngine', operation: 'resolveDialTargets', dropped: dropped.length,
+      contacts: dropped.map((r) => r.contact_id), numbers: dropped.map((r) => maskIdentifier(r.phone_number)),
+    }, 'Duplicate dial targets removed — each number is called once per campaign');
+  }
+  return { resolved: kept, skipped };
 }
 
 // ── In-memory state ───────────────────────────────────────────────────────────

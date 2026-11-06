@@ -5,6 +5,8 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { confList, confKick, confMute, confUnmute, confPlay } from '../services/eslService.js';
 import { effectiveTenantId, requireTenantForWrite } from '../middleware/tenantScope.js';
 import { isEslToken } from '../middleware/conferenceAccess.js';
+import { logger } from '../infrastructure/index.js';
+import { findIdentityMatches, classifyIdentity, isIdentityViolation, legacyMobileMatch, IDENTITY_LOCK, OTHER_ORG_MESSAGE, CONFLICT_MESSAGE } from '../services/contactIdentity.js';
 
 const str    = (max) => z.string().max(max).optional().nullable();
 
@@ -406,9 +408,9 @@ export const deleteConfiguration = asyncHandler(async (req, res) => {
 //
 // Spec: "user list updated by invoking API." Upserts {name, extension,
 // mobile} rows into emergency_contacts and links them to a responder
-// group (which ENS configs and ERS tiers both reference). Match key is
-// the mobile number (last-9-digit normalized) — the same identity rule
-// the rest of the system uses for callers.
+// group (which ENS configs and ERS tiers both reference). Contacts are matched
+// by normalised extension / mobile number with the platform-wide identity rules
+// of services/contactIdentity.js (one number = one contact).
 
 const BroadcastUsersSchema = z.object({
   organization_id:  z.number().int().positive(),
@@ -426,7 +428,7 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
   // Verify the target organization belongs to the caller's tenant.
   const tenantId = effectiveTenantId(req);
   const { rows: [org] } = await query(
-    `SELECT id FROM organizations WHERE id = $1 AND deleted_at IS NULL
+    `SELECT id, tenant_id FROM organizations WHERE id = $1 AND deleted_at IS NULL
        AND ($2::int IS NULL OR tenant_id = $2)`,
     [d.organization_id, tenantId]
   );
@@ -449,27 +451,47 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
       groupId = g.id;
     }
 
+    // Contact identity: the platform-wide rules of services/contactIdentity.js (the same
+    // as POST /contacts and the import). Same organization → update; another
+    // organization's identifier or a split match → that user is rejected (reported).
+    await tq(IDENTITY_LOCK);
     let created = 0, updated = 0;
-    for (const user of d.users) {
+    const rejected = [];
+    for (const [index, user] of d.users.entries()) {
       const [firstName, ...rest] = user.name.trim().split(/\s+/);
       const lastName = rest.join(' ') || '-';
-      const last9 = user.mobile.replace(/\D/g, '').slice(-9);
 
-      const { rows: [existing] } = await tq(
-        `SELECT id FROM emergency_contacts
-         WHERE organization_id = $1 AND deleted_at IS NULL
-           AND RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2`,
-        [d.organization_id, last9]
-      );
+      let cls = classifyIdentity(
+        await findIdentityMatches(tq, { extension: user.extension ?? null, mobile: user.mobile }), d.organization_id);
+      if (cls.kind === 'other_organization' || cls.kind === 'conflict') {
+        rejected.push({ index, error: cls.kind === 'other_organization' ? OTHER_ORG_MESSAGE[cls.field] : CONFLICT_MESSAGE });
+        continue;
+      }
+      if (cls.kind === 'new') {
+        // Compatibility with this API's original match key: a contact of this organization
+        // whose mobile ends in the same 9 digits (e.g. 0501234567 vs +966501234567) is the
+        // same user — unless both numbers carry different country codes (legacyMobileMatch).
+        // Safe for uniqueness: neither identifier is held by any contact.
+        const last9 = user.mobile.replace(/\D/g, '').slice(-9);
+        const { rows: candidates } = await tq(
+          `SELECT id, mobile_number FROM emergency_contacts
+           WHERE organization_id = $1 AND deleted_at IS NULL
+             AND RIGHT(REGEXP_REPLACE(mobile_number, '[^0-9]', '', 'g'), 9) = $2
+           ORDER BY id`,
+          [d.organization_id, last9]
+        );
+        const legacy = candidates.find((c) => legacyMobileMatch(c.mobile_number, user.mobile));
+        if (legacy) cls = { kind: 'update', contact: legacy, matchedBy: 'mobile' };
+      }
 
       let contactId;
-      if (existing) {
+      if (cls.kind === 'update') {
         const { rows: [c] } = await tq(
           `UPDATE emergency_contacts
            SET first_name = $2, last_name = $3, extension_number = COALESCE($4, extension_number),
-               is_active = true, updated_at = now()
+               mobile_number = $5, is_active = true, updated_at = now()
            WHERE id = $1 RETURNING id`,
-          [existing.id, firstName, lastName, user.extension ?? null]
+          [cls.contact.id, firstName, lastName, user.extension ?? null, user.mobile]
         );
         contactId = c.id;
         updated++;
@@ -491,8 +513,26 @@ export const upsertBroadcastUsers = asyncHandler(async (req, res) => {
       );
     }
 
-    return { group_id: groupId, created, updated };
+    return { group_id: groupId, created, updated, rejected };
+  }).catch((err) => {
+    if (isIdentityViolation(err)) {
+      throw Object.assign(new Error('An extension or mobile number was just assigned to another contact; try again'), { status: 409 });
+    }
+    throw err;
   });
+
+  // Audit summary (counts only), same convention as the contacts import.
+  try {
+    await query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'contacts_imported', 'emergency_contact', NULL, $2)`,
+      [req.user?.id ?? null, JSON.stringify({ role: req.user?.role ?? null, scope_tenant_id: tenantId,
+        tenant_id: org.tenant_id, organization_id: d.organization_id, source: 'ers_broadcast_users',
+        total_rows: d.users.length, inserted: summary.created, updated: summary.updated, conflicts: summary.rejected.length })]
+    );
+  } catch (err) {
+    logger.error({ module: 'contacts', action: 'contacts_imported', err: err.message }, 'Contact audit failed');
+  }
 
   res.json({ success: true, ...summary, total: d.users.length });
 });

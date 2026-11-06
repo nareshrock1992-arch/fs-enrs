@@ -11,10 +11,11 @@
  *  CX-7  header errors
  *  CX-8  malformed, hostile and unsupported files
  *  CX-9  file-size and row limits
- *  CX-10 duplicate detection (existing, within the file, across organizations; preview = commit)
+ *  CX-10 duplicate prevention: create / update / unchanged / conflict (other organization, split match); preview = commit
  *  CX-11 tenant isolation and SUPER_ADMIN (selected tenant, All Tenants with explicit target)
  *  CX-12 audit records (per organization, format, no personal data; none for a preview)
  *  CX-13 spreadsheet-formula text is stored as text and neutralised on export
+ *  CX-14 existing extension, both identifiers, partial failures, summary arithmetic
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
@@ -310,7 +311,7 @@ describe('CX-5: Excel import', () => {
       2: row({ first_name: 'Ann', last_name: 'One', mobile_number: '0501234567', email: 'ann@cx.test', role: 'Guard', organization: N.a1, department: 'IT', location: 'Bengaluru', is_active: 'yes' }),
       // row 3 is empty
       4: row({ first_name: 'Ben', last_name: 'Two', mobile_number: { n: '966501234567' }, extension_number: { n: '1002' }, organization: N.a2, department: 'IT', location: 'Chennai', is_active: { b: false } }),
-      5: row({ first_name: 'Cy', last_name: 'Three', mobile_number: { n: '9.66501234567E+11' }, organization: N.a1, is_active: { n: '0' } }),
+      5: row({ first_name: 'Cy', last_name: 'Three', mobile_number: { n: '9.66501234568E+11' }, organization: N.a1, is_active: { n: '0' } }),
       6: row({ first_name: 'Dee', last_name: 'Four', mobile_number: { inline: '12345678901234567890' }, organization: N.a1 }),
       7: row({ first_name: ' Eve ', last_name: ' Five ', mobile_number: ' 0507 ', organization: ` ${N.a2.toUpperCase()} `, department: ' it ', is_active: 'TRUE' }),
     });
@@ -327,7 +328,7 @@ describe('CX-5: Excel import', () => {
     const by = Object.fromEntries(rows.map((r) => [r.last_name, r]));
     expect(by.One).toMatchObject({ mobile_number: '0501234567', is_active: true, organization_id: orgA1, dept: 'IT', loc: 'Bengaluru' });
     expect(by.Two).toMatchObject({ mobile_number: '966501234567', extension_number: '1002', is_active: false, organization_id: orgA2, dept: 'IT', loc: 'Chennai' });
-    expect(by.Three).toMatchObject({ mobile_number: '966501234567', is_active: false, organization_id: orgA1, dept: null });
+    expect(by.Three).toMatchObject({ mobile_number: '966501234568', is_active: false, organization_id: orgA1, dept: null });
     expect(by.Four).toMatchObject({ mobile_number: '12345678901234567890', is_active: true });
     expect(by.Five).toMatchObject({ first_name: 'Eve', mobile_number: '0507', organization_id: orgA2, dept: 'IT' });
   });
@@ -478,21 +479,72 @@ describe('CX-9: file size and row limits', () => {
   });
 });
 
-describe('CX-10: duplicate detection', () => {
-  it('existing contacts, repeats within the file and other organizations — preview and commit agree', async () => {
+describe('CX-10: duplicate prevention (create / update / unchanged / conflict)', () => {
+  it('known numbers update their contact, repeats change nothing, other organizations and split matches are refused — preview and commit agree', async () => {
     const file = workbook([IMPORT_FIELDS,
-      row({ first_name: 'ann', last_name: 'ONE', mobile_number: '050-123-4567', organization: N.a1 }),   // exists (CX-5)
-      row({ first_name: 'Gus', last_name: 'Six', mobile_number: '0509', organization: N.a1 }),
-      row({ first_name: 'gus', last_name: 'six', mobile_number: '0509', organization: N.a1 }),             // repeat of row 3
-      row({ first_name: 'Gus', last_name: 'Six', mobile_number: '0509', organization: N.a2 }),             // other organization
+      row({ first_name: 'Ann', last_name: 'One', mobile_number: '0501234567', role: 'Lead', organization: N.a1 }),   // exists (CX-5): role is new
+      row({ first_name: 'Gus', last_name: 'Six', mobile_number: '0509', organization: N.a1 }),                       // new
+      row({ first_name: 'Gus', last_name: 'Six', mobile_number: '0509', organization: N.a1 }),                       // identical repeat of row 3
+      row({ first_name: 'Gus', last_name: 'Six', mobile_number: '0509', organization: N.a2 }),                       // number now held in another organization
+      row({ first_name: 'Mix', last_name: 'Up', mobile_number: '0507', extension_number: '1002', organization: N.a2 }), // ext = Ben, mobile = Eve
     ]);
     const preview = await upload(adminA, file);
-    expect(preview.body).toMatchObject({ total: 4, valid: 2, skipped: 2 });
-    expect(preview.body.duplicates).toEqual([{ line: 2, reason: 'Contact already exists' }, { line: 4, reason: 'Same contact as row 3' }]);
+    expect(preview.body).toMatchObject({ total: 5, created: 1, updated: 1, unchanged: 1, conflicts: 2, duplicates_prevented: 2, inserted: 0 });
+    expect(preview.body.updates).toEqual([{ line: 2, reason: 'Updates an existing contact (matched by mobile)' }]);
+    expect(preview.body.duplicates).toEqual([{ line: 4, reason: 'Same as the contact from row 3; nothing to update' }]);
+    expect(preview.body.errors).toEqual([
+      { line: 5, error: 'This mobile number is already assigned to a contact in another organization' },
+      { line: 6, error: 'The extension and the mobile number belong to two different existing contacts; resolve this before saving' },
+    ]);
+    const { rows: [ann0] } = await query(`SELECT id, role FROM emergency_contacts WHERE organization_id=$1 AND last_name='One'`, [orgA1]);
+    expect(ann0.role).toBe('Guard');                                       // a preview writes nothing
+
     const commit = await upload(adminA, file, { mode: 'commit' });
-    expect(commit.body).toMatchObject({ total: 4, inserted: 2, skipped: 2, duplicates: preview.body.duplicates });
+    const { preview: _p, inserted: _i, ...same } = preview.body;
+    expect(commit.body).toMatchObject({ ...same, inserted: 1 });
+    const { rows: [ann] } = await query(`SELECT id, role, email FROM emergency_contacts WHERE organization_id=$1 AND last_name='One'`, [orgA1]);
+    expect(ann).toMatchObject({ id: ann0.id, role: 'Lead', email: 'ann@cx.test' });   // same id; blank cells kept
+    const { rows: gus } = await query(`SELECT organization_id FROM emergency_contacts WHERE mobile_norm='0509' AND deleted_at IS NULL`);
+    expect(gus).toEqual([{ organization_id: orgA1 }]);
+    const { rows: mix } = await query(`SELECT 1 FROM emergency_contacts WHERE last_name='Up' AND first_name='Mix'`);
+    expect(mix).toHaveLength(0);
+
     const again = await upload(adminA, file);
-    expect(again.body).toMatchObject({ valid: 0, skipped: 4 });
+    expect(again.body).toMatchObject({ created: 0, updated: 0, unchanged: 3, conflicts: 2 });
+  });
+});
+
+describe('CX-14: Excel import — existing extension, both identifiers, partial failures', () => {
+  it('updates by extension and by both, creates new rows, refuses bad rows without disturbing the good ones; the summary adds up', async () => {
+    const file = workbook([IMPORT_FIELDS,
+      row({ first_name: 'Ben', last_name: 'Two', extension_number: '1002', role: 'Medic', organization: N.a2 }),                              // existing extension (CX-5)
+      row({ first_name: 'Ben', last_name: 'Two', mobile_number: '966501234567', extension_number: '1002', role: 'Medic', organization: N.a2 }), // both, already up to date
+      row({ first_name: 'Eve', last_name: 'Five', mobile_number: '0507', email: 'eve@cx.test', organization: N.a2 }),                       // existing mobile
+      row({ first_name: 'New', last_name: 'One', mobile_number: '0510', organization: N.a1 }),
+      row({ first_name: 'Bad', last_name: 'Mix', mobile_number: '0507', extension_number: '1002', organization: N.a2 }),                    // Eve's mobile + Ben's extension
+      row({ first_name: '', last_name: 'Nameless', mobile_number: '0512', organization: N.a1 }),
+      row({ first_name: 'New', last_name: 'Two', mobile_number: '0511', organization: N.a1 }),
+    ]);
+    const res = await upload(adminA, file, { mode: 'commit' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 7, created: 2, inserted: 2, updated: 2, unchanged: 1, conflicts: 1, invalid: 2, valid: 4, duplicates_prevented: 3 });
+    expect(res.body.created + res.body.updated + res.body.unchanged + res.body.invalid).toBe(res.body.total);
+    expect(res.body.updates.map((u) => u.line)).toEqual([2, 4]);
+    expect(res.body.duplicates).toEqual([{ line: 3, reason: 'Same as an existing contact (matched by both); nothing to update' }]);
+    expect(res.body.errors.map((e) => e.line)).toEqual([6, 7]);
+
+    const { rows } = await query(
+      `SELECT first_name, last_name, mobile_number, extension_number, role, email, is_active, organization_id FROM emergency_contacts
+       WHERE deleted_at IS NULL AND organization_id = ANY($1::int[]) AND last_name IN ('Two','Five','One','Mix','Nameless')`,
+      [[orgA1, orgA2]]);
+    const by = Object.fromEntries(rows.map((r) => [`${r.first_name} ${r.last_name}`, r]));
+    expect(by['Ben Two']).toMatchObject({ role: 'Medic', mobile_number: '966501234567', extension_number: '1002', is_active: false });   // blank cells kept
+    expect(by['Eve Five']).toMatchObject({ email: 'eve@cx.test', mobile_number: '0507' });
+    expect(by['New One']).toMatchObject({ organization_id: orgA1, mobile_number: '0510' });
+    expect(by['New Two']).toMatchObject({ organization_id: orgA1, mobile_number: '0511' });
+    expect(by['Bad Mix']).toBeUndefined();
+    expect(by[' Nameless']).toBeUndefined();
+    expect(rows.filter((r) => r.extension_number === '1002')).toHaveLength(1);
   });
 });
 
@@ -557,7 +609,7 @@ describe('CX-12: audit records', () => {
     const rows = await importAudits(since);
     expect(rows.map((r) => r.details.organization_id)).toEqual([orgA1, orgA2, null]);
     expect(rows[0].details).toEqual({ role: 'ADMIN', scope_tenant_id: tenantA, tenant_id: tenantA, organization_id: orgA1,
-      format: 'xlsx', total_rows: 1, inserted: 1, skipped_duplicates: 0, error_rows: 0, file_rows: 3 });
+      format: 'xlsx', total_rows: 1, inserted: 1, updated: 0, skipped_duplicates: 0, error_rows: 0, conflicts: 0, file_rows: 3 });
     expect(rows[2].details).toMatchObject({ organization_id: null, total_rows: 1, inserted: 0, error_rows: 1 });
     const text = JSON.stringify(rows);
     for (const s of ['Aud', '0801', '0802', 'Missing Org', N.a1]) expect(text).not.toContain(s);

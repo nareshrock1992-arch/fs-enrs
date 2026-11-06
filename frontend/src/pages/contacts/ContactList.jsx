@@ -16,7 +16,7 @@ import {
   PAGE_SIZES, DEFAULT_PREFS, EMPTY_FILTERS, TEMPLATE_COLUMNS, IMPORT_ACCEPT,
   loadPrefs, savePrefs, choosableColumns, visibleColumns, toggleColumn,
   nextSort, ariaSort, hasActiveFilters, buildQuery, cellText, importIssueText, orgLabel,
-  checkImportFile, importCounts,
+  checkImportFile, importCounts, contactPayload, identityHint, savedNotice,
 } from './contactTable.js';
 
 const EMPTY = { organization_id: '', first_name: '', last_name: '', mobile_number: '', extension_number: '', email: '', role: '', department_id: '', location_id: '' };
@@ -45,18 +45,28 @@ function ImportReport({ result }) {
     <div className="rounded-lg border border-surface-border p-3 text-sm space-y-2" aria-live="polite">
       <p className={`flex items-center gap-2 font-medium ${preview ? 'text-text-primary' : 'text-green-500'}`}>
         {preview ? 'File checked — nothing has been imported yet.'
-          : <><CheckCircle2 size={14} aria-hidden="true" /> {c.inserted} of {c.total} rows imported</>}
+          : <><CheckCircle2 size={14} aria-hidden="true" /> {c.created} created, {c.updated} updated of {c.total} rows</>}
       </p>
-      <dl className="grid grid-cols-4 gap-2 text-center">
+      <dl className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center">
         {cell('Rows', c.total)}
-        {cell(preview ? 'Valid' : 'Imported', c.valid, 'text-green-500')}
-        {cell('Invalid', c.invalid, c.invalid ? 'text-red-500' : '')}
-        {cell('Duplicates', c.duplicates)}
+        {cell(preview ? 'New' : 'Created', c.created, 'text-green-500')}
+        {cell(preview ? 'Will update' : 'Updated', c.updated, 'text-green-500')}
+        {cell('Duplicates prevented', c.duplicatesPrevented)}
+        {cell('Conflicts', c.conflicts, c.conflicts ? 'text-red-500' : '')}
+        {cell('Invalid', c.otherInvalid, c.otherInvalid ? 'text-red-500' : '')}
       </dl>
-      {preview && (c.invalid > 0 || c.duplicates > 0) && (
-        <p className="text-xs text-text-muted">
-          Rows with errors and duplicates are not imported. Fix the file and check it again, or import only the valid rows.
-        </p>
+      <p className="text-xs text-text-muted">
+        A row whose mobile or extension number already belongs to a contact of the organization updates that
+        contact (blank cells keep the current values) instead of creating a duplicate.
+        {preview && (c.invalid > 0) && ' Rows with errors or conflicts are not imported. Fix the file and check it again, or import only the valid rows.'}
+      </p>
+      {result.updates?.length > 0 && (
+        <details className="text-xs mt-1">
+          <summary className="cursor-pointer text-text-muted">{result.updates.length} row{result.updates.length === 1 ? '' : 's'} {preview ? 'will update' : 'updated'} an existing contact</summary>
+          <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto text-text-muted">
+            {result.updates.map((d, i) => <li key={i}>{importIssueText(d)}</li>)}
+          </ul>
+        </details>
       )}
       {result.errors?.length > 0 && (
         <details className="text-xs mt-1" open>
@@ -68,7 +78,7 @@ function ImportReport({ result }) {
       )}
       {result.duplicates?.length > 0 && (
         <details className="text-xs mt-1">
-          <summary className="cursor-pointer text-text-muted">{result.duplicates.length} duplicate{result.duplicates.length === 1 ? '' : 's'} (not imported)</summary>
+          <summary className="cursor-pointer text-text-muted">{result.duplicates.length} row{result.duplicates.length === 1 ? '' : 's'} already up to date (nothing to change)</summary>
           <ul className="mt-1 space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto text-text-muted">
             {result.duplicates.map((d, i) => <li key={i}>{importIssueText(d)}</li>)}
           </ul>
@@ -181,7 +191,9 @@ function ImportDialog({ orgs, allTenants, initialOrg, onClose, onImported }) {
           )}
           {preview && (
             <button type="button" onClick={() => send('commit')} className="btn-primary" disabled={!counts.valid || !!busy}>
-              {busy === 'commit' ? 'Importing…' : `Import ${counts.valid} valid contact${counts.valid === 1 ? '' : 's'}`}
+              {busy === 'commit' ? 'Importing…'
+                : counts.updated ? `Import ${counts.valid} row${counts.valid === 1 ? '' : 's'} (${counts.created} new, ${counts.updated} update${counts.updated === 1 ? '' : 's'})`
+                : `Import ${counts.valid} valid contact${counts.valid === 1 ? '' : 's'}`}
             </button>
           )}
         </div>
@@ -326,22 +338,33 @@ export default function ContactList() {
     }));
   }
 
+  // Identity feedback while typing (one extension / mobile number = one contact). The
+  // server checks again on save; this only tells the user before they submit.
+  const [idCheck, setIdCheck] = useState(null);
+  const idSeq = useRef(0);
+  useEffect(() => {
+    const seq = ++idSeq.current;
+    setIdCheck(null);
+    if (!modal || !form.organization_id || !(form.mobile_number?.trim() || form.extension_number?.trim())) return undefined;
+    const t = setTimeout(() => {
+      api.contacts.identityCheck({
+        organization_id: form.organization_id,
+        mobile_number: form.mobile_number?.trim() || undefined,
+        extension_number: form.extension_number?.trim() || undefined,
+        exclude_id: modal.id || undefined,
+      }).then((r) => { if (seq === idSeq.current) setIdCheck(r); })
+        .catch(() => { /* no hint; the save still validates */ });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [modal, form.organization_id, form.mobile_number, form.extension_number]);
+  const hint = identityHint(idCheck, !!modal?.id);
+
   async function handleSave() {
     setSaving(true); setError('');
     try {
-      const payload = {
-        organization_id:  Number(form.organization_id) || undefined,
-        first_name:       form.first_name,
-        last_name:        form.last_name,
-        mobile_number:    form.mobile_number,
-        extension_number: form.extension_number || null,
-        email:            form.email            || null,
-        role:             form.role             || null,
-        department_id:    form.department_id ? Number(form.department_id) : null,
-        location_id:      form.location_id   ? Number(form.location_id)   : null,
-      };
-      if (!modal.id) await api.contacts.create(payload);
-      else           await api.contacts.update(modal.id, payload);
+      const payload = contactPayload(form, !!modal.id);
+      const res = modal.id ? await api.contacts.update(modal.id, payload) : await api.contacts.create(payload);
+      if (res?.upserted) notify(savedNotice(res, false), 'success');
       setModal(null); reload(); loadRoles();
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   }
@@ -613,10 +636,17 @@ export default function ContactList() {
                 </select>
               </div>
             </div>
+            {hint && (
+              <p className={`text-xs ${hint.tone === 'error' ? 'text-red-500' : 'text-amber-500'}`} role={hint.blocks ? 'alert' : 'status'}>
+                {hint.text}
+              </p>
+            )}
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2 justify-end pt-2">
               <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>
-              <button onClick={handleSave} disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Save'}</button>
+              <button onClick={handleSave} disabled={saving || !!hint?.blocks} className="btn-primary">
+                {saving ? 'Saving…' : hint && !hint.blocks ? 'Update existing contact' : 'Save'}
+              </button>
             </div>
           </div>
         </Modal>

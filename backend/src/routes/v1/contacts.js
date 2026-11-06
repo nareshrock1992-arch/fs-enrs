@@ -30,6 +30,7 @@ router.get('/',                adminOrOp, ctrl.listContacts);
 router.get('/roles',           adminOrOp, ctrl.listRoles);       // before /:id
 router.get('/export',          adminOrOp, ctrl.exportContacts);  // before /:id
 router.get('/import-template', adminOnly, ctrl.importTemplate);  // before /:id
+router.get('/identity-check',  adminOnly, ctrl.identityCheck);   // before /:id
 router.get('/:id',             adminOrOp, ctrl.getContact);
 router.post('/',               adminOnly,  ctrl.createContact);
 router.post('/bulk-delete',    adminOnly,  ctrl.bulkDeleteContacts);

@@ -152,7 +152,9 @@ export const api = {
   contacts: {
     list:       (q)      => request('GET',    `/contacts?${qs({ limit: 1000, ...(q || {}) })}`),
     get:        (id)     => request('GET',    `/contacts/${id}`),
-    create:     (d)      => request('POST',   '/contacts', d),
+    create:     (d)      => request('POST',   '/contacts', d),   // may update the organization's existing contact (upserted: true)
+    // What saving these identifiers would do: { status: new | update | other_organization | conflict, ... }
+    identityCheck: (q)   => request('GET',    `/contacts/identity-check?${qs(q || {})}`),
     update:     (id, d)  => request('PUT',    `/contacts/${id}`, d),
     remove:     (id)     => request('DELETE', `/contacts/${id}`),
     // Emergency Contacts page: one server-side page (no forced limit, unlike list()).
