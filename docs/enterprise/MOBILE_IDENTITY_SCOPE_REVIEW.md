@@ -231,6 +231,12 @@ No migration, extension, routing, retry, overflow, ring-all, conference or group
 | Repository | `github.com/nareshrock1992-arch/fs-enrs` |
 | Branch | `fix/tenant-unification` (tracks `origin/fix/tenant-unification`) |
 | Base | 14d057e (local = GitHub before the push) |
-| Commit | one combined commit on 14d057e; hash, push verification and WSL results are recorded in the final delivery report (a commit cannot contain its own hash) |
-| WSL target | `/opt/freeswitch-ui/fs-enrs` (Ubuntu), fast-forward only |
+| Commit | `6f4aa5db8a33cfd65db2962a3ead393ff7f3dd3d` — `fix(enrs): prevent false international mobile identity matches` (26 files, +2511 / −184), parent 14d057e. This row was added after the commit (a commit cannot contain its own hash) |
+| Push | fast-forward `14d057e..6f4aa5d`, no force; GitHub `refs/heads/fix/tenant-unification` = `6f4aa5d…` = local HEAD — https://github.com/nareshrock1992-arch/fs-enrs/commit/6f4aa5db8a33cfd65db2962a3ead393ff7f3dd3d |
+| Not committed | `docs/enterprise/EMERGENCY_CONTACTS_EXCEL_TEMPLATE_AUDIT.md` (stays staged) |
+| WSL target | `/opt/freeswitch-ui/fs-enrs` (Ubuntu 26.04), branch `fix/tenant-unification`, remote `github.com/nareshrock1992-arch/fs-enrs` |
+| WSL pull | as root (the checkout's existing practice: 1 031 `.git` entries and the updated files are root-owned; the first attempt as `user` failed to write objects and changed nothing); fetched hash verified = `6f4aa5d`, fast-forward checked, no overlap with local changes; `HEAD` after pull = `6f4aa5db8a33cfd65db2962a3ead393ff7f3dd3d` (**matches GitHub**) |
+| WSL working tree | unchanged pre-existing local changes only: ` M frontend/package-lock.json`, `?? package.json`, `?? package-lock.json` |
+| WSL validation (isolated namespace, `.env` masked, throw-away DB, `node_modules` writes redirected to `/tmp`) | node 22.22.1, npm 9.2.0, vitest 1.6.1; backend targeted **193 / 193** (CI-U6 legacy mobile 13/13, CI-11 broadcast-users 5/5, extension cases 13/13); frontend **335 / 335**, `vite build` succeeds; lint on changed backend files: only the 2 pre-existing errors (`ensInternalController.js:279`, `campaignEngine.js:68`, present at 14d057e). Environment-only: frontend vitest exit 1 after all tests passed — it could not write its result cache into the root-owned `frontend/node_modules/.vite` (by design nothing under `/opt` was written) |
+| Services | no PM2 / FreeSWITCH restart, no migration on DEV, no configuration change |
 | DEV caution | the DEV backend (PM2, watch off) keeps running the old code until restarted; **apply migration 051 on DEV before the next backend restart**, otherwise contact add / import / broadcast-users fail on the missing `mobile_norm` / `extension_norm` columns. The Vite dev UI serves the new screens immediately; they work with the old backend (the identity hint is simply absent) |
