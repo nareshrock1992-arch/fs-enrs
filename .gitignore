@@ -29,3 +29,18 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Machine-specific / runtime files (keep out of Git on every server)
+.env.*
+!.env.example
+*.bak
+*.bak.*
+*.bak-*
+*.pem
+*.key
+*.swp
+*.swo
+/*.wav
+backend/uploads/
+backups/
+.claude/settings.local.json
