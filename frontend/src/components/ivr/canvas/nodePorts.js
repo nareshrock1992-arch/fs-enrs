@@ -45,15 +45,30 @@ export function gatherIsConfigurable(node) {
   return v !== undefined && v !== null && v !== '';
 }
 
+const GATHER_RESERVED_KEYS = new Set([
+  ...GATHER_INTERNAL_EVENTS.map(e => e.key), ...GATHER_LEGACY_KEYS, '_default', 'max_attempts_exceeded',
+]);
+
+/**
+ * True when a gather node collects a number (a PIN, an account number) rather
+ * than offering a key menu: it has no option keys and accepts more than one
+ * digit. Its _default exit is then the success exit ("Entry complete").
+ * Derived from stored fields only — there is no stored "collect type".
+ */
+export function gatherCollectsDigits(node) {
+  const optionCount = Object.keys(node?.branches || {}).filter(k => !GATHER_RESERVED_KEYS.has(k)).length;
+  return optionCount === 0 && Number(node?.max_digits) > 1;
+}
+
 /**
  * The ordered branch keys a Gather editor/canvas should SHOW for this node —
  * mode-aware (legacy vs configurable), retry-aware, and compatibility-safe:
  *
  *  • Configurable (max_attempts set): digit keys, reason keys (shown when their
- *    retry is OFF, or already wired), max_attempts_exceeded, _default (if present),
+ *    retry is OFF, or already wired), max_attempts_exceeded, _default (see below),
  *    and legacy timeout/invalid ONLY if already wired (preserve active fallbacks;
  *    never offered new). Unwired legacy keys are hidden → no legacy/config mix.
- *  • Legacy (max_attempts unset): digit keys, timeout, invalid, _default (if present),
+ *  • Legacy (max_attempts unset): digit keys, timeout, invalid, _default (see below),
  *    plus any config-model key that is already wired (preserve; never offered new).
  *
  * Pure: never mutates node.branches. Hidden keys keep their saved targets in JSON.
@@ -62,10 +77,15 @@ export function gatherBranchKeysFor(node) {
   const branches = node?.branches || {};
   const wired = k => branches[k] !== undefined && branches[k] !== '';
   const existing = Object.keys(branches);
-  const reason = GATHER_INTERNAL_EVENTS.map(e => e.key);
-  const reserved = new Set([...reason, ...GATHER_LEGACY_KEYS, '_default', 'max_attempts_exceeded']);
-  const digits = existing.filter(k => !reserved.has(k));
+  const digits = existing.filter(k => !GATHER_RESERVED_KEYS.has(k));
   const out = [...digits];
+  // _default ("Entry complete" / "Any other key"). When the node collects a
+  // number it is THE success exit, so it is always shown and connectable. In a
+  // key menu it is an optional catch-all that bypasses wrong-key handling, so it
+  // is shown once wired; the Menu panel offers it explicitly. Display only: an
+  // unwired _default is pruned by serialiseGraph anyway, and runtime routing
+  // (br[d] or br["_default"]) is unchanged.
+  const showDefault = gatherCollectsDigits(node) || wired('_default');
   // EXTERNAL mode — one attempt; failures are explicit graph exits. Show the
   // success (digits/_default) plus timeout + invalid. No max_attempts_exceeded,
   // no internal reason ports. Any already-wired reason/max key is preserved.
@@ -75,7 +95,7 @@ export function gatherBranchKeysFor(node) {
     for (const k of [...GATHER_INTERNAL_EVENTS.map(e => e.key), 'max_attempts_exceeded']) {
       if (wired(k)) out.push(k);
     }
-    out.push('_default');   // Continue — always a connectable success output
+    if (showDefault) out.push('_default');
     return out;
   }
   // INTERNAL mode (explicit) or legacy configurable (max_attempts present).
@@ -96,12 +116,7 @@ export function gatherBranchKeysFor(node) {
     if (wired('max_attempts_exceeded')) out.push('max_attempts_exceeded');
     for (const ev of GATHER_INTERNAL_EVENTS) if (wired(ev.key)) out.push(ev.key); // preserve stray wired config keys
   }
-  // Continue / _default is ALWAYS a connectable success output (menu catch-all or
-  // completed multi-digit collection). It is pushed even when unwired so the port
-  // can be connected; an unwired _default is still pruned by serialiseGraph, so no
-  // empty branch is persisted. Runtime success routing (br[d] or br["_default"])
-  // is unchanged.
-  out.push('_default');
+  if (showDefault) out.push('_default');
   return out;
 }
 

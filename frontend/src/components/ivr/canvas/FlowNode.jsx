@@ -5,6 +5,7 @@ import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import { nodeSubtitleLines } from './nodeSubtitle.js';
 import { nodeHeaderParts } from './nodeIdentity.js';
+import { menuExitLabel } from '../panels/menu/menuModel.js';
 import { nodeStyle, NODE_TEXT } from './nodeStyle.js';
 import {
   NODE_WIDTH, HEADER_H, SUMMARY_H, PORT_ROW_H, PORT_TOP, nodeHeight,
@@ -24,7 +25,13 @@ export default function FlowNode({
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
-  const ports = getPortsForNode(node, cfg.ports, cfg.branchKeys, cfg.portLabels);
+  // Menu exits use the Menu panel's names ("1 · Opening hours", "Retries used
+  // up"); the port keys — and so the wiring — are unchanged.
+  const isMenu = node.type === 'gather';
+  const rawPorts = getPortsForNode(node, cfg.ports, cfg.branchKeys, cfg.portLabels);
+  const ports = isMenu
+    ? rawPorts.map(p => ({ ...p, label: menuExitLabel(node, p.key, { nameOf: summaryResolvers?.node }) }))
+    : rawPorts;
   const v = nodeStyle(cfg);
   const { accent, Icon } = v;
   const startPos = useRef({ x: node.x, y: node.y });
@@ -43,7 +50,7 @@ export default function FlowNode({
   });
 
   const connectedPorts = new Set(edges.filter(e => e.from === node.id).map(e => e.fromPort));
-  const { primary, secondary } = nodeSubtitleLines(node, cfg, summaryResolvers);
+  const { primary, secondary, detail } = nodeSubtitleLines(node, cfg, summaryResolvers);
   // Card header hierarchy (Phase 2b): prominent title + a type eyebrow shown
   // only when it adds information (a real configured name/summary is present).
   // Preserves Phase-1 identity exactly (title === previous cardTitle).
@@ -166,7 +173,7 @@ export default function FlowNode({
           style={{ height: SUMMARY_H }}
           className="px-3 py-1 leading-tight cursor-pointer overflow-hidden"
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}
-          title={[primary, secondary].filter(Boolean).join(' — ')}
+          title={[primary, secondary, detail].filter(Boolean).join(' — ')}
         >
           {primary && <span className="truncate block text-[11px] font-medium" style={{ color: NODE_TEXT.summary }}>{primary}</span>}
           {secondary && <span className="truncate block text-[10px]" style={{ color: NODE_TEXT.muted }}>{secondary}</span>}
@@ -182,6 +189,7 @@ export default function FlowNode({
               color={accent}
               connected={connectedPorts.has(p.key)}
               onDragStart={(portKey) => onPortDragStart?.(node.id, portKey)}
+              variant={isMenu ? 'row' : undefined}
             />
           </div>
         ))}

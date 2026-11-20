@@ -11,6 +11,11 @@
 //                      so both stay visible together.
 //   - Exception: Go To Node's summary is a raw target node id (meaningless to
 //     read), so a non-empty description REPLACES it (no primary line).
+//   - Menu (Gather DTMF): the primary line is what the caller hears
+//     (menuModel.menuPromptPreview); `detail` (prompt · options · tries, from
+//     menuModel.menuCanvasSummary) is shown on hover.
+
+import { menuCanvasSummary, menuPromptPreview } from '../panels/menu/menuModel.js';
 
 // Render a node type's summaryTemplate against the node's config values.
 // Missing/empty referenced fields render as "?" (unchanged legacy behavior).
@@ -39,9 +44,17 @@ export function renderSummaryTemplate(node, cfg, resolvers = {}) {
 }
 
 // Compute the two canvas subtitle lines for a node.
-// Returns { primary: string|null, secondary: string|null }.
+// Returns { primary: string|null, secondary: string|null } (+ `detail` for Menu).
 export function nodeSubtitleLines(node, cfg, resolvers = {}) {
   const desc = typeof node?.description === 'string' ? node.description.trim() : '';
+
+  // Menu (Gather DTMF): the prompt the caller hears, with the exits listed as
+  // rows below it; prompt · options · tries goes to the hover text. Cosmetic
+  // only; destination pickers keep naming nodes from the template (nodeIdentity.js).
+  if (node?.type === 'gather') {
+    return { primary: menuPromptPreview(node), secondary: desc || null, detail: menuCanvasSummary(node) };
+  }
+
   const summary = renderSummaryTemplate(node, cfg, resolvers);
 
   // Go To Node: the summary is a raw target node id; a description replaces it.

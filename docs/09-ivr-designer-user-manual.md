@@ -164,6 +164,42 @@ Clicking a node on the canvas opens its configuration form in the right panel. E
 
 The **Entry Point** badge appears at the top of the Property Panel when the selected node is the flow's `entry_node_id`. Click **Set as Entry** to designate a different node as the entry point.
 
+#### Menu (Gather DTMF) panel
+
+The Gather DTMF node has its own panel instead of the generic form, in two tabs: **Settings** (what the caller hears and how input is collected) and **Exits** (where the call goes). It edits the same stored settings, so flows built before it open unchanged.
+
+**Settings tab**
+
+| Block | What you set |
+|---|---|
+| **Collect** | **Menu** — the caller presses a key to choose — or **Digits (PIN, account)** — the caller enters a number and the call continues with it |
+| **Prompt** | **Text to speech** (with **Insert variable**), an **Audio file** from the Media Library, or **None** |
+| **Digits** (Digits only) | **Number of digits** (for example 4 to 4 for a 4-digit PIN), the **End key** that finishes early, and **Save digits as** — the variable the next node reads, `${gather_result}` by default |
+| **Input options** | **Wait for input** (seconds), **Retries** (extra tries after the first; the panel shows the total), **Retry on no input**, **Retry on wrong key**, **Retry on too few digits** (when more than one digit is required) and **Keys interrupt the prompt** |
+| **Retry messages** (collapsed) | For each retry that is on: a message (none, spoken text or audio) and whether the prompt replays afterwards; plus a message for **When retries run out** |
+| **Advanced** (collapsed) | Failure handling (*Retry in this node* or *One attempt — route failures*), **Digits per entry**, the variable and end key for a key menu, the pause between digits and the pause before a replay. **Show all fields** opens the complete generic list. |
+
+**Exits tab**
+
+| Block | What you set |
+|---|---|
+| **Menu options** (Menu) | Each key or code the caller can press (0–9, `*`, `#` or a multi-digit entry; click a key to change it) and its destination. **+ Any other key** adds an optional catch-all; while it is connected, wrong keys go there instead of being retried. |
+| **Entry complete** (Digits) | Where every complete entry goes |
+| **If something goes wrong** | **No input**, **Wrong key** (or **Wrong entry**), **Too few digits** and **Retries used up**. An exit that is retried in the node says so, with a link back to Settings; the others take a destination. |
+| **Fallback connections** | Saved connections the current settings use only as a fallback, or not at all |
+
+- **The canvas card lists the exits as rows**, with the same names as the Exits tab: `1 · Opening hours`, `No input`, `Wrong key`, `Retries used up`. Its first line is what the caller hears; hover it for prompt · options · tries.
+- **Switching Collect to Digits removes the menu options** after a confirmation. Every other exit and setting is kept.
+- **Turning a retry off shows its exit; turning it back on hides the exit without deleting its destination.**
+- **Older Menu nodes show "Fixed · 3 tries".** They keep that behaviour until you choose **Make adjustable**, which sets 2 retries (3 tries).
+- **A new Menu can't be saved until at least one exit is connected.** The Exits tab says so until then.
+- **Red ✱ marks a required value, and an amber note marks a path that would disconnect the caller.** A count on a tab shows problems inside it.
+
+#### Node names
+
+- **New nodes get a name you can change**, such as *Menu 1*, *Say 2* or *Transfer 1*; a duplicate gets the next number or *(copy)*. Names appear on the canvas, in destination lists and in validation messages.
+- **The internal node ID is no longer shown in the panel header.** Use the copy button next to the name when support needs it.
+
 ### Top Toolbar
 
 | Control | Function |

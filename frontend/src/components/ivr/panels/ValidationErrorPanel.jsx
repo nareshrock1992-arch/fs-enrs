@@ -1,6 +1,6 @@
 import { X, AlertTriangle } from 'lucide-react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
-import { nodeDisplayName } from '../canvas/nodeIdentity.js';
+import { nodeDisplayName, nodeDisplayNames } from '../canvas/nodeIdentity.js';
 
 /**
  * Extract nodeId from a backend error string.
@@ -25,6 +25,9 @@ function humanise(err) {
 
 export default function ValidationErrorPanel({ errors, warnings, nodes, onGoToNode, onClose }) {
   const { byType } = useNodeTypes();
+  // Unnamed nodes are named the way the canvas shows them ("Hangup 2").
+  const names = nodeDisplayNames(nodes, byType);
+  const resolvers = { displayName: id => names[id] };
   // Build flat list of { nodeId, nodeLabel, nodeType, message, raw }
   const allErrors = [];
 
@@ -37,8 +40,8 @@ export default function ValidationErrorPanel({ errors, warnings, nodes, onGoToNo
       const node = nodes?.[nodeId];
       // Same human-readable identity used on the canvas/pickers, so an error
       // names the node the way the designer sees it (nickname → label →
-      // summary → type), falling back to the raw id only if the node is absent.
-      const label = node ? nodeDisplayName(node, byType[node.type] || {}) : nodeId;
+      // stand-in name), falling back to the raw id only if the node is absent.
+      const label = node ? nodeDisplayName({ id: nodeId, ...node }, byType[node.type] || {}, resolvers) : nodeId;
       for (const e of errs) {
         allErrors.push({ nodeId, nodeLabel: label, nodeType: node?.type, message: humanise(e), raw: e });
       }

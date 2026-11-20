@@ -308,6 +308,7 @@ export default function IvrBuilder() {
             <PropertyPanel
               node={selectedNode}
               errors={graph.errors}
+              warnings={graph.nodeWarnings}
               isEntry={selectedNode?.id === graph.entryNodeId}
               onUpdate={graph.updateNode}
               onDelete={graph.deleteNode}

@@ -4,6 +4,8 @@ import { useZoomPan } from '../../../hooks/useZoomPan.js';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
 import { getPortKeysForNode, labelFor } from './nodePorts.js';
+import { menuExitLabel } from '../panels/menu/menuModel.js';
+import { nodeDisplayNames } from './nodeIdentity.js';
 import FlowNode, { NODE_WIDTH, NODE_HEIGHT } from './FlowNode.jsx';
 import { PORT_INSET, portCenterY, nodeHeight } from './nodeGeometry.js';
 import FlowEdge, { DraftEdge } from './FlowEdge.jsx';
@@ -157,10 +159,12 @@ export default function FlowCanvas({
   );
 
   // Name resolvers for the canvas summary: config ids → config names, target
-  // node id → its nickname/label, operator token → readable text. Data already
-  // in memory; falls back to the raw value if a name isn't loaded.
+  // node id → its name (an unnamed node gets its stand-in, e.g. "Hangup 2"),
+  // operator token → readable text. Data already in memory; falls back to the
+  // raw value if a name isn't loaded.
   const { options: ensOptions } = useConfigOptions('ens');
   const { options: ersOptions } = useConfigOptions('ers');
+  const displayNames = useMemo(() => nodeDisplayNames(nodes, byType), [nodes, byType]);
   const summaryResolvers = useMemo(() => {
     const nameOf = (opts, id) => {
       const o = (opts || []).find(x => String(x.id) === String(id));
@@ -169,15 +173,19 @@ export default function FlowCanvas({
     return {
       ens_config: id => nameOf(ensOptions, id),
       ers_config: id => nameOf(ersOptions, id),
-      node: id => nodes[id]?.nickname || byType[nodes[id]?.type]?.label || undefined,
+      node: id => displayNames[id],
+      displayName: id => displayNames[id],
       operator: op => OPERATOR_LABELS[op],
     };
-  }, [ensOptions, ersOptions, nodes, byType]);
+  }, [ensOptions, ersOptions, displayNames]);
 
-  // Friendly wire label for an edge, mirroring the port-dot labels.
+  // Friendly wire label for an edge, mirroring the port-dot labels. Menu wires
+  // use the Menu exit names without the destination (the wire already shows it).
   const edgeLabelFor = useCallback((edge) => {
     if (edge.fromPort === 'next' || edge.fromPort === 'goto') return undefined;
-    return labelFor(edge.fromPort, byType[nodes[edge.from]?.type]?.portLabels);
+    const from = nodes[edge.from];
+    if (from?.type === 'gather') return menuExitLabel(from, edge.fromPort, { withTarget: false });
+    return labelFor(edge.fromPort, byType[from?.type]?.portLabels);
   }, [byType, nodes]);
 
   const [draft,          setDraft]          = useState(null);

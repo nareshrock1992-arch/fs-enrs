@@ -341,6 +341,9 @@ const EnsPlaybackNodeSchema = z.object({
 // implicit strip-mode / raw-graph persistence).
 const BASE_NODE_FIELDS = {
   description: z.string().max(500).optional(),
+  // Administrator's node name (canvas title, destination lists). Cosmetic: never
+  // read by the Lua/XML generators. Without it the save step dropped the name.
+  nickname:    z.string().max(200).optional(),
 };
 
 // Queue Eligibility decision node (Phase 2). Fixed outcome branch set; branches

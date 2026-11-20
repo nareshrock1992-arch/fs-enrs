@@ -134,31 +134,51 @@ describe('getPortsForNode applies portLabels', () => {
     expect(keys).not.toContain('invalid');
   });
 
-  it('Continue (_default) is ALWAYS a connectable success output, even unwired', () => {
-    // A. Internal, new/unwired
+  it('collecting digits: _default ("Entry complete") is ALWAYS a connectable success output, even unwired', () => {
+    // A. Internal, PIN-style node (no option keys, more than one digit)
     const internal = getPortsForNode(
-      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a' } },
-      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, min_digits: 4, max_digits: 4, branches: {} },
+      'branches', ['max_attempts_exceeded'], {},
     ).map(p => p.key);
     expect(internal).toContain('_default');
-    expect(internal).toContain('max_attempts_exceeded');   // E: unaffected
-    // B. External, new/unwired
+    expect(internal).toContain('max_attempts_exceeded');   // unaffected
+    // B. External
     const external = getPortsForNode(
-      { type: 'gather', retry_mode: 'external', branches: { '1': 'a' } },
-      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+      { type: 'gather', retry_mode: 'external', max_digits: 6, branches: {} },
+      'branches', ['max_attempts_exceeded'], {},
     ).map(p => p.key);
     expect(external).toContain('_default');
-    expect(external).toContain('timeout');                 // E: unaffected
-    expect(external).toContain('invalid');                 // E: unaffected
+    expect(external).toContain('timeout');                 // unaffected
+    expect(external).toContain('invalid');                 // unaffected
     expect(external).not.toContain('max_attempts_exceeded');
-    // C. Legacy (no retry_mode / no max_attempts), unwired _default
+    // C. Legacy (no retry_mode / no max_attempts)
     const legacy = getPortsForNode(
-      { type: 'gather', branches: { '1': 'a' } },
-      'branches', ['max_attempts_exceeded'], { _default: 'Continue' },
+      { type: 'gather', max_digits: '4', branches: {} },
+      'branches', ['max_attempts_exceeded'], {},
     ).map(p => p.key);
     expect(legacy).toContain('_default');
     expect(legacy).toContain('timeout');
     expect(legacy).toContain('invalid');
+  });
+
+  it('key menu: the optional catch-all (_default) shows only once wired — the Menu panel offers it', () => {
+    const cases = [
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: { '1': 'a' } },
+      { type: 'gather', retry_mode: 'external', branches: { '1': 'a' } },
+      { type: 'gather', branches: { '1': 'a' } },                                  // legacy
+      { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: {} },   // new node, 1 digit
+      { type: 'gather', max_digits: 2, branches: { '10': 'a', '20': '' } },        // multi-digit options
+    ];
+    for (const node of cases) {
+      const keys = getPortsForNode(node, 'branches', ['max_attempts_exceeded'], {}).map(p => p.key);
+      expect(keys, JSON.stringify(node)).not.toContain('_default');
+      const wired = getPortsForNode({ ...node, branches: { ...node.branches, _default: 'x' } },
+        'branches', ['max_attempts_exceeded'], {}).map(p => p.key);
+      expect(wired, JSON.stringify(node)).toContain('_default');
+    }
+    // Every other exit is unaffected by the catch-all rule.
+    const legacy = getPortsForNode({ type: 'gather', branches: { '1': 'a' } }, 'branches', [], {}).map(p => p.key);
+    expect(legacy).toEqual(['1', 'timeout', 'invalid']);
   });
 
   it('D: wired branches (digits + wired _default) remain present and unchanged', () => {

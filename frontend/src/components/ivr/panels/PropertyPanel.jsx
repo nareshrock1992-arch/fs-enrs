@@ -1,4 +1,4 @@
-import { Trash2, Star, Search, X, Play, Check, ChevronDown, ChevronRight } from 'lucide-react';
+import { Trash2, Star, Search, X, Play, Check, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { useConfigOptions } from '../../../hooks/useConfigOptions.js';
@@ -7,10 +7,12 @@ import { useMediaUrl } from '../../../api/mediaAccess.js';
 import { IVR_VARIABLES, insertAtCursor } from '../ivrVariables.js';
 import { GATHER_INTERNAL_EVENTS, gatherBranchKeysFor, gatherIsConfigurable } from '../canvas/nodePorts.js';
 import { nodeStyle } from '../canvas/nodeStyle.js';
-import { nodeOptionLabel } from '../canvas/nodeIdentity.js';
+import { nodeOptionLabel, nodeDisplayNames } from '../canvas/nodeIdentity.js';
 import { bucketNodeErrors } from './inspectorErrors.js';
 import { groupFields, sectionDefaultOpen } from './fieldSections.js';
 import { confirmAction } from '../../../components/ui/ConfirmDialog.jsx';
+import MenuInspector from './menu/MenuInspector.jsx';
+import { mapMenuErrors } from './menu/menuModel.js';
 
 // Phase 3: this used to be one hand-built <XyzFields> component per node
 // type (11 of them) — every new node type meant a new component here,
@@ -107,7 +109,7 @@ function Textarea({ value, onChange, placeholder, rows = 3 }) {
 // A searchable catalog (ivrVariables.js) whose entries insert the correct
 // ${name} syntax at the cursor, with a human-readable label, description, and a
 // live example so authors need no external docs.
-function VariableInserter({ onInsert }) {
+function VariableInserter({ onInsert, compact = false }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const needle = q.trim().toLowerCase();
@@ -125,9 +127,12 @@ function VariableInserter({ onInsert }) {
       >
         <Search size={10} /> Insert variable ▾
       </button>
-      <p className="text-[9px] text-text-muted mt-1 opacity-70">
-        Inserts a <code>{'${variable}'}</code> — e.g. <code>Welcome {'${caller_id_name}'}</code> → “Welcome John Smith”.
-      </p>
+      {/* compact (Menu inspector): the button alone — the picker itself explains each variable. */}
+      {!compact && (
+        <p className="text-[9px] text-text-muted mt-1 opacity-70">
+          Inserts a <code>{'${variable}'}</code> — e.g. <code>Welcome {'${caller_id_name}'}</code> → “Welcome John Smith”.
+        </p>
+      )}
       {open && (
         // Anchored directly below this field's picker button (top-full/left-0),
         // solid opaque background (bg-surface-panel — bg-surface has no DEFAULT
@@ -176,7 +181,7 @@ function VariableInserter({ onInsert }) {
 // Textarea + variable picker, with cursor-aware ${var} insertion. Used for all
 // interpolation-capable (textarea) fields so personalization is available
 // everywhere, not just on one node.
-function InterpolableTextarea({ value, onChange, placeholder, rows = 3 }) {
+function InterpolableTextarea({ value, onChange, placeholder, rows = 3, compact = false }) {
   const ref = useRef(null);
   const insert = token => {
     const el = ref.current;
@@ -198,7 +203,7 @@ function InterpolableTextarea({ value, onChange, placeholder, rows = 3 }) {
                    text-xs text-text-primary placeholder:text-text-muted focus:outline-none
                    focus:border-brand transition-colors resize-none"
       />
-      <VariableInserter onInsert={insert} />
+      <VariableInserter onInsert={insert} compact={compact} />
     </div>
   );
 }
@@ -226,6 +231,10 @@ function Select({ value, onChange, options }) {
 // NodePicker — dropdown to pick a target node instead of typing a raw ID.
 function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'None (end here)', byType }) {
   const nodeList = Object.values(nodes).filter(n => n.id !== excludeId);
+  // Unnamed nodes are listed under the same stand-in name the canvas shows
+  // ("Hangup 2"), never an internal id.
+  const names = nodeDisplayNames(nodes, byType);
+  const resolvers = { displayName: id => names[id] };
   return (
     <select
       value={value || ''}
@@ -241,7 +250,7 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
         // destinations/prompts are distinguishable without opening each one.
         return (
           <option key={n.id} value={n.id}>
-            {nodeOptionLabel(n, cfg)}
+            {nodeOptionLabel(n, cfg, resolvers)}
           </option>
         );
       })}
@@ -551,7 +560,11 @@ function BranchesMapField({ node, onUpdate, nodes, byType }) {
   const configurable = isGather && gatherIsConfigurable(node);
   const external = isGather && node.retry_mode === 'external';
   const addBranch = () => {
-    const next = String(digitKeys.length + 1);
+    // Never reuse a key that already exists: after a deletion "rows + 1" could
+    // name an existing option and wipe its destination.
+    let n = digitKeys.length + 1;
+    while (Object.prototype.hasOwnProperty.call(branches, String(n))) n++;
+    const next = String(n);
     onUpdate(node.id, { branches: { ...branches, [next]: '' } });
   };
   return (
@@ -688,7 +701,53 @@ function CollapsibleSection({ title, defaultOpen = true, forceOpen = false, chil
   );
 }
 
-export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelete, onSetEntry, onClose, nodes = {} }) {
+// Copies text to the clipboard. The lab builder is served over plain http,
+// where navigator.clipboard is unavailable, so fall back to execCommand.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through to the legacy path */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function CopyIdButton({ id }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <button
+      type="button"
+      onClick={async () => { if (await copyText(id)) setCopied(true); }}
+      title={copied ? 'Node ID copied' : `Copy node ID (${id})`}
+      aria-label="Copy node ID"
+      className="text-text-muted hover:text-text-primary transition-colors shrink-0 self-start mt-0.5"
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
+  );
+}
+
+// Field controls the Menu inspector reuses (module scope, so their identities
+// are stable across renders and native <select>s reconcile in place).
+const MENU_CONTROLS = { NodePicker, MediaPickerField, InterpolableTextarea, TextInput, Select };
+
+export default function PropertyPanel({ node, errors, warnings = {}, isEntry, onUpdate, onDelete, onSetEntry, onClose, nodes = {} }) {
   const { byType } = useNodeTypes();
 
   if (!node) {
@@ -705,8 +764,46 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
   const nodeErrors = errors[node.id] || [];
   // Split errors so field-scoped ones render inline at their field, and only
   // node-level (graph) errors stay in the summary block. Display-only.
-  const { byField: fieldErrors, node: nodeLevelErrors } = bucketNodeErrors(nodeErrors);
+  const bucketed   = bucketNodeErrors(nodeErrors);
+  // Menu (Gather DTMF) has its own inspector, which also places cross-field and
+  // missing-destination messages next to the Menu field they concern.
+  const isMenu     = node.type === 'gather';
+  const { byField: fieldErrors, node: nodeLevelErrors } = isMenu
+    ? mapMenuErrors(node, bucketed.byField, bucketed.node)
+    : bucketed;
   const onChange   = patch => onUpdate(node.id, patch);
+
+  // Generic configSchema form: every node type, and the Menu inspector's
+  // "Show all fields" view. Sections only group fields; order is preserved.
+  const renderSchemaFields = () => {
+    const schema = cfg.configSchema || [];
+    const renderField = fieldDef => (
+      <GenericField
+        key={fieldDef.key}
+        fieldDef={fieldDef}
+        node={node}
+        nodes={nodes}
+        byType={byType}
+        onChange={onChange}
+        onUpdate={onUpdate}
+        fieldErrors={fieldErrors[fieldDef.key]}
+      />
+    );
+    // Group fields into sections (order within a section preserved).
+    const sections = groupFields(schema);
+    // Simple nodes (a single section) render flat — no pointless headers.
+    if (sections.length <= 1) return schema.map(renderField);
+    return sections.map(({ title, fields }) => (
+      <CollapsibleSection
+        key={title}
+        title={title}
+        defaultOpen={sectionDefaultOpen(title)}
+        forceOpen={fields.some(f => fieldErrors[f.key]?.length)}
+      >
+        {fields.map(renderField)}
+      </CollapsibleSection>
+    ));
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -723,12 +820,16 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
             <input
               value={node.nickname || ''}
               onChange={e => onChange({ nickname: e.target.value || undefined })}
-              placeholder={cfg.label}
+              placeholder={nodeDisplayNames(nodes, byType)[node.id] || cfg.label}
+              maxLength={200}
+              aria-label="Node name"
               className="w-full bg-transparent text-[13px] font-semibold text-text-primary outline-none
                          border-b border-transparent focus:border-primary placeholder:text-text-muted truncate"
             />
-            <p className="text-[10px] text-text-muted font-mono truncate mt-0.5">{node.id}</p>
           </div>
+          {/* The internal node id is not shown as text (it means nothing to an
+              administrator); it stays one click away for support and logs. */}
+          <CopyIdButton id={node.id} />
           {onClose && (
             <button onClick={onClose} title="Close inspector" aria-label="Close inspector"
                     className="text-text-muted hover:text-text-primary transition-colors shrink-0 self-start">
@@ -749,63 +850,53 @@ export default function PropertyPanel({ node, errors, isEntry, onUpdate, onDelet
 
       {/* Fields — generated from configSchema */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {/* Optional worked example shown at the top of the panel for field-heavy
-            node types (registry `panelIntro`) — a realistic end-to-end example
-            so a first-time author understands the whole pattern up front. */}
-        {cfg.panelIntro && (
-          <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed whitespace-pre-wrap">
-            {cfg.panelIntro}
-          </div>
-        )}
-        {/* Generic base field: Description — cosmetic authoring note shown as the
-            node's canvas subtitle (beneath its summary). Available on every node
-            type; never read by the Lua/XML generator. */}
-        <label className="block mb-3">
-          <span className="block text-[10px] font-semibold text-text-muted mb-1 uppercase tracking-wide">Description</span>
-          <textarea
-            value={node.description || ''}
-            onChange={e => onChange({ description: e.target.value || undefined })}
-            placeholder="Optional note shown on the node (e.g. Escalate unresolved billing calls to Tier 2)"
-            rows={2}
-            maxLength={500}
-            className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
-                       text-xs text-text-primary placeholder:text-text-muted focus:outline-none
-                       focus:border-brand transition-colors resize-none"
+        {isMenu ? (
+          // Menu (Gather DTMF): a purpose-built, sectioned inspector over the
+          // SAME stored fields. Its "Show all fields" link renders the generic
+          // form below, so no setting is ever out of reach.
+          <MenuInspector
+            node={node}
+            nodes={nodes}
+            byType={byType}
+            onChange={onChange}
+            fieldErrors={fieldErrors}
+            warnings={warnings[node.id] || []}
+            controls={MENU_CONTROLS}
+            renderAllFields={renderSchemaFields}
           />
-        </label>
-        {(() => {
-          const schema = cfg.configSchema || [];
-          const renderField = fieldDef => (
-            <GenericField
-              key={fieldDef.key}
-              fieldDef={fieldDef}
-              node={node}
-              nodes={nodes}
-              byType={byType}
-              onChange={onChange}
-              onUpdate={onUpdate}
-              fieldErrors={fieldErrors[fieldDef.key]}
-            />
-          );
-          // Group fields into sections (order within a section preserved).
-          const sections = groupFields(schema);
-          // Simple nodes (a single section) render flat — no pointless headers.
-          if (sections.length <= 1) return schema.map(renderField);
-          return sections.map(({ title, fields }) => (
-            <CollapsibleSection
-              key={title}
-              title={title}
-              defaultOpen={sectionDefaultOpen(title)}
-              forceOpen={fields.some(f => fieldErrors[f.key]?.length)}
-            >
-              {fields.map(renderField)}
-            </CollapsibleSection>
-          ));
-        })()}
-        {cfg.footnote && (
-          <div className="mb-3 px-2.5 py-2 rounded-lg bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed">
-            {cfg.footnote}
-          </div>
+        ) : (
+          <>
+            {/* Optional worked example shown at the top of the panel for field-heavy
+                node types (registry `panelIntro`) — a realistic end-to-end example
+                so a first-time author understands the whole pattern up front. */}
+            {cfg.panelIntro && (
+              <div className="mb-3 px-2.5 py-2 rounded-lg bg-brand/5 border border-brand/20 text-[9px] text-brand/80 leading-relaxed whitespace-pre-wrap">
+                {cfg.panelIntro}
+              </div>
+            )}
+            {/* Generic base field: Description — cosmetic authoring note shown as the
+                node's canvas subtitle (beneath its summary). Available on every node
+                type; never read by the Lua/XML generator. */}
+            <label className="block mb-3">
+              <span className="block text-[10px] font-semibold text-text-muted mb-1 uppercase tracking-wide">Description</span>
+              <textarea
+                value={node.description || ''}
+                onChange={e => onChange({ description: e.target.value || undefined })}
+                placeholder="Optional note shown on the node (e.g. Escalate unresolved billing calls to Tier 2)"
+                rows={2}
+                maxLength={500}
+                className="w-full bg-surface border border-surface-border rounded-lg px-2.5 py-1.5
+                           text-xs text-text-primary placeholder:text-text-muted focus:outline-none
+                           focus:border-brand transition-colors resize-none"
+              />
+            </label>
+            {renderSchemaFields()}
+            {cfg.footnote && (
+              <div className="mb-3 px-2.5 py-2 rounded-lg bg-surface-hover border border-surface-border text-[9px] text-text-muted leading-relaxed">
+                {cfg.footnote}
+              </div>
+            )}
+          </>
         )}
       </div>
 

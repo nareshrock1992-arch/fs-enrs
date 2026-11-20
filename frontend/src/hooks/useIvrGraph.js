@@ -1,6 +1,7 @@
 import { useReducer, useCallback, useEffect, useRef } from 'react';
 import { api } from '../api/client.js';
 import { createAutosaveController, INITIAL_SAVE_STATUS } from './autosave.js';
+import { defaultNodeName, copyNodeName } from '../components/ivr/canvas/nodeIdentity.js';
 
 // ── ID generation ─────────────────────────────────────────────────────────────
 
@@ -157,11 +158,17 @@ function baseReducer(state, action) {
 
     case 'ADD_NODE': {
       const id = genId();
+      // A readable default name ("Menu 1") instead of an anonymous node; the
+      // administrator can rename it. Cosmetic: the runtime never reads it.
+      const nickname = defaultNodeName(action.nodeType, state.nodes);
       return {
         ...state,
         nodes: {
           ...state.nodes,
-          [id]: { id, type: action.nodeType, x: action.x, y: action.y, ...NODE_DEFAULTS[action.nodeType] },
+          [id]: {
+            id, type: action.nodeType, x: action.x, y: action.y, ...NODE_DEFAULTS[action.nodeType],
+            ...(nickname ? { nickname } : {}),
+          },
         },
         entryNodeId: state.entryNodeId || id,
         selected:    id,
@@ -173,11 +180,13 @@ function baseReducer(state, action) {
       const id = genId();
       // eslint-disable-next-line no-unused-vars
       const { id: _srcId, x: _sx, y: _sy, ...fields } = action.sourceNode;
+      // Never two nodes with the same name: "Menu 2" or "Main menu (copy)".
+      const nickname = copyNodeName(action.sourceNode, state.nodes);
       return {
         ...state,
         nodes: {
           ...state.nodes,
-          [id]: { id, ...fields, x: action.x, y: action.y },
+          [id]: { id, ...fields, ...(nickname ? { nickname } : {}), x: action.x, y: action.y },
         },
         selected: id,
         dirty:    true,
