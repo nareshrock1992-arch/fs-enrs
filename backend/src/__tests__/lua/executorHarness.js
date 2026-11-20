@@ -73,7 +73,7 @@ function makeSession({ vars = {}, digits = [], readyAfter = Infinity } = {}) {
  */
 export function runExecutor({
   graph, vars = {}, http = {}, digits = [], now = 1_000_000,
-  advanceOnPoll = 0, readyAfter = Infinity, globalVars = {},
+  advanceOnPoll = 0, readyAfter = Infinity, globalVars = {}, script,
 } = {}) {
   const { session, calls, state } = makeSession({ vars, digits, readyAfter });
   const logs = [];
@@ -151,7 +151,9 @@ export function runExecutor({
     throw new Error('harness bootstrap failed: ' + to_jsstring(lua.lua_tostring(L, -1)));
   }
 
-  const src = generateIvrExecutorLua({ apiBase: 'http://127.0.0.1:4100', apiKey: 'test', piperUrl: '' });
+  // `script` lets a test run a stored executor (e.g. the pre-change baseline used
+  // by the golden equivalence test) instead of the current generator output.
+  const src = script ?? generateIvrExecutorLua({ apiBase: 'http://127.0.0.1:4100', apiKey: 'test', piperUrl: '' });
   const loadStatus = lauxlib.luaL_loadstring(L, to_luastring(src));
   if (loadStatus !== lua.LUA_OK) {
     const err = to_jsstring(lua.lua_tostring(L, -1));
