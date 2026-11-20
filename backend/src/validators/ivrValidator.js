@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isProtectedVarName } from '../utils/ivrProtectedVars.js';
+import { ROUTE_TYPES, MAX_ROUTES, ROUTE_ID_RE, routeError, routeLabel } from '../utils/gatherRoutes.js';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -55,10 +56,25 @@ const GatherNodeSchema = z.object({
   retry_mode:            z.enum(['internal', 'external']).optional(),
   // Key length must admit the longest reserved outcome key
   // ('max_attempts_exceeded' = 21 chars) alongside digit keys and _default.
-  branches:              z.record(z.string().max(24), nodeId).refine(
-    b => Object.keys(b).length >= 1,
-    'gather node requires at least one branch'
-  ),
+  // "At least one branch" is enforced on Validate/Publish (nodeRules), not on
+  // draft saves, so a just-added Menu node can be saved (DTMF redesign D13).
+  branches:              z.record(z.string().max(24), nodeId),
+  // ── DTMF redesign (all optional; absent = previous behaviour) ─────────────
+  // Digits-mode routes, checked top to bottom by exec_gather; exit key
+  // route_<id>. Drafts may hold incomplete routes; nodeRules rejects them on
+  // Validate/Publish.
+  routes:                z.array(z.object({
+    id:     z.string().regex(ROUTE_ID_RE, 'route id must be 1–8 lowercase letters/digits'),
+    type:   z.enum(ROUTE_TYPES),
+    value:  z.string().max(200),
+    value2: z.string().max(20).optional(),
+    name:   z.string().max(40).optional(),
+  })).max(MAX_ROUTES).optional(),
+  // "separate": after the retries, leave through the exit for the last failure
+  // reason (no_input / invalid_*) instead of max_attempts_exceeded.
+  failure_exits:         z.enum(['separate']).optional(),
+  // Cosmetic option names shown on the canvas ("1 · Sales"); never read by the runtime.
+  option_labels:         z.record(z.string().max(24), z.string().max(40)).optional(),
   min_digits:            z.number().int().min(1).max(11).optional().default(1),
   max_digits:            z.number().int().min(1).max(11).optional().default(1),
   timeout_seconds:       z.number().int().min(1).max(60).optional().default(5),
@@ -459,6 +475,19 @@ export function nodeSecurityIssues(node) {
 // earlier passed these, so Deploy re-checks it with them (see validateGraph).
 function nodeRules(node, ctx) {
   if (node.type === 'gather') {
+    // Moved here from the draft schema (D13): drafts may have no exit yet;
+    // Validate and Publish still require one.
+    if (Object.keys(node.branches || {}).length < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'gather node requires at least one branch', path: ['branches'] });
+    }
+    // Digits-mode routes: complete and well-formed on Validate/Publish.
+    const seenIds = new Set();
+    (node.routes || []).forEach((r, i) => {
+      const err = routeError(r);
+      if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `route "${routeLabel(r)}" ${err}`, path: ['routes', i] });
+      if (seenIds.has(r.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `route id "${r.id}" is used twice`, path: ['routes', i] });
+      seenIds.add(r.id);
+    });
     const minD = node.min_digits ?? 1;
     const maxD = node.max_digits ?? 1;
     if (minD > maxD) {
@@ -478,6 +507,7 @@ function nodeRules(node, ctx) {
       'invalid_length_source_type', 'invalid_length_text', 'invalid_length_audio_url',
       'invalid_option_source_type', 'invalid_option_text', 'invalid_option_audio_url',
       'max_attempts_exceeded_source_type', 'max_attempts_exceeded_text', 'max_attempts_exceeded_audio_url',
+      'failure_exits',
     ];
     if (node.max_attempts === undefined) {
       const present = configurableFields.filter(f => node[f] !== undefined);

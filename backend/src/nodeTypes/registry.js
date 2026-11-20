@@ -309,6 +309,115 @@ end`,
       },
     ],
     luaHandler: `
+-- Digits-mode routes (DTMF redesign). A node without node.routes makes
+-- gather_route_target() return nil, so the original br[d] / _default lookup
+-- decides exactly as before. Rules are checked top to bottom; the first rule
+-- that matches AND has a connected exit wins.
+--
+-- "pattern" rules use a safe regex subset translated to a Lua pattern:
+-- anchors ^ $, \\d, escaped \\* \\# \\. \\+ \\?, character classes [..], the
+-- wildcard ., quantifiers ? * + on one item, and {n} {n,m} {n,}. Groups and
+-- alternation are rejected (nil = never matches). Mirrors
+-- frontend menuModel.regexToLuaPattern, which validates on save.
+local function gather_regex_to_lua(rx)
+  if type(rx) ~= "string" or rx == "" then return nil end
+  local out, i, n = {}, 1, #rx
+  while i <= n do
+    local c = rx:sub(i, i)
+    if c == "^" and i == 1 then
+      out[#out + 1] = "^"; i = i + 1
+    elseif c == "$" and i == n then
+      out[#out + 1] = "$"; i = i + 1
+    else
+      local atom
+      if c == "\\\\" then
+        local e = rx:sub(i + 1, i + 1)
+        if e == "d" then atom = "%d"
+        elseif e ~= "" and e:match("[%*#%.%+%?]") then atom = "%" .. e
+        else return nil end
+        i = i + 2
+      elseif c == "[" then
+        local j = rx:find("]", i + 1, true)
+        if not j then return nil end
+        local body = rx:sub(i + 1, j - 1):gsub("\\\\d", "%%d")
+        if body == "" or body:find("[%[%]%(%)|]") then return nil end
+        atom = "[" .. body .. "]"
+        i = j + 1
+      elseif c == "." then
+        atom = "."; i = i + 1
+      elseif c:match("[%d#]") then
+        atom = c; i = i + 1
+      elseif c:match("[%*%+%?%(%)|{}%$%^]") then
+        return nil
+      else
+        atom = (c:gsub("%p", "%%%0")); i = i + 1
+      end
+      local q = rx:sub(i, i)
+      if q == "?" or q == "*" or q == "+" then
+        out[#out + 1] = atom .. q; i = i + 1
+      elseif q == "{" then
+        local j = rx:find("}", i, true)
+        if not j then return nil end
+        local spec = rx:sub(i + 1, j - 1)
+        local a, comma, b = spec:match("^(%d+)(,?)(%d*)$")
+        if not a then return nil end
+        a = tonumber(a)
+        local s = string.rep(atom, a)
+        if comma == "," then
+          if b == "" then s = s .. atom .. "*"
+          else
+            b = tonumber(b)
+            if b < a then return nil end
+            s = s .. string.rep(atom .. "?", b - a)
+          end
+        end
+        out[#out + 1] = s; i = j + 1
+      else
+        out[#out + 1] = atom
+      end
+    end
+  end
+  return table.concat(out)
+end
+
+local function gather_route_matches(r, d)
+  local t, v = r.type, r.value
+  if v == nil then return false end
+  v = tostring(v)
+  if t == "equals" then return d == v
+  elseif t == "one_of" then
+    for item in v:gmatch("[^,%s]+") do if item == d then return true end end
+    return false
+  elseif t == "range" then
+    if not d:match("^%d+$") then return false end
+    local x, lo, hi = tonumber(d), tonumber(v), tonumber(r.value2)
+    return x ~= nil and lo ~= nil and hi ~= nil and x >= lo and x <= hi
+  elseif t == "starts_with" then
+    return v ~= "" and d:sub(1, #v) == v
+  elseif t == "length" then
+    return #d == tonumber(v)
+  elseif t == "pattern" then
+    local lp = gather_regex_to_lua(v)
+    return lp ~= nil and d:find(lp) ~= nil
+  end
+  return false
+end
+
+local function gather_route_target(node, br, d)
+  local routes = node.routes
+  if type(routes) ~= "table" or d == nil or d == "" then return nil end
+  for _, r in ipairs(routes) do
+    if type(r) == "table" and r.id ~= nil and gather_route_matches(r, d) then
+      local target = br["route_" .. tostring(r.id)]
+      if target then
+        freeswitch.consoleLog("INFO", "[ivr_executor] gather: route " .. tostring(r.id) .. " matched\\n")
+        return target
+      end
+    end
+  end
+  return nil
+end
+
 local function exec_gather(s, node)
   local br = node.branches or {}
 
@@ -360,7 +469,7 @@ local function exec_gather(s, node)
       return br["timeout"] or br["_default"]
     end
     -- Input received: match exact branch, then _default (catch-all), then invalid.
-    return br[digits] or br["_default"] or br["invalid"]
+    return gather_route_target(node, br, digits) or br[digits] or br["_default"] or br["invalid"]
   end
 
   -- ─────────────────────────────────────────────────────────────────────
@@ -430,7 +539,7 @@ local function exec_gather(s, node)
       freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=invalid_length → invalid\\n")
       return br["invalid"]
     end
-    local target = br[d] or br["_default"]
+    local target = gather_route_target(node, br, d) or br[d] or br["_default"]
     if target then
       freeswitch.consoleLog("INFO", "[ivr_executor] gather(external): var=" .. var .. " reason=VALID\\n")
       return target
@@ -472,6 +581,7 @@ local function exec_gather(s, node)
 
   local retry_src, retry_url, retry_text, retry_replay
   local attempt = 0
+  local last_reason   -- for failure_exits = "separate" (routed after retries)
 
   while attempt < max_att and s:ready() do
     attempt = attempt + 1
@@ -511,13 +621,14 @@ local function exec_gather(s, node)
       reason = "invalid_length"
     else
       -- Complete, well-formed entry: VALID if it maps to a branch/_default.
-      local target = br[d] or br["_default"]
+      local target = gather_route_target(node, br, d) or br[d] or br["_default"]
       if target then
         freeswitch.consoleLog("INFO", "[ivr_executor] gather: var=" .. var .. " attempt=" .. attempt .. "/" .. max_att .. " reason=VALID\\n")
         return target
       end
       reason = "invalid_option"
     end
+    last_reason = reason
 
     freeswitch.consoleLog("INFO", "[ivr_executor] gather: var=" .. var .. " attempt=" .. attempt .. "/" .. max_att .. " reason=" .. reason .. "\\n")
 
@@ -547,6 +658,15 @@ local function exec_gather(s, node)
                  node.max_attempts_exceeded_audio_url,
                  node.max_attempts_exceeded_text)
   freeswitch.consoleLog("INFO", "[ivr_executor] gather: attempts exhausted (" .. max_att .. ") var=" .. var .. "\\n")
+  -- Separate exits (opt-in, DTMF redesign): after the retries, leave through the
+  -- exit for the LAST failure reason when it is connected. Nodes without
+  -- failure_exits = "separate" go straight to the original chain below.
+  if node.failure_exits == "separate" and last_reason then
+    local t
+    if last_reason == "no_input" then t = br["no_input"]
+    else t = br[last_reason] or br["invalid_option"] end
+    if t then return t end
+  end
   return br["max_attempts_exceeded"] or br["timeout"] or br["_default"]
 end`,
     apiEndpoint: null,

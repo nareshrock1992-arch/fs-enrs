@@ -1,5 +1,6 @@
 import { GraphSchema, AnyNodeSchema, PublishedGraphSchema, PublishedNodeSchema, nodeSecurityIssues } from '../validators/ivrValidator.js';
 import { query } from '../db/pool.js';
+import { routeWarnings, routeLabel, routeBranchKey } from './gatherRoutes.js';
 
 // "${word " or "${word(" is an API call, "${a${b}}" builds one; "${name}" is neither.
 export const API_EXPANSION_RE = /\$\{\s*[\w.-]*(?:[\s(]|\$\{)/;
@@ -300,6 +301,25 @@ export async function validateGraph(graph, tenantId, { alreadyPublished = false 
           `${unguarded.length > 1 ? 'these outcomes' : 'this outcome'} will be silently disconnected. ` +
           `Wire a "_default" branch (covers all exits), or the specific ${unguarded.join(' / ')} branch.`
         );
+      }
+
+      // DTMF redesign: main prompt missing (warning, not error — D14), and
+      // Digits-mode routes that are unreachable, overlapping or not connected.
+      const src = node.prompt_source_type
+        ?? ((node.max_attempts === undefined && node.retry_mode === undefined) ? 'tts' : 'none');
+      if (src === 'tts' && !String(node.prompt_text ?? '').trim()) {
+        warnings.push(`Node "${nid}" (Gather DTMF): the prompt has no text — callers hear nothing before entering digits`);
+      }
+      if (src === 'audio' && !String(node.prompt_audio_url ?? '').trim()) {
+        warnings.push(`Node "${nid}" (Gather DTMF): the prompt has no audio file — callers hear nothing before entering digits`);
+      }
+      for (const w of routeWarnings(node.routes)) {
+        warnings.push(`Node "${nid}" (Gather DTMF): route ${w.message}`);
+      }
+      for (const r of node.routes || []) {
+        if (!br[routeBranchKey(r.id)]) {
+          warnings.push(`Node "${nid}" (Gather DTMF): route "${routeLabel(r)}" is not connected — matching entries skip it`);
+        }
       }
     }
 
