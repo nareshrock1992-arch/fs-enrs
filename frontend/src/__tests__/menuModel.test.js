@@ -474,12 +474,22 @@ describe('source wiring', () => {
     const antiPattern = /\n[ \t]+(const|function) [A-Z][A-Za-z0-9]*\s*(=\s*\([^)]*\)\s*=>|\()/;
     expect(antiPattern.test(menu)).toBe(false);
   });
-  it('MenuInspector is split into Settings and Exits tabs', () => {
-    expect(menu).toMatch(/<InspectorTabs/);
-    expect(menu).toMatch(/id: 'settings', label: 'Settings'/);
-    expect(menu).toMatch(/id: 'exits',/);
-    expect(menu).toMatch(/function SettingsTab\(/);
-    expect(menu).toMatch(/function ExitsTab\(/);
+  it('MenuInspector is one page in four plain sections, in order (no tabs)', () => {
+    expect(menu).not.toMatch(/<InspectorTabs/);
+    const order = ['1. What the caller hears', '2. Keys the caller can press', '3. If the caller gets it wrong', '4. More settings']
+      .map(t => menu.indexOf(t));
+    expect(order.every(i => i > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(menu).toMatch(/2\. The number the caller enters/);
+  });
+  it('each retryable problem offers Ask again or Go to a node, writing only retry_on_<slot>', () => {
+    expect(menu).toMatch(/\{ value: 'retry', label: 'Ask again' \}/);
+    expect(menu).toMatch(/\{ value: 'exit', {2}label: 'Go to a node' \}/);
+    expect(menu).toMatch(/togglePatch\(`retry_on_\$\{slot\}`, v === 'retry'\)/);
+    for (const slot of ['no_input', 'invalid_option', 'invalid_length']) expect(menu).toMatch(new RegExp(`slot="${slot}"`));
+  });
+  it('switching to a number asks before removing keys', () => {
+    expect(menu).toMatch(/confirmLabel: 'Remove keys'/);
   });
   it('the inspector header no longer prints the internal node id (copy button instead)', () => {
     expect(panel).not.toMatch(/font-mono truncate mt-0\.5">\{node\.id\}/);
