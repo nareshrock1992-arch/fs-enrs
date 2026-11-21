@@ -9,7 +9,9 @@
 
 import {
   gatherBranchKeysFor, gatherCollectsDigits, gatherIsConfigurable, GATHER_INTERNAL_EVENTS, GATHER_LEGACY_KEYS,
+  isGatherOptionKey, isGatherRouteKey, GATHER_FAILURE_KEYS, GATHER_ROUTE_PREFIX,
 } from '../../canvas/nodePorts.js';
+import { routeLabel, routeError, routeWarnings, MAX_ROUTES } from './gatherRoutes.js';
 
 // ── Modes ───────────────────────────────────────────────────────────────────
 // classic  — no retry_mode and no max_attempts: fixed 3-try behaviour (legacy).
@@ -188,7 +190,19 @@ const MAX_KEY_LENGTH = 24;                 // ivrValidator: branch keys max 24 c
 
 /** Menu option keys, in the same order the canvas draws their ports. */
 export function optionKeys(node) {
-  return gatherBranchKeysFor(node).filter(k => !RESERVED_BRANCH_KEYS.has(k));
+  return gatherBranchKeysFor(node).filter(isGatherOptionKey);
+}
+
+/** Digits-mode route exit keys (route_<id>), in rule order. */
+export function routeKeys(node) {
+  return gatherBranchKeysFor(node).filter(isGatherRouteKey);
+}
+
+/** Menu mode keeps max_digits at least as long as the longest option key (D11). */
+function fitDigitsPatch(node, branches) {
+  const longest = Object.keys(branches).filter(isGatherOptionKey).reduce((m, k) => Math.max(m, k.length), 1);
+  const current = effective(node).max_digits;
+  return longest > current ? { max_digits: longest } : {};
 }
 
 /** First keypad key not used yet, or null when all twelve are taken. */
@@ -236,13 +250,75 @@ export function renameOptionPatch(node, oldKey, newKey) {
   if (k === oldKey || validateOptionKey(node, k, oldKey)) return null;
   const out = {};
   for (const [key, target] of Object.entries(node?.branches || {})) out[key === oldKey ? k : key] = target;
-  return { branches: out };
+  const patch = { branches: out, ...fitDigitsPatch(node, out) };
+  // The option's display name follows its key.
+  if (node?.option_labels && Object.prototype.hasOwnProperty.call(node.option_labels, oldKey)) {
+    const { [oldKey]: label, ...restLabels } = node.option_labels;
+    patch.option_labels = { ...restLabels, [k]: label };
+  }
+  return patch;
 }
 
-/** Removes exactly one option (or outcome) key. */
+/** Sets (or clears) an option's display name; cosmetic, never read by the runtime (D12). */
+export function optionLabelPatch(node, key, label) {
+  const text = String(label ?? '').slice(0, 40);
+  const { [key]: _old, ...rest } = node?.option_labels || {};
+  const next = text.trim() ? { ...rest, [key]: text } : rest;
+  return { option_labels: Object.keys(next).length ? next : undefined };
+}
+
+/** Removes exactly one option (or outcome) key, and its display name. */
 export function removeBranchPatch(node, key) {
   const { [key]: _removed, ...rest } = node?.branches || {};
-  return { branches: rest };
+  const patch = { branches: rest };
+  if (node?.option_labels && Object.prototype.hasOwnProperty.call(node.option_labels, key)) {
+    Object.assign(patch, optionLabelPatch(node, key, ''));
+  }
+  return patch;
+}
+
+// ── Digits-mode routes (D3) ────────────────────────────────────────────────
+
+/** Short unused route id. */
+export function nextRouteId(node) {
+  const used = new Set((node?.routes || []).map(r => r.id));
+  for (let i = 1; ; i++) if (!used.has(`r${i}`)) return `r${i}`;
+}
+
+export function addRoutePatch(node, type = 'equals') {
+  const routes = node?.routes || [];
+  if (routes.length >= MAX_ROUTES) return null;
+  return { routes: [...routes, { id: nextRouteId(node), type, value: '' }] };
+}
+
+/** Changes one route's fields. Switching type clears value2 unless it is a range. */
+export function updateRoutePatch(node, id, fields) {
+  return {
+    routes: (node?.routes || []).map(r => {
+      if (r.id !== id) return r;
+      const next = { ...r, ...fields };
+      if (next.type !== 'range') delete next.value2;
+      if (next.name !== undefined && !String(next.name).trim()) delete next.name;
+      return next;
+    }),
+  };
+}
+
+/** Removes a route and its exit connection. */
+export function removeRoutePatch(node, id) {
+  const { [`${GATHER_ROUTE_PREFIX}${id}`]: _gone, ...branches } = node?.branches || {};
+  const routes = (node?.routes || []).filter(r => r.id !== id);
+  return { routes: routes.length ? routes : undefined, branches };
+}
+
+/** Moves a route up (-1) or down (+1); order decides which rule wins. */
+export function moveRoutePatch(node, id, dir) {
+  const routes = [...(node?.routes || [])];
+  const i = routes.findIndex(r => r.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= routes.length) return null;
+  [routes[i], routes[j]] = [routes[j], routes[i]];
+  return { routes };
 }
 
 /** Sets one destination. '' = not connected (removed when the flow is saved). */
@@ -269,6 +345,8 @@ export function menuRows(node) {
   };
   const options = optionKeys(node);
   options.forEach(k => placed.add(k));
+  const routes = routeKeys(node);
+  routes.forEach(k => placed.add(k));
   const anyOther = take('_default');
   let noResponse = null;
   let wrongKey = null;
@@ -284,13 +362,128 @@ export function menuRows(node) {
     wrongKey   = take('invalid');
   }
   const other = visible.filter(k => !placed.has(k));
-  return { mode, options, anyOther, noResponse, wrongKey, tooFew, exhausted, other };
+  return { mode, options, routes, anyOther, noResponse, wrongKey, tooFew, exhausted, other };
 }
 
 /** Panel keys in display order (used by the panel/canvas agreement test). */
 export function panelKeys(node) {
   const r = menuRows(node);
-  return [...r.options, r.anyOther, r.noResponse, r.wrongKey, r.tooFew, r.exhausted, ...r.other].filter(Boolean);
+  return [...r.options, ...r.routes, r.anyOther, r.noResponse, r.wrongKey, r.tooFew, r.exhausted, ...r.other].filter(Boolean);
+}
+
+// ── Separate failure exits (D6/D7) ─────────────────────────────────────────
+
+/**
+ * Whether No input / Invalid have their own exits. True when the setting is on,
+ * or — for older nodes — when a failure reason exits at once (its retry is off)
+ * or a reason exit is connected, so no edge ever disappears.
+ */
+export function separateExits(node) {
+  if (menuMode(node) !== MODE.INTERNAL) return true;            // classic / one attempt: always own exits
+  if (node?.failure_exits === 'separate') return true;
+  const eff = effective(node);
+  if (!eff.retry.no_input || !eff.retry.invalid_option || (!eff.retry.invalid_length && effective(node).min_digits > 1)) return true;
+  return ['no_input', 'invalid_option', 'invalid_length'].some(k => isWired(node, k));
+}
+
+/** Reasons that leave the node at once because their retry is off (older setting). */
+export function immediateExitReasons(node) {
+  if (menuMode(node) !== MODE.INTERNAL) return [];
+  const eff = effective(node);
+  return ['no_input', 'invalid_option', 'invalid_length'].filter(k =>
+    !eff.retry[k] && (k !== 'invalid_length' || eff.min_digits > 1 || isWired(node, k)));
+}
+
+/** Turning the setting on keeps the retries; off retries every failure and uses Failed. */
+export function separateExitsPatch(node, on) {
+  if (on) return { failure_exits: 'separate' };
+  const { no_input: _a, invalid_option: _b, invalid_length: _c, ...branches } = node?.branches || {};
+  return {
+    failure_exits: undefined,
+    retry_on_no_input: 'yes', retry_on_invalid_option: 'yes', retry_on_invalid_length: 'yes',
+    branches,
+  };
+}
+
+/** "Retry first" for an older immediate-exit reason. */
+export function retryFirstPatch(reason) {
+  return { [`retry_on_${reason}`]: 'yes' };
+}
+
+// ── Advanced defaults, modified markers, reset (brief D) ───────────────────
+
+export const ADVANCED_DEFAULTS = Object.freeze({
+  max_attempts: 3, timeout_seconds: 5, inter_digit_timeout: 2, reprompt_pause_ms: 700, allow_barge_in: 'yes',
+});
+
+/** True when an Advanced field differs from its default (drives the "modified" dot). */
+export function isModified(node, key) {
+  const eff = effective(node);
+  switch (key) {
+    case 'max_attempts': return eff.mode === MODE.INTERNAL && eff.attempts !== ADVANCED_DEFAULTS.max_attempts;
+    case 'timeout_seconds': return eff.timeout_seconds !== ADVANCED_DEFAULTS.timeout_seconds;
+    case 'inter_digit_timeout': return eff.inter_digit_timeout !== ADVANCED_DEFAULTS.inter_digit_timeout;
+    case 'reprompt_pause_ms': return eff.reprompt_pause_ms !== ADVANCED_DEFAULTS.reprompt_pause_ms;
+    case 'allow_barge_in': return eff.allow_barge_in === false;
+    case 'separate': return menuMode(node) === MODE.INTERNAL && node?.failure_exits === 'separate';
+    default:
+      if (ANNOUNCEMENT_SLOTS.includes(key)) {
+        return sourceOf(node, key) !== 'none' || (key !== 'max_attempts_exceeded' && !eff.replay[key]);
+      }
+      return false;
+  }
+}
+
+/** Reset the Advanced section: defaults for timings, retries and barge-in; no extra prompts. */
+export function resetAdvancedPatch(node) {
+  const patch = { timeout_seconds: 5, inter_digit_timeout: 2, reprompt_pause_ms: 700, allow_barge_in: 'yes' };
+  if (menuMode(node) === MODE.INTERNAL) patch.max_attempts = 3;
+  for (const slot of ANNOUNCEMENT_SLOTS) {
+    if (sourceOf(node, slot) !== 'none') patch[`${slot}_source_type`] = 'none';
+    if (slot !== 'max_attempts_exceeded' && node?.[`${slot}_replay_menu`] !== undefined) patch[`${slot}_replay_menu`] = 'yes';
+  }
+  return patch;
+}
+
+/** One summary line for the defaults: "3 tries · 5 s timeout · barge-in on · # ends entry". */
+export function summaryLine(node) {
+  const eff = effective(node);
+  const parts = [];
+  if (eff.mode === MODE.INTERNAL) parts.push(plural(eff.attempts, 'try', 'tries'));
+  else if (eff.mode === MODE.EXTERNAL) parts.push('1 try');
+  else parts.push('3 tries (fixed)');
+  parts.push(`${eff.timeout_seconds} s timeout`);
+  if (eff.allow_barge_in !== null) parts.push(`barge-in ${eff.allow_barge_in ? 'on' : 'off'}`);
+  if (eff.terminators) parts.push(`${eff.terminators} ends entry`);
+  return parts.join(' · ');
+}
+
+// ── Client-side lint: what the canvas icon and panel show before Validate ──
+
+/**
+ * Problems the builder can see without a server round trip (brief F/6).
+ * errors: things Validate/Publish will reject. warnings: likely mistakes.
+ */
+export function menuLint(node) {
+  const errors = [];
+  const warnings = [];
+  const eff = effective(node);
+  const digits = collectType(node) === COLLECT.DIGITS;
+  const src = eff.prompt_source_type;
+  if (src === 'tts' && !String(node?.prompt_text ?? '').trim()) warnings.push('The prompt has no text');
+  if (src === 'audio' && !String(node?.prompt_audio_url ?? '').trim()) warnings.push('The prompt has no audio file');
+  if (!hasAnyExit(node)) errors.push('Connect at least one exit');
+  if (!digits && optionKeys(node).length === 0 && !isWired(node, '_default')) errors.push('Add at least one option');
+  for (const r of node?.routes || []) {
+    const err = routeError(r);
+    if (err) errors.push(`Route "${routeLabel(r)}" ${err}`);
+    else if (!isWired(node, `${GATHER_ROUTE_PREFIX}${r.id}`)) warnings.push(`Route "${routeLabel(r)}" is not connected`);
+  }
+  for (const w of routeWarnings(node?.routes)) warnings.push(`Route ${w.message}`);
+  for (const k of optionKeys(node)) if (!isWired(node, k)) warnings.push(`Option ${k} is not connected`);
+  if (digits && !isWired(node, '_default') && !(node?.routes || []).length) warnings.push('Any valid entry is not connected');
+  if (unguardedRows(node).size) warnings.push('Some callers would be disconnected — connect Failed (or the failure exits)');
+  return { errors, warnings };
 }
 
 /** "Too few digits" only matters when more than one digit is required, or it is already configured. */
@@ -391,36 +584,46 @@ export function sectionSummaries(node) {
 
 // ── Exit names (one vocabulary for the panel, the canvas card and its wires) ─
 
+// Same names in both modes and everywhere (brief C). Stored keys never change (D2).
 const EXIT_NAMES = Object.freeze({
   no_input: 'No input',
   timeout: 'No input',
-  invalid_length: 'Too few digits',
-  max_attempts_exceeded: 'Retries used up',
+  invalid_option: 'Invalid',
+  invalid: 'Invalid',
+  invalid_length: 'Invalid (too short)',
+  max_attempts_exceeded: 'Failed',
 });
 
 /** Name of the _default exit: the success exit when collecting digits, else the catch-all. */
 export function defaultExitName(node) {
-  if (collectType(node) === COLLECT.DIGITS) return 'Entry complete';
+  if (collectType(node) === COLLECT.DIGITS) return 'Any valid entry';
   return effective(node).max_digits > 1 ? 'Any other entry' : 'Any other key';
 }
 
+/** True for exits that report a failure (drawn last and muted on the card). */
+export const isFailureExit = key => GATHER_FAILURE_KEYS.has(key);
+
 /**
- * Display name of one Menu exit. Option keys read "1 · Opening hours" when
- * connected (nameOf resolves a node id to its name) and "Press 1" otherwise.
- * Connections the current settings do not use directly are marked: legacy
- * keys on a retry node are runtime fallbacks; anything else is unused.
- * Display only — the stored branch key never changes.
+ * Display name of one Menu exit. Option keys read "1 · Sales" (their label) or
+ * "1 · Opening hours" (destination name, via nameOf) or "Press 1"; route exits
+ * use the route's name. Connections the current settings do not use directly are
+ * marked: legacy keys on a retry node are runtime fallbacks; anything else is
+ * unused. Display only — the stored branch key never changes.
  */
 export function menuExitLabel(node, key, { nameOf, withTarget = true } = {}) {
+  if (isGatherRouteKey(key)) {
+    const route = (node?.routes || []).find(r => `${GATHER_ROUTE_PREFIX}${r.id}` === key);
+    return route ? routeLabel(route) : 'Removed route';
+  }
   if (!RESERVED_BRANCH_KEYS.has(key)) {
+    const custom = String(node?.option_labels?.[key] ?? '').trim();
+    if (custom) return `${key} · ${custom}`;
     const target = node?.branches?.[key];
     const name = withTarget && isWired(node, key) && typeof nameOf === 'function' ? nameOf(target) : null;
     return name ? `${key} · ${name}` : `Press ${key}`;
   }
-  const digits = collectType(node) === COLLECT.DIGITS;
   let label;
   if (key === '_default') label = defaultExitName(node);
-  else if (key === 'invalid_option' || key === 'invalid') label = digits ? 'Wrong entry' : 'Wrong key';
   else label = EXIT_NAMES[key] || key;
   if (menuRows(node).other.includes(key)) {
     const fallback = menuMode(node) === MODE.INTERNAL && GATHER_LEGACY_KEYS.includes(key);
@@ -429,15 +632,32 @@ export function menuExitLabel(node, key, { nameOf, withTarget = true } = {}) {
   return label;
 }
 
-/** First line of the canvas card: what the caller hears. */
+/** First line of the canvas card: what the caller hears (file name, or ~40 characters of text). */
 export function menuPromptPreview(node) {
   const src = effective(node).prompt_source_type;
   if (src === 'audio') return node?.prompt_audio_url ? `Audio: ${fileName(node.prompt_audio_url)}` : 'No audio file';
   if (src === 'tts') {
-    const text = String(node?.prompt_text || '').trim();
-    return text ? `“${text}”` : 'No prompt text';
+    const text = String(node?.prompt_text || '').trim().replace(/\s+/g, ' ');
+    if (!text) return 'No prompt text';
+    return text.length > 40 ? `“${text.slice(0, 39).trimEnd()}…”` : `“${text}”`;
   }
   return 'No prompt';
+}
+
+/** Mode badge on the canvas card. */
+export const menuModeBadge = node => (collectType(node) === COLLECT.DIGITS ? 'Digits' : 'Menu');
+
+/** Chip row on the canvas card: "4 digits · # · 3 tries". */
+export function menuChips(node) {
+  const eff = effective(node);
+  const chips = [];
+  if (collectType(node) === COLLECT.DIGITS) chips.push(digitsText(eff));
+  else chips.push(plural(optionKeys(node).length, 'option', 'options'));
+  if (eff.terminators) chips.push(eff.terminators);
+  if (eff.mode === MODE.INTERNAL) chips.push(plural(eff.attempts, 'try', 'tries'));
+  else if (eff.mode === MODE.EXTERNAL) chips.push('1 try');
+  else chips.push('3 tries');
+  return chips;
 }
 
 /** One-line Menu summary (canvas card tooltip): prompt · options · attempts. */

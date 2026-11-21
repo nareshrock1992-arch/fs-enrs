@@ -56,9 +56,19 @@ const GATHER_RESERVED_KEYS = new Set([
  * Derived from stored fields only — there is no stored "collect type".
  */
 export function gatherCollectsDigits(node) {
-  const optionCount = Object.keys(node?.branches || {}).filter(k => !GATHER_RESERVED_KEYS.has(k)).length;
+  const optionCount = Object.keys(node?.branches || {}).filter(isGatherOptionKey).length;
   return optionCount === 0 && Number(node?.max_digits) > 1;
 }
+
+/** Digits-mode route exits are stored as route_<id> (DTMF redesign D3). */
+export const GATHER_ROUTE_PREFIX = 'route_';
+export const isGatherRouteKey = k => typeof k === 'string' && k.startsWith(GATHER_ROUTE_PREFIX);
+/** A menu option key: anything that is not a reserved outcome or a route exit. */
+export const isGatherOptionKey = k => !GATHER_RESERVED_KEYS.has(k) && !isGatherRouteKey(k);
+/** Exits that report a failure (drawn last and muted on the canvas). */
+export const GATHER_FAILURE_KEYS = new Set([
+  'no_input', 'invalid_option', 'invalid_length', 'timeout', 'invalid', 'max_attempts_exceeded',
+]);
 
 /**
  * The ordered branch keys a Gather editor/canvas should SHOW for this node —
@@ -77,46 +87,52 @@ export function gatherBranchKeysFor(node) {
   const branches = node?.branches || {};
   const wired = k => branches[k] !== undefined && branches[k] !== '';
   const existing = Object.keys(branches);
-  const digits = existing.filter(k => !GATHER_RESERVED_KEYS.has(k));
-  const out = [...digits];
-  // _default ("Entry complete" / "Any other key"). When the node collects a
+  // ── Success exits first: options, routes, then the catch-all ──────────────
+  const out = existing.filter(isGatherOptionKey);
+  // Digits-mode routes, in rule order, then any wired route exit whose rule was
+  // removed (kept visible so its connection can be cleared).
+  const routeKeys = (Array.isArray(node?.routes) ? node.routes : [])
+    .filter(r => r && r.id !== undefined && r.id !== '')
+    .map(r => `${GATHER_ROUTE_PREFIX}${r.id}`);
+  for (const k of [...routeKeys, ...existing.filter(isGatherRouteKey)]) if (!out.includes(k)) out.push(k);
+  // _default ("Any valid entry" / "Any other key"). When the node collects a
   // number it is THE success exit, so it is always shown and connectable. In a
   // key menu it is an optional catch-all that bypasses wrong-key handling, so it
   // is shown once wired; the Menu panel offers it explicitly. Display only: an
   // unwired _default is pruned by serialiseGraph anyway, and runtime routing
   // (br[d] or br["_default"]) is unchanged.
-  const showDefault = gatherCollectsDigits(node) || wired('_default');
-  // EXTERNAL mode — one attempt; failures are explicit graph exits. Show the
-  // success (digits/_default) plus timeout + invalid. No max_attempts_exceeded,
-  // no internal reason ports. Any already-wired reason/max key is preserved.
+  if (gatherCollectsDigits(node) || wired('_default')) out.push('_default');
+
+  // ── Failure exits last: No input, Invalid, then Failed ─────────────────────
+  const push = k => { if (!out.includes(k)) out.push(k); };
+  // EXTERNAL mode — one attempt; failures are explicit graph exits
+  // (timeout + invalid). Any already-wired reason/max key is preserved.
   if (node?.retry_mode === 'external') {
-    out.push('timeout');
-    out.push('invalid');
-    for (const k of [...GATHER_INTERNAL_EVENTS.map(e => e.key), 'max_attempts_exceeded']) {
-      if (wired(k)) out.push(k);
-    }
-    if (showDefault) out.push('_default');
+    push('timeout');
+    push('invalid');
+    for (const k of ['no_input', 'invalid_option', 'invalid_length', 'max_attempts_exceeded']) if (wired(k)) push(k);
     return out;
   }
   // INTERNAL mode (explicit) or legacy configurable (max_attempts present).
   if (node?.retry_mode === 'internal' || gatherIsConfigurable(node)) {
-    // Reason keys are governed SOLELY by their retry toggle: retry ON → hidden
-    // (target, if any, is preserved in JSON and reappears when retry is set to No);
-    // retry OFF → shown as an optional graph exit.
-    for (const ev of GATHER_INTERNAL_EVENTS) {
-      if (!gatherRetryEnabled(node, ev)) out.push(ev.key);
+    // A reason key is shown when its retry is OFF (it exits at once), or — with
+    // "separate exits" on — after the retries (no_input and invalid_option;
+    // invalid_length only when already wired). Hidden keys keep their targets.
+    const separate = node?.failure_exits === 'separate';
+    const byKey = Object.fromEntries(GATHER_INTERNAL_EVENTS.map(e => [e.key, e]));
+    for (const key of ['no_input', 'invalid_option', 'invalid_length']) {
+      const off = !gatherRetryEnabled(node, byKey[key]);
+      if (off || (separate && (key !== 'invalid_length' || wired(key)))) push(key);
     }
-    out.push('max_attempts_exceeded');
     // Legacy timeout/invalid have no toggle, so the only way to keep an ACTIVE
-    // fallback visible/editable is show-if-wired. Unwired ones stay hidden → no
-    // legacy/config key mixing on a clean node.
-    for (const k of GATHER_LEGACY_KEYS) if (wired(k)) out.push(k);
+    // fallback visible/editable is show-if-wired.
+    for (const k of GATHER_LEGACY_KEYS) if (wired(k)) push(k);
+    push('max_attempts_exceeded');
   } else {
-    for (const k of GATHER_LEGACY_KEYS) out.push(k);                 // legacy mode: timeout + invalid
-    if (wired('max_attempts_exceeded')) out.push('max_attempts_exceeded');
-    for (const ev of GATHER_INTERNAL_EVENTS) if (wired(ev.key)) out.push(ev.key); // preserve stray wired config keys
+    for (const k of GATHER_LEGACY_KEYS) push(k);                       // classic: timeout + invalid
+    for (const k of ['no_input', 'invalid_option', 'invalid_length']) if (wired(k)) push(k); // preserve stray wired keys
+    if (wired('max_attempts_exceeded')) push('max_attempts_exceeded');
   }
-  if (showDefault) out.push('_default');
   return out;
 }
 
