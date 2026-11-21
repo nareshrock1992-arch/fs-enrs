@@ -68,7 +68,15 @@ There is **no migration** and no DB change:
 | Frontend build | passes; only the existing chunk-size notice |
 
 ## Left undone or needing a decision
-1. **Live save and publish with routes:** the lab backend runs `main`, which drops the new fields, so routes can't be saved there until the branch backend runs. The `fs-enrs-dev` folder shares port 4100 and the `fs_enrs` database with the lab, so it was not used. Decide whether to test the branch on the lab (check it out and restart) or on a separate dev database.
+1. **Live save and publish with routes: done.** The lab ran this branch (`dacf956`, backend restarted). The test used a throwaway flow, "ZZ DTMF TEST", bound to 0 numbers, with a Digits node: `= 1234` → Transfer, `2000–2999` → Say, Any valid entry → Hangup, Failed → Hangup.
+   - Autosave: "Saved".
+   - API GET: `routes` and the `route_r1` / `route_r2` branches were stored.
+   - After a full reload: the card and its exits came back unchanged.
+   - Validate: valid, 0 errors. The only warnings were expected (node not reachable from the start, no prompt text).
+   - Publish: v1 published. The version snapshot contains the routes and their connections.
+   - Not deployed. The flow was deleted afterwards (GET returns 404).
+
+   The lab is still on this branch. To go back: `git checkout main && pm2 restart fs-enrs-backend`.
 2. **Screenshots:** done in the browser pane at 1280×800, in `docs/ivr/screenshots/`:
    - `01-digits-basic-and-card-100.jpg`: Digits panel and canvas at 100 %;
    - `02-digits-routes-editor.jpg`;
