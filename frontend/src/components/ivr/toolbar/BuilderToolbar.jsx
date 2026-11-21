@@ -169,7 +169,8 @@ export default function BuilderToolbar({
         {/* Save status */}
         <div className="flex items-center gap-1 text-[10px] shrink-0">
           {saving && <><Loader2 size={11} className="animate-spin text-text-muted" /><span className="text-text-muted">Saving…</span></>}
-          {!saving && saveError && <><AlertTriangle size={11} className="text-red-400" /><span className="text-red-400" title={saveError}>Save failed</span></>}
+          {/* The reason is shown, not only in the tooltip (DTMF redesign D13). */}
+          {!saving && saveError && <><AlertTriangle size={11} className="text-red-400" /><span className="text-red-400 max-w-[280px] truncate" title={saveError}>Save failed: {humaniseError(saveError.split(' — ')[0])}</span></>}
           {!saving && !saveError && dirty && <><Save size={11} className="text-yellow-500" /><span className="text-yellow-500">Unsaved</span></>}
           {!saving && !saveError && !dirty && <span className="text-text-muted">Saved</span>}
         </div>

@@ -7,24 +7,32 @@ import { PORT_INSET } from './nodeGeometry.js';
 //
 // variant "row" (Menu nodes): each exit is a bordered row with its name on the
 // left and the dot inside its right end. Same geometry, so wiring is unchanged.
-export default function ConnectionDot({ portKey, label, color = '#2563EB', connected, onDragStart, variant }) {
+export default function ConnectionDot({ portKey, label, color = '#2563EB', connected, onDragStart, variant, muted = false, hideLabel = false }) {
   const row = variant === 'row';
+  // Failure exits (muted) read quieter than success exits; hideLabel is the
+  // zoomed-out Menu card. Geometry never changes, so wires stay put.
+  const textColor = muted ? 'rgb(var(--text-muted))'
+    : row && connected ? 'rgb(var(--text-primary))' : 'rgb(var(--text-secondary))';
   return (
     <div className="relative h-full select-none">
       {row && (
         <span
           aria-hidden
           className="absolute rounded-md pointer-events-none"
-          style={{ left: 10, right: 4, top: 3, bottom: 3, border: '1px solid rgb(var(--node-border))' }}
+          style={{
+            left: 10, right: 4, top: 3, bottom: 3,
+            border: `1px ${muted ? 'dashed' : 'solid'} rgb(var(--node-border))`,
+          }}
         />
       )}
       {/* Branch label */}
       <span
-        className={`absolute top-1/2 -translate-y-1/2 text-[11px] truncate leading-tight ${row ? 'text-left' : 'text-right'}`}
+        className={`absolute top-1/2 -translate-y-1/2 text-[11px] truncate leading-tight ${row ? 'text-left' : 'text-right'} ${muted ? 'italic' : ''}`}
         style={{
           right: PORT_INSET + 12,
           left: row ? 18 : 10,
-          color: row && connected ? 'rgb(var(--text-primary))' : 'rgb(var(--text-secondary))',
+          color: textColor,
+          visibility: hideLabel ? 'hidden' : undefined,
         }}
         title={label}
       >

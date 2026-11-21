@@ -310,12 +310,12 @@ describe('short texts', () => {
     expect(menuCanvasSummary(PIN)).toBe('Speak · 4–6 digits · 3 tries');
     expect(menuCanvasSummary(EXTERNAL)).toBe('No prompt · 1 option · 1 try');
   });
-  it('the canvas card shows the prompt, keeps the description as line 2, and the summary on hover', () => {
+  it('the canvas card shows the prompt (~40 chars), a chip row, and the description and summary on hover', () => {
     const r = nodeSubtitleLines({ ...TEMPLATE_LAUNCH, description: 'After PIN check' }, { summaryTemplate: 'Collect ${max_digits} digit(s) · ${timeout_seconds}s' });
     expect(r).toEqual({
-      primary: '“PIN accepted. Press 1 to send the emergency notification now. Press 2 to cancel.”',
-      secondary: 'After PIN check',
-      detail: 'Speak · 2 options · classic retry',
+      primary: '“PIN accepted. Press 1 to send the emerg…”',
+      secondary: '2 options · 3 tries',
+      detail: 'After PIN check — Speak · 2 options · classic retry',
     });
   });
   it('prompt preview: what the caller hears', () => {
@@ -383,16 +383,16 @@ describe('exit names: one vocabulary for panel, canvas card and wires', () => {
   });
   it('failure exits use plain names', () => {
     expect(menuExitLabel(NEW_NODE, 'no_input')).toBe('No input');
-    expect(menuExitLabel(NEW_NODE, 'invalid_option')).toBe('Wrong key');
-    expect(menuExitLabel(NEW_NODE, 'invalid_length')).toBe('Too few digits');
-    expect(menuExitLabel(NEW_NODE, 'max_attempts_exceeded')).toBe('Retries used up');
+    expect(menuExitLabel(NEW_NODE, 'invalid_option')).toBe('Invalid');
+    expect(menuExitLabel(NEW_NODE, 'invalid_length')).toBe('Invalid (too short)');
+    expect(menuExitLabel(NEW_NODE, 'max_attempts_exceeded')).toBe('Failed');
     expect(menuExitLabel(CLASSIC_BARE, 'timeout')).toBe('No input');
-    expect(menuExitLabel(CLASSIC_BARE, 'invalid')).toBe('Wrong key');
-    expect(menuExitLabel(PIN, 'invalid_option')).toBe('Wrong entry');
+    expect(menuExitLabel(CLASSIC_BARE, 'invalid')).toBe('Invalid');
+    expect(menuExitLabel(PIN, 'invalid_option')).toBe('Invalid');          // same name in both modes
   });
-  it('_default is "Entry complete" when collecting digits, else the catch-all', () => {
-    expect(defaultExitName(PIN)).toBe('Entry complete');
-    expect(menuExitLabel(PIN, '_default')).toBe('Entry complete');
+  it('_default is "Any valid entry" when collecting digits, else the catch-all', () => {
+    expect(defaultExitName(PIN)).toBe('Any valid entry');
+    expect(menuExitLabel(PIN, '_default')).toBe('Any valid entry');
     expect(menuExitLabel(TEMPLATE_LAUNCH, '_default')).toBe('Any other key');
     expect(defaultExitName({ ...NEW_NODE, max_digits: 2, branches: { '10': 'a' } })).toBe('Any other entry');
   });
@@ -400,7 +400,7 @@ describe('exit names: one vocabulary for panel, canvas card and wires', () => {
     const retryNodeWithLegacy = { type: 'gather', max_attempts: 3, branches: { '1': 'a', timeout: 'old' } };
     expect(menuExitLabel(retryNodeWithLegacy, 'timeout')).toBe('No input (fallback)');
     const classicWithV2 = { type: 'gather', branches: { '1': 'a', max_attempts_exceeded: 'm' } };
-    expect(menuExitLabel(classicWithV2, 'max_attempts_exceeded')).toBe('Retries used up (unused)');
+    expect(menuExitLabel(classicWithV2, 'max_attempts_exceeded')).toBe('Failed (unused)');
   });
   it('the canvas shows every Menu port under the panel name (no raw keys like _default)', () => {
     for (const node of Object.values(SHAPES)) {
@@ -474,12 +474,20 @@ describe('source wiring', () => {
     const antiPattern = /\n[ \t]+(const|function) [A-Z][A-Za-z0-9]*\s*(=\s*\([^)]*\)\s*=>|\()/;
     expect(antiPattern.test(menu)).toBe(false);
   });
-  it('MenuInspector is split into Settings and Exits tabs', () => {
-    expect(menu).toMatch(/<InspectorTabs/);
-    expect(menu).toMatch(/id: 'settings', label: 'Settings'/);
-    expect(menu).toMatch(/id: 'exits',/);
-    expect(menu).toMatch(/function SettingsTab\(/);
-    expect(menu).toMatch(/function ExitsTab\(/);
+  it('MenuInspector is one column: Basic blocks, a summary line with Customize, then Advanced', () => {
+    for (const t of ['title="Mode"', 'title="Prompt"', 'title="Routes"', 'title="Options"', 'title="When something goes wrong"', 'title="Advanced"']) {
+      expect(menu).toContain(t);
+    }
+    expect(menu).toMatch(/summaryLine\(node\)/);
+    expect(menu).toMatch(/'Customize'/);
+    expect(menu).toMatch(/Reset to defaults/);
+    expect(menu).not.toMatch(/<InspectorTabs/);
+  });
+  it('no segmented option or field label is ellipsized', () => {
+    const controls = read('../components/ivr/panels/inspectorControls.jsx');
+    expect(controls).toMatch(/flex flex-wrap w-full/);
+    expect(controls).not.toMatch(/min-w-0 truncate rounded/);
+    expect(controls).not.toMatch(/<span className="truncate">\{label\}<\/span>/);
   });
   it('the inspector header no longer prints the internal node id (copy button instead)', () => {
     expect(panel).not.toMatch(/font-mono truncate mt-0\.5">\{node\.id\}/);

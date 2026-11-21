@@ -58,9 +58,26 @@ export function nextSaveStatus(status, err, rev) {
   return { failures, kind, blockedRev: paused ? rev : null };
 }
 
+/**
+ * The first validation issue of a 400 { error, issues:[{ path, message }] }
+ * response, as "node <id>.<field>: message" — the same shape as Validate's
+ * messages, so the builder can name the node. Null when there is none.
+ */
+export function firstSaveIssue(err) {
+  const issue = err?.data?.issues?.[0];
+  if (!issue?.message) return null;
+  const path = Array.isArray(issue.path) ? issue.path : [];
+  const i = path.indexOf('nodes');
+  if (i >= 0 && path[i + 1] !== undefined) {
+    const field = path.slice(i + 2).join('.');
+    return `node ${path[i + 1]}${field ? `.${field}` : ''}: ${issue.message}`;
+  }
+  return issue.message;
+}
+
 /** Human message for the toolbar ("Save failed" tooltip). */
 export function describeSaveFailure(err, status) {
-  const base = err?.data?.errors?.[0] || err?.data?.message || err?.message || 'Save failed';
+  const base = firstSaveIssue(err) || err?.data?.errors?.[0] || err?.data?.message || err?.message || 'Save failed';
   if (status.kind === 'permanent') {
     return `${base} — changes are NOT saved. Autosave is paused until you edit the flow or click Save.`;
   }

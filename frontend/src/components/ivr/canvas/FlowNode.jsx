@@ -5,7 +5,7 @@ import { useNodeTypes } from '../../../hooks/useNodeTypes.js';
 import { getPortsForNode } from './nodePorts.js';
 import { nodeSubtitleLines } from './nodeSubtitle.js';
 import { nodeHeaderParts } from './nodeIdentity.js';
-import { menuExitLabel } from '../panels/menu/menuModel.js';
+import { menuExitLabel, isFailureExit, menuLint, menuModeBadge } from '../panels/menu/menuModel.js';
 import { nodeStyle, NODE_TEXT } from './nodeStyle.js';
 import {
   NODE_WIDTH, HEADER_H, SUMMARY_H, PORT_ROW_H, PORT_TOP, nodeHeight,
@@ -18,20 +18,32 @@ export { NODE_HEIGHT } from './nodeGeometry.js';
 
 const FALLBACK_CFG = { label: 'Unknown', type: '', category: '', ports: [] };
 
+// Below this zoom the Menu card shows only icon, name and exit count (D15).
+export const MENU_COMPACT_SCALE = 0.6;
+
 export default function FlowNode({
-  node, isSelected, isEntry, hasErrors, hasWarnings, errorCount = 0, warningCount = 0, edges, scale,
+  node, isSelected, isEntry, hasErrors: serverErrors, hasWarnings: serverWarnings, errorCount: serverErrorCount = 0,
+  warningCount: serverWarningCount = 0, edges, scale,
   onSelect, onMove, onDelete, onPortDragStart, onPortClick,
   onDragStart, onDragEnd, onContextMenu, onHover, summaryResolvers,
 }) {
   const { byType } = useNodeTypes();
   const cfg   = byType[node.type] || FALLBACK_CFG;
-  // Menu exits use the Menu panel's names ("1 · Opening hours", "Retries used
-  // up"); the port keys — and so the wiring — are unchanged.
+  // Menu exits use the Menu panel's names ("1 · Sales", "Failed"); the port
+  // keys — and so the wiring — are unchanged. Failure exits are muted.
   const isMenu = node.type === 'gather';
+  const compact = isMenu && scale < MENU_COMPACT_SCALE;
   const rawPorts = getPortsForNode(node, cfg.ports, cfg.branchKeys, cfg.portLabels);
   const ports = isMenu
-    ? rawPorts.map(p => ({ ...p, label: menuExitLabel(node, p.key, { nameOf: summaryResolvers?.node }) }))
+    ? rawPorts.map(p => ({ ...p, label: menuExitLabel(node, p.key, { nameOf: summaryResolvers?.node }), muted: isFailureExit(p.key) }))
     : rawPorts;
+  // The status icon reflects real problems even before Validate runs: server
+  // results plus the Menu's own checks (missing prompt, no options, bad route…).
+  const lint = isMenu ? menuLint(node) : { errors: [], warnings: [] };
+  const errorCount = serverErrorCount + lint.errors.length;
+  const warningCount = serverWarningCount + lint.warnings.length;
+  const hasErrors = serverErrors || lint.errors.length > 0;
+  const hasWarnings = serverWarnings || lint.warnings.length > 0;
   const v = nodeStyle(cfg);
   const { accent, Icon } = v;
   const startPos = useRef({ x: node.x, y: node.y });
@@ -133,7 +145,19 @@ export default function FlowNode({
             <span className="text-[12.5px] font-semibold truncate" style={{ color: NODE_TEXT.title }} title={cardTitle}>
               {cardTitle}
             </span>
-            {typeLabel && (
+            {isMenu ? (
+              <span className="flex items-center gap-1 min-w-0">
+                <span className="text-[9px] font-semibold uppercase tracking-wide px-1 rounded"
+                      style={{ color: accent, background: `${accent}1a` }}>
+                  {menuModeBadge(node)}
+                </span>
+                {compact && (
+                  <span className="text-[9px] truncate" style={{ color: NODE_TEXT.muted }}>
+                    {ports.length} exit{ports.length === 1 ? '' : 's'}
+                  </span>
+                )}
+              </span>
+            ) : typeLabel && (
               <span className="text-[9px] font-semibold uppercase tracking-wide truncate"
                     style={{ color: NODE_TEXT.muted }}>
                 {typeLabel}
@@ -175,8 +199,8 @@ export default function FlowNode({
           onClick={e => { e.stopPropagation(); onSelect(node.id); }}
           title={[primary, secondary, detail].filter(Boolean).join(' — ')}
         >
-          {primary && <span className="truncate block text-[11px] font-medium" style={{ color: NODE_TEXT.summary }}>{primary}</span>}
-          {secondary && <span className="truncate block text-[10px]" style={{ color: NODE_TEXT.muted }}>{secondary}</span>}
+          {!compact && primary && <span className="truncate block text-[11px] font-medium" style={{ color: NODE_TEXT.summary }}>{primary}</span>}
+          {!compact && secondary && <span className="truncate block text-[10px]" style={{ color: NODE_TEXT.muted }}>{secondary}</span>}
         </div>
 
         {/* Output ports — absolutely positioned to match FlowCanvas anchor math */}
@@ -190,6 +214,8 @@ export default function FlowNode({
               connected={connectedPorts.has(p.key)}
               onDragStart={(portKey) => onPortDragStart?.(node.id, portKey)}
               variant={isMenu ? 'row' : undefined}
+              muted={p.muted}
+              hideLabel={compact}
             />
           </div>
         ))}
