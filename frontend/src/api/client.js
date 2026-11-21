@@ -22,6 +22,47 @@ function getToken() {
   return localStorage.getItem('enrs_token');
 }
 
+/** True when the access token has expired or can't be read. JWT payloads are base64url. */
+export function isTokenExpired(token, now = Date.now()) {
+  try {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(part.padEnd(part.length + ((4 - (part.length % 4)) % 4), '=')));
+    return !(payload.exp * 1000 > now);
+  } catch {
+    return true;
+  }
+}
+
+let refreshing = null;
+
+/**
+ * Renews the 15-minute access token from the 7-day httpOnly refresh cookie.
+ * One request at a time: callers that arrive while a renewal is running share
+ * it (a page load used to send one refresh per API call). Stores the new token
+ * unless the user signed out meanwhile.
+ * Resolves { token } on success, else { status } (0 = network error).
+ */
+export function refreshAccessToken() {
+  if (!refreshing) {
+    refreshing = (async () => {
+      let res;
+      try {
+        res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include' });
+      } catch {
+        return { status: 0 };
+      }
+      if (!res.ok) return { status: res.status };
+      const { token } = await res.json().catch(() => ({}));
+      if (!token) return { status: 0 };
+      if (getToken()) localStorage.setItem('enrs_token', token);
+      return { token };
+    })().finally(() => { refreshing = null; });
+  }
+  return refreshing;
+}
+
+const isAuthPath = path => path === '/auth/login' || path === '/auth/refresh';
+
 function isSuperAdmin() {
   try { return JSON.parse(localStorage.getItem('enrs_user') || 'null')?.role === 'SUPER_ADMIN'; } catch { return false; }
 }
@@ -38,6 +79,12 @@ function getActiveTenantId() {
 }
 
 async function request(method, path, body, opts = {}) {
+  // Renew an expired token before sending, instead of collecting a 401 first.
+  // A refused renewal is handled by the 401 branch below.
+  if (!isAuthPath(path) && !opts.headers?.Authorization) {
+    const current = getToken();
+    if (current && isTokenExpired(current)) await refreshAccessToken();
+  }
   const token = getToken();
   const activeTenantId = getActiveTenantId();
 
@@ -65,16 +112,15 @@ async function request(method, path, body, opts = {}) {
     body: resolvedBody instanceof FormData ? resolvedBody : resolvedBody ? JSON.stringify(resolvedBody) : undefined,
   });
 
-  if (res.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {
-    const refreshRes = await fetch(`${BASE}/auth/refresh`, {
-      method: 'POST', credentials: 'include',
-    });
-    if (refreshRes.ok) {
-      const { token: newToken } = await refreshRes.json();
-      localStorage.setItem('enrs_token', newToken);
+  if (res.status === 401 && !isAuthPath(path)) {
+    const renewed = await refreshAccessToken();
+    if (renewed.token) {
       return request(method, path, body, {
-        ...opts, headers: { Authorization: `Bearer ${newToken}` }
+        ...opts, headers: { Authorization: `Bearer ${renewed.token}` }
       });
+    } else if (renewed.status === 0) {
+      // Backend unreachable: keep the session; the next call tries again.
+      throw Object.assign(new Error('Could not reach the server. Try again.'), { status: 0 });
     } else {
       localStorage.removeItem('enrs_token');
       localStorage.removeItem('enrs_user');
