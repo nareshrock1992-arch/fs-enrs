@@ -52,7 +52,7 @@ const GATHER_RESERVED_KEYS = new Set([
 /**
  * True when a gather node collects a number (a PIN, an account number) rather
  * than offering a key menu: it has no option keys and accepts more than one
- * digit. Its _default exit is then the success exit ("Entry complete").
+ * digit. Its _default exit is then the success exit ("Number entered").
  * Derived from stored fields only — there is no stored "collect type".
  */
 export function gatherCollectsDigits(node) {
@@ -79,7 +79,7 @@ export function gatherBranchKeysFor(node) {
   const existing = Object.keys(branches);
   const digits = existing.filter(k => !GATHER_RESERVED_KEYS.has(k));
   const out = [...digits];
-  // _default ("Entry complete" / "Any other key"). When the node collects a
+  // _default ("Number entered" / "Any other key"). When the node collects a
   // number it is THE success exit, so it is always shown and connectable. In a
   // key menu it is an optional catch-all that bypasses wrong-key handling, so it
   // is shown once wired; the Menu panel offers it explicitly. Display only: an

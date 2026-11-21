@@ -134,7 +134,7 @@ describe('getPortsForNode applies portLabels', () => {
     expect(keys).not.toContain('invalid');
   });
 
-  it('collecting digits: _default ("Entry complete") is ALWAYS a connectable success output, even unwired', () => {
+  it('collecting digits: _default ("Number entered") is ALWAYS a connectable success output, even unwired', () => {
     // A. Internal, PIN-style node (no option keys, more than one digit)
     const internal = getPortsForNode(
       { type: 'gather', retry_mode: 'internal', max_attempts: 3, min_digits: 4, max_digits: 4, branches: {} },

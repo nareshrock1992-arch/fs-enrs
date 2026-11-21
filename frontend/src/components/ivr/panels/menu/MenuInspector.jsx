@@ -9,7 +9,9 @@ import {
   showTooFewDigits, togglePatch, sourcePatch, modePatch, collectType, collectTypePatch, retriesPatch,
   nextFreeKey, addOptionPatch, validateOptionKey, optionKeyWarning, renameOptionPatch, removeBranchPatch,
   setBranchPatch, menuExitLabel, defaultExitName, isWired, hasAnyExit,
+  WRONG_KEY, wrongKeyChoice, wrongKeyGoKey, wrongKeyChoicePatch, simulateEntry, describeEntry,
 } from './menuModel.js';
+import { nodeDisplayNames } from '../../canvas/nodeIdentity.js';
 
 // Purpose-built inspector body for the Menu (Gather DTMF) node. One page that
 // reads top to bottom as the questions an administrator asks:
@@ -42,6 +44,10 @@ const MESSAGE_SOURCES = [
 const THEN = [
   { value: 'retry', label: 'Ask again' },
   { value: 'exit',  label: 'Go to a node' },
+];
+const WRONG_KEY_CHOICES = [
+  { value: WRONG_KEY.RETRY, label: 'Ask again' },
+  { value: WRONG_KEY.GO,    label: 'Go straight to a node' },
 ];
 const TERMINATORS = [
   { value: '',  label: 'None' },
@@ -400,9 +406,12 @@ function HearsSection({ node, onChange, fieldErrors, controls }) {
 
 function KeysSection({ node, nodes, byType, onChange, fieldErrors, controls }) {
   const [showAnyOther, setShowAnyOther] = useState(false);
+  const eff = effective(node);
   const rows = menuRows(node);
   const free = nextFreeKey(node);
   const pickerProps = { node, nodes, byType, onChange, controls };
+  // Retry in this node: "Any other key" is the "Go straight to a node" answer in section 3.
+  const anyOtherHere = eff.mode !== MODE.INTERNAL;
   return (
     <InspectorBlock title="2. Keys the caller can press" summary={`${rows.options.length} ${rows.options.length === 1 ? 'key' : 'keys'}`}>
       {rows.options.length === 0 && <Note>No keys yet — add the keys callers can press and where each one goes.</Note>}
@@ -419,7 +428,7 @@ function KeysSection({ node, nodes, byType, onChange, fieldErrors, controls }) {
         >
           + Add key
         </button>
-        {!rows.anyOther && !showAnyOther && (
+        {anyOtherHere && !rows.anyOther && !showAnyOther && (
           <button type="button" onClick={() => setShowAnyOther(true)}
                   title="Send every key that isn't listed to one destination"
                   className="text-[11px] text-text-muted hover:text-brand transition-colors">
@@ -427,15 +436,21 @@ function KeysSection({ node, nodes, byType, onChange, fieldErrors, controls }) {
           </button>
         )}
       </div>
-      {(rows.anyOther || showAnyOther) && (
+      {anyOtherHere && (rows.anyOther || showAnyOther) && (
         <Row
           stacked
           label={defaultExitName(node)}
-          info="Every key that isn't listed above goes here. While this is connected, wrong keys are not asked again."
+          info="Every key that isn't listed above goes here."
           errors={fieldErrors['branch:_default']}
         >
           <Picker branchKey="_default" {...pickerProps} />
         </Row>
+      )}
+      {eff.max_digits > 1 && (
+        <Note>
+          Callers can enter up to {eff.max_digits} digits per key. Collecting a PIN or account number?
+          Choose <span className="text-text-secondary">Enters a number</span> above.
+        </Note>
       )}
       <Messages errors={fieldErrors.branches} />
     </InspectorBlock>
@@ -447,6 +462,15 @@ function NumberSection({ node, nodes, byType, onChange, fieldErrors, controls })
   const pickerProps = { node, nodes, byType, onChange, controls };
   return (
     <InspectorBlock title="2. The number the caller enters">
+      <Row
+        stacked
+        label="When the number is entered, go to"
+        info="Every entry of the right length goes here. This only checks the length: check whether a PIN is correct in the next node, for example a Condition or REST API."
+        errors={fieldErrors['branch:_default']}
+        warning={isWired(node, '_default') ? null : 'Not connected — choose where the call goes after the number is entered'}
+      >
+        <Picker branchKey="_default" {...pickerProps} placeholder="Choose destination…" />
+      </Row>
       <DigitCount
         node={node}
         onChange={onChange}
@@ -457,24 +481,35 @@ function NumberSection({ node, nodes, byType, onChange, fieldErrors, controls })
       />
       <EndKey node={node} onChange={onChange} errors={fieldErrors.terminators}
               info="A key the caller presses to finish early. Useful when the length varies." />
+      <BetweenDigitsField node={node} onChange={onChange} fieldErrors={fieldErrors}
+                          info="When the caller stops typing for this long, the entry ends. Fewer digits than the minimum count as too few." />
       <VariableField node={node} onChange={onChange} controls={controls} errors={fieldErrors.variable_name} label="Save as variable" />
-      <Note>Later nodes use it as <code className="font-mono text-text-secondary">{'${' + eff.variable_name + '}'}</code>.</Note>
-      <Row
-        label="Then go to"
-        errors={fieldErrors['branch:_default']}
-        warning={isWired(node, '_default') ? null : 'Choose where the call goes after the number is entered'}
-      >
-        <Picker branchKey="_default" {...pickerProps} placeholder="Choose destination…" />
-      </Row>
+      <Note>
+        Later nodes use it as <code className="font-mono text-text-secondary">{'${' + eff.variable_name + '}'}</code>.
+        This checks the length only — check the PIN itself in the next node.
+      </Note>
     </InspectorBlock>
   );
 }
 
 // ── 3. If the caller gets it wrong ─────────────────────────────────────────
 
+function BetweenDigitsField({ node, onChange, fieldErrors, info, inline = false }) {
+  const label = 'Time between digits';
+  const field = (
+    <NumberField value={node.inter_digit_timeout} onChange={v => onChange({ inter_digit_timeout: v })}
+                 min={0} max={30} placeholder="2" unit="s" ariaLabel="Time between digits, seconds" />
+  );
+  const fullInfo = `${info} 0 uses the engine default. Empty uses 2 s.`;
+  return inline
+    ? <InlineRow label={label} info={fullInfo} errors={fieldErrors.inter_digit_timeout}>{field}</InlineRow>
+    : <Row label={label} info={fullInfo} errors={fieldErrors.inter_digit_timeout}>{field}</Row>;
+}
+
 function WaitField({ node, onChange, fieldErrors }) {
+  const what = collectType(node) === COLLECT.DIGITS ? 'the first digit' : 'a key';
   return (
-    <Row label="Wait" info={`Seconds to wait for the first key. Empty uses ${runtimeDefault(node, 'timeout_seconds')} s.`}
+    <Row label="Wait" info={`Seconds to wait for ${what} after the prompt. Empty uses ${runtimeDefault(node, 'timeout_seconds')} s.`}
          errors={fieldErrors.timeout_seconds}>
       <NumberField
         value={node.timeout_seconds}
@@ -513,6 +548,52 @@ function ClassicUpgrade({ node, onChange }) {
   );
 }
 
+/**
+ * Key menu, Retry in this node: one choice for a key that isn't listed.
+ * Ask again (wrong-key message, then the menu again) or go straight to a node
+ * (the "Any other key" exit). Never both, so they can't silently compete.
+ */
+function WrongKeyCard({ node, onChange, controls, fieldErrors, pickerProps, unguarded }) {
+  const eff = effective(node);
+  const choice = wrongKeyChoice(node);
+  const goKey = wrongKeyGoKey(node);
+  const choose = async v => {
+    if (v === choice) return;
+    if (v === WRONG_KEY.RETRY && isWired(node, '_default')) {
+      const ok = await confirmAction({
+        title: 'Ask again on a wrong key?',
+        message: 'This disconnects “Any other key”. Keys that aren\'t listed then play the wrong-key message and ask again, '
+          + 'using one of the tries.',
+        confirmLabel: 'Ask again',
+        variant: 'warning',
+      });
+      if (!ok) return;
+    }
+    const p = wrongKeyChoicePatch(node, v);
+    if (p) onChange(p);
+  };
+  return (
+    <Situation title="Presses a key that isn’t listed">
+      <Segmented value={choice} options={WRONG_KEY_CHOICES} label="Key that isn't listed" onChange={choose} />
+      {choice === WRONG_KEY.RETRY ? (
+        <>
+          <MessageField slot="invalid_option" label="Say first (optional)" node={node} onChange={onChange} controls={controls}
+                        fieldErrors={fieldErrors} placeholder="That is not a valid option." />
+          <InlineRow label="Play the menu prompt again" info="After the message, play the main prompt again before waiting for keys.">
+            <Switch checked={eff.replay.invalid_option} onChange={on => onChange(togglePatch('invalid_option_replay_menu', on))}
+                    label="Play the menu prompt again" />
+          </InlineRow>
+        </>
+      ) : (
+        <Row label="Go to" info="No message and no retry: the call goes straight here."
+             errors={fieldErrors[`branch:${goKey}`]} warning={unguarded ? DISCONNECTED : null}>
+          <Picker branchKey={goKey} {...pickerProps} />
+        </Row>
+      )}
+    </Situation>
+  );
+}
+
 function WrongSection({ node, nodes, byType, onChange, fieldErrors, controls }) {
   const eff = effective(node);
   const mode = eff.mode;
@@ -522,7 +603,7 @@ function WrongSection({ node, nodes, byType, onChange, fieldErrors, controls }) 
   // Too few digits can only happen when more than one digit is required (or its exit is still connected).
   const tooFew = showTooFewDigits(node) && (eff.min_digits > 1 || !!rows.tooFew);
   const pickerProps = { node, nodes, byType, onChange, controls };
-  const wrongName = digits ? 'Enters a wrong number' : 'Presses a wrong key';
+  const wrongName = digits ? 'Enters a wrong number' : 'Presses a key that isn’t listed';
   const errs = k => fieldErrors[k];
   const common = { node, onChange, controls, fieldErrors, pickerProps };
 
@@ -549,9 +630,10 @@ function WrongSection({ node, nodes, byType, onChange, fieldErrors, controls }) 
     );
   }
 
-  // With Any other key connected, unmatched keys go there: wrong-key handling never runs.
-  const wrongKeyHandled = !isWired(node, '_default');
   const seconds = eff.timeout_seconds;
+  // A number of the right length always leaves through "Number entered", so a
+  // "wrong number" can only happen while that exit is not connected.
+  const showWrong = !digits || !isWired(node, '_default');
   return (
     <InspectorBlock title="3. If the caller gets it wrong">
       <Situation title={`Presses nothing for ${seconds} s`}>
@@ -560,14 +642,14 @@ function WrongSection({ node, nodes, byType, onChange, fieldErrors, controls }) 
                      placeholder="We didn't receive any input." />
       </Situation>
 
-      <Situation title={wrongName}>
-        {wrongKeyHandled ? (
+      {showWrong && (digits ? (
+        <Situation title="Enters a number while “Number entered” isn't connected">
           <RetryOrExit slot="invalid_option" {...common} unguarded={unguarded.has('wrongKey')}
-                       placeholder="That is not a valid option." />
-        ) : (
-          <Note>Goes to {defaultExitName(node)} (set under Keys).</Note>
-        )}
-      </Situation>
+                       placeholder="That number is not valid." />
+        </Situation>
+      ) : (
+        <WrongKeyCard {...common} unguarded={unguarded.has('wrongKey')} />
+      ))}
 
       {tooFew && (
         <Situation title="Enters too few digits">
@@ -585,6 +667,60 @@ function WrongSection({ node, nodes, byType, onChange, fieldErrors, controls }) 
           <Picker branchKey="max_attempts_exceeded" {...pickerProps} placeholder="Not connected" />
         </Row>
       </Situation>
+    </InspectorBlock>
+  );
+}
+
+// ── Test an entry ──────────────────────────────────────────────────────────
+
+function TestEntry({ node, nodes, byType }) {
+  const [typed, setTyped] = useState(null);
+  const eff = effective(node);
+  const digits = collectType(node) === COLLECT.DIGITS;
+  if (eff.mode === MODE.CLASSIC) return null;
+  const names = nodeDisplayNames(nodes, byType);
+  const nameOf = id => names[id] || 'a missing node';
+  const rows = menuRows(node);
+  const samples = digits
+    ? [
+        ...(eff.min_digits > 1 ? [{ label: `${eff.min_digits - 1} digits`, value: '1234567890'.slice(0, eff.min_digits - 1) }] : []),
+        { label: `${eff.max_digits} digits`, value: '1234567890'.slice(0, eff.max_digits) },
+      ]
+    : [
+        ...rows.options.slice(0, 4).map(k => ({ label: k, value: k })),
+        ...(['9', '7', '0', '8'].filter(k => !rows.options.includes(k)).slice(0, 1).map(k => ({ label: k, value: k }))),
+      ];
+  samples.push({ label: 'Nothing', value: '' });
+  const result = typed === null ? null : simulateEntry(node, typed);
+  return (
+    <InspectorBlock title="Test an entry" info="Shows what happens on the first try, step by step as the call engine does it. Nothing is dialled or saved.">
+      <div className="flex flex-wrap items-center gap-1">
+        {samples.map(s => (
+          <button key={s.label} type="button" onClick={() => setTyped(s.value)}
+                  className={`px-2 py-0.5 rounded-md border text-[11px] font-mono transition-colors
+                              ${typed === s.value ? 'border-brand text-brand' : 'border-surface-border text-text-secondary hover:text-text-primary'}`}>
+            {s.label}
+          </button>
+        ))}
+        <input
+          value={typed ?? ''}
+          onChange={e => setTyped(e.target.value.replace(/[^0-9*#]/g, '').slice(0, 24))}
+          placeholder={digits ? 'Type an entry' : 'Type keys'}
+          aria-label="Entry to test"
+          className="w-24 bg-surface-bg border border-surface-border rounded-md px-1.5 py-0.5 text-[11px] font-mono text-text-primary
+                     placeholder:text-text-muted focus:outline-none focus:border-brand"
+        />
+      </div>
+      {result && (
+        <div className="rounded-md bg-surface-hover/40 px-2.5 py-2 space-y-1 text-[11px] leading-relaxed text-text-secondary">
+          {result.entry !== typed && typed !== '' && (
+            <p className="text-text-muted">Counted as {result.entry || 'nothing'} (the entry ends at {result.entry.length === eff.max_digits ? `${eff.max_digits} digits` : 'the end key'}).</p>
+          )}
+          {describeEntry(node, result, nameOf).map((l, i) => (
+            <p key={i} className={i === 0 ? 'text-text-primary' : ''}>{l}</p>
+          ))}
+        </div>
+      )}
     </InspectorBlock>
   );
 }
@@ -628,11 +764,10 @@ function MoreSection({ node, onChange, fieldErrors, controls, renderAllFields })
                   label="Keys interrupt the prompt" />
         </InlineRow>
       )}
-      <InlineRow label="Time allowed between digits" info="Seconds allowed between digits. 0 uses the engine default. Empty uses 2 s."
-                 errors={errs('inter_digit_timeout')}>
-        <NumberField value={node.inter_digit_timeout} onChange={v => onChange({ inter_digit_timeout: v })}
-                     min={0} max={30} placeholder="2" unit="s" ariaLabel="Time allowed between digits, seconds" />
-      </InlineRow>
+      {!digits && (eff.max_digits > 1 || errs('inter_digit_timeout')?.length) && (
+        <BetweenDigitsField node={node} onChange={onChange} fieldErrors={fieldErrors} inline
+                            info="Seconds allowed between the digits of a multi-digit key." />
+      )}
       {mode === MODE.INTERNAL && (
         <InlineRow label="Pause before asking again" info="Short silence after a message, before the prompt plays again. Empty uses 700 ms."
                    errors={errs('reprompt_pause_ms')}>
@@ -695,6 +830,7 @@ export default function MenuInspector({ node, nodes, byType, onChange, fieldErro
       {digits ? <NumberSection key={node.id} {...props} /> : <KeysSection key={node.id} {...props} />}
       <WrongSection {...props} />
       <FallbackSection {...props} />
+      <TestEntry key={`test-${node.id}`} node={node} nodes={nodes} byType={byType} />
       <MoreSection {...props} renderAllFields={renderAllFields} />
     </div>
   );
