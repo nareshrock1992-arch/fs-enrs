@@ -69,7 +69,17 @@ There is **no migration** and no DB change:
 
 ## Left undone or needing a decision
 1. **Live save and publish with routes:** the lab backend runs `main`, which drops the new fields, so routes can't be saved there until the branch backend runs. The `fs-enrs-dev` folder shares port 4100 and the `fs_enrs` database with the lab, so it was not used. Decide whether to test the branch on the lab (check it out and restart) or on a separate dev database.
-2. **Screenshots:** the browser session needs a sign-in. They go in `docs/ivr/screenshots/` once taken; there is no Playwright in the repo.
+2. **Screenshots:** done in the browser pane at 1280×800, in `docs/ivr/screenshots/`:
+   - `01-digits-basic-and-card-100.jpg`: Digits panel and canvas at 100 %;
+   - `02-digits-routes-editor.jpg`;
+   - `03-advanced-open.jpg`;
+   - `04-canvas-51-percent-compact.jpg`.
+
+   An automated check found no ellipsized label in the panel (Basic or Advanced). There is no Playwright in the repo.
+
+   **Found while testing:** a Menu option that repeats its own menu ("0 = repeat") showed "Choose destination…". This is fixed.
+
+   **Lab check:** saving routes against the lab backend (`main`) confirmed that it drops `routes` but keeps the `route_*` connections. The panel then shows them as "Removed route", so nothing disappears silently.
 3. **Backend warning texts:** these still name nodes by internal id (`Node "node_…"`); the panel strips the prefix, but the toolbar banner shows it.
 4. **Other node types:** fields in the shared generic panel still use the undefined `bg-surface` class (white in dark mode).
 5. **Lint warnings:** the "no new warnings" check is only approximate. ESLint reports components used only in JSX as unused (the config has no `react/jsx-uses-vars`), so new components add warnings of that existing false-positive kind.
