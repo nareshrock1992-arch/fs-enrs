@@ -11,7 +11,8 @@ import { describe, it, expect } from 'vitest';
 import { validateGraph } from '../../utils/ivrGraphValidator.js';
 
 const H = { type: 'hangup' };
-const gatherWarnings = r => r.warnings.filter(w => w.includes('(Gather DTMF)'));
+// Only the catch-all warning is under test (the redesign also warns about a missing prompt).
+const gatherWarnings = r => r.warnings.filter(w => w.includes('(Gather DTMF)') && w.includes('no catch-all'));
 
 async function validate(gatherNode) {
   const graph = { entry_node_id: 'g', nodes: { g: { type: 'gather', ...gatherNode }, h: H } };

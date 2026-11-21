@@ -77,7 +77,7 @@ describe('A — legacy Gather behavior preserved verbatim', () => {
   });
   it('keeps the legacy routing (timeout/_default, then digits/_default/invalid)', () => {
     expect(legacyHalf).toContain('return br["timeout"] or br["_default"]');
-    expect(legacyHalf).toContain('return br[digits] or br["_default"] or br["invalid"]');
+    expect(legacyHalf).toContain('return gather_route_target(node, br, digits) or br[digits] or br["_default"] or br["invalid"]');
   });
   it('the legacy hardcoded reprompt exists ONLY in the legacy half, never the new path', () => {
     expect(newHalf).not.toContain('Please enter at least ');
@@ -350,7 +350,7 @@ describe('J — legacy compatibility and routing invariants', () => {
   it('_default precedence: a complete entry routes to br[d] or br["_default"] BEFORE invalid_option', () => {
     // VALID check consumes br[d] or br["_default"]; invalid_option is only
     // reached when that target is nil. This preserves legacy routing.
-    const validIdx  = newHalf.indexOf('local target = br[d] or br["_default"]');
+    const validIdx  = newHalf.indexOf('local target = gather_route_target(node, br, d) or br[d] or br["_default"]');
     const ioIdx     = newHalf.indexOf('reason = "invalid_option"');
     expect(validIdx).toBeGreaterThan(-1);
     expect(ioIdx).toBeGreaterThan(validIdx);
@@ -463,7 +463,7 @@ describe('retry_mode — Internal vs External', () => {
     expect(externalHalf.match(/\bcollect\(/g)).toHaveLength(1);            // one collection (no retry)
     expect(externalHalf).toContain('return br["timeout"]');                // no input → timeout
     expect(externalHalf).toContain('return br["invalid"]');                // invalid → invalid
-    expect(externalHalf).toContain('local target = br[d] or br["_default"]'); // success (digit / Continue)
+    expect(externalHalf).toContain('local target = gather_route_target(node, br, d) or br[d] or br["_default"]'); // success (digit / Continue)
     expect(externalHalf).not.toContain('br["max_attempts_exceeded"]');     // never routes exhaustion
     expect(externalHalf).not.toContain('while attempt');                   // no retry loop
     expect(externalHalf).not.toContain('attempt = attempt + 1');           // no attempt counter
@@ -478,7 +478,7 @@ describe('retry_mode — Internal vs External', () => {
   it('successful multi-digit collection routes via Continue (_default), not a failure branch (both modes)', () => {
     // External success uses br[d] or br["_default"]; internal VALID does the same.
     expect(externalHalf).toContain('br[d] or br["_default"]');
-    expect(loopHalf).toContain('local target = br[d] or br["_default"]');
+    expect(loopHalf).toContain('local target = gather_route_target(node, br, d) or br[d] or br["_default"]');
   });
 
   it('validator accepts retry_mode internal/external and rejects other values', () => {
