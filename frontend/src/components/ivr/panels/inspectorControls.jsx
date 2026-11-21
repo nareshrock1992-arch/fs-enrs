@@ -32,7 +32,7 @@ export function Switch({ checked, onChange, disabled = false, label }) {
 export function Segmented({ value, options, onChange, label }) {
   return (
     <div role="radiogroup" aria-label={label}
-         className="flex w-full rounded-md border border-surface-border bg-surface-hover/40 p-0.5">
+         className="flex flex-wrap w-full gap-0.5 rounded-md border border-surface-border bg-surface-hover/40 p-0.5">
       {options.map(o => {
         const on = o.value === value;
         return (
@@ -42,7 +42,7 @@ export function Segmented({ value, options, onChange, label }) {
             role="radio"
             aria-checked={on}
             onClick={() => { if (!on) onChange(o.value); }}
-            className={`flex-1 min-w-0 truncate rounded px-1.5 py-1 text-[11px] font-medium transition-colors
+            className={`flex-1 basis-auto whitespace-nowrap rounded px-1.5 py-1 text-[11px] font-medium transition-colors
                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40
                         ${on ? 'bg-surface-panel text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'}`}
           >
@@ -199,7 +199,7 @@ export function InlineRow({ label, info, required, errors, warning, children }) 
     <div className="relative">
       <div className="flex items-center gap-2 min-h-[24px]">
         <span className="flex items-center gap-1 flex-1 min-w-0 text-[11px] text-text-secondary">
-          <span className="truncate">{label}</span>
+          <span className="break-words">{label}</span>
           {required && <span className="text-red-400" title="Required" aria-label="required">*</span>}
           {info && <InfoTip text={info} />}
         </span>
@@ -216,7 +216,7 @@ export function StackRow({ label, info, required, errors, warning, children }) {
     <div>
       {label && (
         <div className="relative flex items-center gap-1 mb-1 text-[11px] text-text-secondary">
-          <span className="truncate">{label}</span>
+          <span className="break-words">{label}</span>
           {required && <span className="text-red-400" title="Required" aria-label="required">*</span>}
           {info && <InfoTip text={info} />}
         </div>
