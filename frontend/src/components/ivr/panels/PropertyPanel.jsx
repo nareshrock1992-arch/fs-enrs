@@ -243,6 +243,11 @@ function NodePicker({ value, onChange, nodes = {}, excludeId, placeholder = 'Non
                  text-xs text-text-primary focus:outline-none focus:border-brand"
     >
       <option value="">{placeholder}</option>
+      {/* A saved connection back to this same node (e.g. "0 = repeat this menu")
+          must still show as selected, not as "Choose destination…". */}
+      {excludeId && value === excludeId && nodes[excludeId] && (
+        <option value={excludeId}>↺ This node ({names[excludeId] || 'repeat'})</option>
+      )}
       {nodeList.map(n => {
         const cfg = byType[n.type] || {};
         // Shared identity resolver: name (nickname → legacy label → config
