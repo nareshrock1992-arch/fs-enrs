@@ -78,7 +78,10 @@ wait_port_listening() {
 
 start_cc() {
   echo "Starting fs-cc..."
-  pm2 start "$FS_CC/ecosystem.config.js"
+  # Only the backend comes from pm2. The ecosystem file also has fs-frontend and
+  # fs-agent (built-page servers on 8000/8080 with --strictPort); the dev servers
+  # below take those ports, so starting them made pm2 restart them in a loop.
+  pm2 start "$FS_CC/ecosystem.config.js" --only fs-backend
   cd "$FS_CC/frontend"      && npm run dev -- --host 0.0.0.0 --port 8000 &
   cd "$FS_CC/agent-desktop" && npm run dev -- --host 0.0.0.0 --port 8080 &
   echo "fs-cc started."
