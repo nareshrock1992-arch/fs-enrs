@@ -59,6 +59,7 @@ export const NAV = [
       { label: 'Audit Log',          to: '/audit',             superAdminOnly: true },
       { label: 'General Settings',   to: '/settings',          adminOnly: true },
       { label: 'Telephony Gateways', to: '/settings/gateways', adminOnly: true },
+      { label: 'Phone Registrations', to: '/settings/phone-registrations', adminOnly: true },
       { label: 'Config Center',      to: '/config/vars',       superAdminOnly: true },
     ],
   },

@@ -276,6 +276,11 @@ export const api = {
     testMode:         ()          => request('GET', '/settings/test-mode'),
   },
 
+  // Phone registrations + SIP trunk status (read-only, admins)
+  phoneRegistrations: {
+    list: () => request('GET', '/phone-registrations'),
+  },
+
   // Telephony gateways (Phase 4 — gateway-agnostic dialing)
   gateways: {
     list:   ()       => request('GET',    '/gateways'),
