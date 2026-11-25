@@ -97,8 +97,8 @@ describe('the real application menu', () => {
     expect(links('SUPER_ADMIN')).toEqual(expect.arrayContaining(['/tenants', '/audit', '/config/vars', '/users', '/settings']));
   });
   it('administration pages are offered to ADMIN and SUPER_ADMIN only', () => {
-    for (const role of ['SUPERVISOR', 'OPERATOR', 'VIEWER']) for (const to of ['/users', '/settings', '/settings/gateways']) expect(links(role)).not.toContain(to);
-    expect(links('ADMIN')).toEqual(expect.arrayContaining(['/users', '/settings', '/settings/gateways']));
+    for (const role of ['SUPERVISOR', 'OPERATOR', 'VIEWER']) for (const to of ['/users', '/settings', '/settings/gateways', '/settings/phone-registrations']) expect(links(role)).not.toContain(to);
+    expect(links('ADMIN')).toEqual(expect.arrayContaining(['/users', '/settings', '/settings/gateways', '/settings/phone-registrations']));
   });
   it('reports and recordings follow their capabilities', () => {
     expect(links('VIEWER')).not.toContain('/reports/ers');
