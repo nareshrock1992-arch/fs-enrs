@@ -24,6 +24,7 @@ import recordingRoutes    from './recordings.js';
 import platformConfigRoutes from './platformConfig.js';
 import tenantRoutes         from './tenants.js';
 import auditRoutes          from './audit.js';
+import phoneRegistrationRoutes from './phoneRegistrations.js';
 
 const router = Router();
 
@@ -53,5 +54,6 @@ router.use('/recordings',    recordingRoutes);
 router.use('/platform/config', platformConfigRoutes);
 router.use('/tenants',         tenantRoutes);
 router.use('/audit',           auditRoutes);
+router.use('/phone-registrations', phoneRegistrationRoutes);
 
 export default router;

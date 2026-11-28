@@ -11,6 +11,7 @@ import {
   sectionSummaries, menuCanvasSummary, mapMenuErrors, MENU_PANEL_FIELDS,
   COLLECT, collectType, collectTypePatch, retriesOf, retriesPatch, menuExitLabel, defaultExitName,
   menuPromptPreview, isWired, hasAnyExit,
+  WRONG_KEY, wrongKeyChoice, wrongKeyGoKey, wrongKeyChoicePatch, simulateEntry, describeEntry,
 } from '../components/ivr/panels/menu/menuModel.js';
 
 // Menu (Gather DTMF) inspector view-model. Presentation only: these rules must
@@ -339,10 +340,21 @@ describe('collect type: a key menu or a number (derived — no stored field)', (
     const node = { ...NEW_NODE, branches: { '1': 'a', '2': '', max_attempts_exceeded: 'm', _default: 'd' } };
     expect(collectTypePatch(node, COLLECT.DIGITS)).toEqual({
       branches: { max_attempts_exceeded: 'm', _default: 'd' }, min_digits: 4, max_digits: 4,
+      terminators: '#',   // empty end key gets #; the wait and time between digits were already set, so they are kept
     });
     expect(collectType({ ...node, ...collectTypePatch(node, COLLECT.DIGITS) })).toBe(COLLECT.DIGITS);
     // Already more than one digit: only the options go.
-    expect(collectTypePatch({ ...node, max_digits: 6 }, COLLECT.DIGITS)).toEqual({ branches: { max_attempts_exceeded: 'm', _default: 'd' } });
+    expect(collectTypePatch({ ...node, max_digits: 6, terminators: '*' }, COLLECT.DIGITS))
+      .toEqual({ branches: { max_attempts_exceeded: 'm', _default: 'd' } });
+  });
+  it('switching to digits fills PIN timing only into empty fields', () => {
+    const bare = { type: 'gather', retry_mode: 'internal', max_attempts: 3, branches: {} };
+    expect(collectTypePatch(bare, COLLECT.DIGITS)).toEqual({
+      min_digits: 4, max_digits: 4, timeout_seconds: 8, inter_digit_timeout: 3, terminators: '#',
+    });
+    expect(collectTypePatch({ ...bare, timeout_seconds: 4 }, COLLECT.DIGITS)).toEqual({
+      min_digits: 4, max_digits: 4, inter_digit_timeout: 3, terminators: '#',
+    });
   });
   it('switching back to a menu writes one digit and keeps every exit', () => {
     expect(collectTypePatch(PIN, COLLECT.MENU)).toEqual({ min_digits: 1, max_digits: 1 });
@@ -351,6 +363,78 @@ describe('collect type: a key menu or a number (derived — no stored field)', (
   it('choosing the current type writes nothing', () => {
     expect(collectTypePatch(NEW_NODE, COLLECT.MENU)).toBeNull();
     expect(collectTypePatch(PIN, COLLECT.DIGITS)).toBeNull();
+  });
+});
+
+// HELP_DESK_2222 Menu 1 as published (v39), before and after "Any other key" was cleared.
+const HELP_DESK = {
+  type: 'gather', retry_mode: 'internal', max_attempts: 4, min_digits: 1, max_digits: 1, timeout_seconds: 4,
+  retry_on_invalid_option: 'yes', invalid_option_source_type: 'tts', invalid_option_text: 'This is an invalid option',
+  no_input_source_type: 'tts', no_input_text: 'No input', max_attempts_exceeded_source_type: 'tts', max_attempts_exceeded_text: 'Goodbye',
+  branches: { '1': 'xfer', '2': 'q', '3': 'q', _default: 'bye', max_attempts_exceeded: 'bye' },
+};
+const HELP_DESK_FIXED = { ...HELP_DESK, branches: { '1': 'xfer', '2': 'q', '3': 'q', max_attempts_exceeded: 'bye' } };
+
+describe('a key that isn\'t listed: one choice, never two competing settings', () => {
+  it('reads "go straight" while Any other key is connected, even with retry on', () => {
+    expect(wrongKeyChoice(HELP_DESK)).toBe(WRONG_KEY.GO);
+    expect(wrongKeyChoice(HELP_DESK_FIXED)).toBe(WRONG_KEY.RETRY);
+    expect(wrongKeyChoice({ ...HELP_DESK_FIXED, retry_on_invalid_option: 'no' })).toBe(WRONG_KEY.GO);
+    expect(wrongKeyChoice({ ...HELP_DESK_FIXED, retry_on_invalid_option: undefined })).toBe(WRONG_KEY.GO); // runtime default: no retry
+  });
+  it('ask again turns retry on and disconnects Any other key, keeping every other exit', () => {
+    expect(wrongKeyChoicePatch(freeze(structuredClone(HELP_DESK)), WRONG_KEY.RETRY)).toEqual({
+      retry_on_invalid_option: 'yes', branches: HELP_DESK_FIXED.branches,
+    });
+    expect(wrongKeyChoicePatch(HELP_DESK_FIXED, WRONG_KEY.RETRY)).toEqual({ retry_on_invalid_option: 'yes' });
+    expect(wrongKeyChoicePatch(HELP_DESK_FIXED, WRONG_KEY.GO)).toEqual({ retry_on_invalid_option: 'no' });
+  });
+  it('the go-straight picker edits Any other key, unless only an older wrong-key exit is connected', () => {
+    expect(wrongKeyGoKey(HELP_DESK)).toBe('_default');
+    expect(wrongKeyGoKey(HELP_DESK_FIXED)).toBe('_default');
+    expect(wrongKeyGoKey({ ...HELP_DESK_FIXED, branches: { '1': 'x', invalid_option: 'w' } })).toBe('invalid_option');
+  });
+});
+
+describe('test an entry (same steps as exec_gather)', () => {
+  const names = { xfer: 'Transfer', q: 'Queue', bye: 'Hang up', ok: 'Check PIN' };
+  const say = (node, typed) => describeEntry(node, simulateEntry(node, typed), id => names[id]);
+
+  it('a listed key goes to its node', () => {
+    expect(simulateEntry(HELP_DESK_FIXED, '2')).toMatchObject({ reason: 'valid', action: 'go', exit: '2', target: 'q' });
+    expect(say(HELP_DESK_FIXED, '1')).toEqual(['Goes to Transfer.']);
+  });
+  it('the bug the admin hit: with Any other key connected, a wrong key hangs up without the message', () => {
+    expect(simulateEntry(HELP_DESK, '7')).toMatchObject({ reason: 'valid', action: 'go', exit: '_default', target: 'bye' });
+  });
+  it('after clearing it, a wrong key plays the message and asks again', () => {
+    expect(simulateEntry(HELP_DESK_FIXED, '7')).toMatchObject({ reason: 'invalid_option', action: 'retry', attempts: 4 });
+    expect(say(HELP_DESK_FIXED, '7')).toEqual([
+      'Key 7 isn\'t listed: says “This is an invalid option”, then the prompt plays again (try 2 of 4).',
+      'If all 4 tries fail: says “Goodbye”, then goes to Hang up.',
+    ]);
+    expect(simulateEntry(HELP_DESK_FIXED, '')).toMatchObject({ reason: 'no_input', action: 'retry' });
+  });
+  it('one try: a failure goes straight to the final message and exit', () => {
+    expect(simulateEntry({ ...HELP_DESK_FIXED, max_attempts: 1 }, '7')).toMatchObject({ action: 'exhausted', target: 'bye' });
+  });
+  it('retry off: the reason exit, then the runtime fallbacks', () => {
+    const n = { ...HELP_DESK_FIXED, retry_on_no_input: 'no', branches: { '1': 'xfer', timeout: 'q' } };
+    expect(simulateEntry(n, '')).toMatchObject({ action: 'go', exit: 'timeout', target: 'q' });
+    expect(simulateEntry({ ...n, branches: { '1': 'xfer' } }, '')).toMatchObject({ action: 'go', exit: null });
+    expect(say({ ...n, branches: { '1': 'xfer' } }, '')[0]).toMatch(/disconnected/);
+  });
+  it('PIN: length decides; the end key and the maximum end the entry', () => {
+    expect(simulateEntry(PIN, '12')).toMatchObject({ reason: 'invalid_length', action: 'retry' });
+    expect(simulateEntry(PIN, '1234')).toMatchObject({ reason: 'valid', exit: '_default', target: 'ok' });
+    expect(simulateEntry(PIN, '12#99')).toMatchObject({ entry: '12', reason: 'invalid_length' });
+    expect(simulateEntry(PIN, '123456789')).toMatchObject({ entry: '123456', reason: 'valid' });
+    expect(say(PIN, '1234')).toEqual(['Goes to Check PIN, with 1234 saved as gather_result.']);
+  });
+  it('one attempt mode routes failures out at once; classic is not modelled', () => {
+    expect(simulateEntry(EXTERNAL, '')).toMatchObject({ action: 'go', exit: 'timeout' });
+    expect(simulateEntry(EXTERNAL, '5')).toMatchObject({ action: 'go', exit: 'invalid' });
+    expect(simulateEntry(CLASSIC_BARE, '1')).toBeNull();
   });
 });
 
@@ -390,9 +474,9 @@ describe('exit names: one vocabulary for panel, canvas card and wires', () => {
     expect(menuExitLabel(CLASSIC_BARE, 'invalid')).toBe('Wrong key');
     expect(menuExitLabel(PIN, 'invalid_option')).toBe('Wrong entry');
   });
-  it('_default is "Entry complete" when collecting digits, else the catch-all', () => {
-    expect(defaultExitName(PIN)).toBe('Entry complete');
-    expect(menuExitLabel(PIN, '_default')).toBe('Entry complete');
+  it('_default is "Number entered" when collecting digits, else the catch-all', () => {
+    expect(defaultExitName(PIN)).toBe('Number entered');
+    expect(menuExitLabel(PIN, '_default')).toBe('Number entered');
     expect(menuExitLabel(TEMPLATE_LAUNCH, '_default')).toBe('Any other key');
     expect(defaultExitName({ ...NEW_NODE, max_digits: 2, branches: { '10': 'a' } })).toBe('Any other entry');
   });
@@ -474,12 +558,22 @@ describe('source wiring', () => {
     const antiPattern = /\n[ \t]+(const|function) [A-Z][A-Za-z0-9]*\s*(=\s*\([^)]*\)\s*=>|\()/;
     expect(antiPattern.test(menu)).toBe(false);
   });
-  it('MenuInspector is split into Settings and Exits tabs', () => {
-    expect(menu).toMatch(/<InspectorTabs/);
-    expect(menu).toMatch(/id: 'settings', label: 'Settings'/);
-    expect(menu).toMatch(/id: 'exits',/);
-    expect(menu).toMatch(/function SettingsTab\(/);
-    expect(menu).toMatch(/function ExitsTab\(/);
+  it('MenuInspector is one page in four plain sections, in order (no tabs)', () => {
+    expect(menu).not.toMatch(/<InspectorTabs/);
+    const order = ['1. What the caller hears', '2. Keys the caller can press', '3. If the caller gets it wrong', '4. More settings']
+      .map(t => menu.indexOf(t));
+    expect(order.every(i => i > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(menu).toMatch(/2\. The number the caller enters/);
+  });
+  it('each retryable problem offers Ask again or Go to a node, writing only retry_on_<slot>', () => {
+    expect(menu).toMatch(/\{ value: 'retry', label: 'Ask again' \}/);
+    expect(menu).toMatch(/\{ value: 'exit', {2}label: 'Go to a node' \}/);
+    expect(menu).toMatch(/togglePatch\(`retry_on_\$\{slot\}`, v === 'retry'\)/);
+    for (const slot of ['no_input', 'invalid_option', 'invalid_length']) expect(menu).toMatch(new RegExp(`slot="${slot}"`));
+  });
+  it('switching to a number asks before removing keys', () => {
+    expect(menu).toMatch(/confirmLabel: 'Remove keys'/);
   });
   it('the inspector header no longer prints the internal node id (copy button instead)', () => {
     expect(panel).not.toMatch(/font-mono truncate mt-0\.5">\{node\.id\}/);

@@ -121,9 +121,20 @@ export function collectType(node) {
 export const DEFAULT_DIGITS_LENGTH = 4;
 
 /**
- * Switching between a key menu and collecting digits writes only the digit
- * counts (and, going to digits, removes the option keys — the panel confirms
- * that first). Everything else, including every other exit, is kept.
+ * Timing that suits a PIN or account number, written only into fields the
+ * administrator has left empty when a node is switched to "Enters a number".
+ * A caller needs longer to start typing a PIN than to press one key, and the
+ * time between digits is what ends the entry when there is no end key.
+ */
+export const NUMBER_DEFAULTS = Object.freeze({
+  timeout_seconds: 8, inter_digit_timeout: 3, terminators: '#',
+});
+
+/**
+ * Switching between a key menu and collecting digits writes the digit counts
+ * (and, going to digits, removes the option keys — the panel confirms that
+ * first) plus NUMBER_DEFAULTS for fields that are still empty. A value the
+ * administrator already set is never replaced. Every other exit is kept.
  */
 export function collectTypePatch(node, target) {
   const current = collectType(node);
@@ -140,10 +151,134 @@ export function collectTypePatch(node, target) {
       patch.min_digits = DEFAULT_DIGITS_LENGTH;
       patch.max_digits = DEFAULT_DIGITS_LENGTH;
     }
+    for (const [k, v] of Object.entries(NUMBER_DEFAULTS)) if (!isSet(node?.[k])) patch[k] = v;
     return patch;
   }
   if (target === COLLECT.MENU) return { min_digits: 1, max_digits: 1 };
   return null;
+}
+
+// ── A key that isn't listed (key menus, Retry in this node) ────────────────
+// exec_gather sends an unlisted key to _default ("Any other key") when that is
+// connected, and only otherwise to the wrong-key handling. The panel shows the
+// two as ONE choice so they can never silently compete.
+
+export const WRONG_KEY = Object.freeze({ RETRY: 'retry', GO: 'go' });
+
+/** What an unlisted key does today: ask again, or go straight to a node. */
+export function wrongKeyChoice(node) {
+  if (isWired(node, '_default')) return WRONG_KEY.GO;
+  return effective(node).retry.invalid_option ? WRONG_KEY.RETRY : WRONG_KEY.GO;
+}
+
+/** Which exit the "go straight to" picker edits: _default, unless only an older invalid_option exit is connected. */
+export function wrongKeyGoKey(node) {
+  return isWired(node, '_default') || !isWired(node, 'invalid_option') ? '_default' : 'invalid_option';
+}
+
+/**
+ * Ask again = retry_on_invalid_option yes AND no _default (otherwise _default
+ * would still take the key). Go straight = retry_on_invalid_option no; the
+ * destination is then picked on wrongKeyGoKey.
+ */
+export function wrongKeyChoicePatch(node, choice) {
+  if (choice === WRONG_KEY.RETRY) {
+    const patch = togglePatch('retry_on_invalid_option', true);
+    if (Object.prototype.hasOwnProperty.call(node?.branches || {}, '_default')) {
+      const { _default: _removed, ...rest } = node.branches;
+      patch.branches = rest;
+    }
+    return patch;
+  }
+  if (choice === WRONG_KEY.GO) return togglePatch('retry_on_invalid_option', false);
+  return null;
+}
+
+// ── Test an entry: what one caller entry does, step for step like exec_gather ─
+
+/**
+ * What the engine does with what a caller types on the first try. `typed` is
+ * the keys pressed ('' = nothing). The entry ends at an end key and at the
+ * maximum digits, as getDigits does. Returns null for Classic nodes (their
+ * engine path is different and is not modelled here).
+ *
+ * { entry, reason: 'valid'|'no_input'|'invalid_length'|'invalid_option',
+ *   action: 'go'|'retry'|'exhausted', exit, target, attempts,
+ *   exhausted: { exit, target } }   // where the call goes when every try fails
+ */
+export function simulateEntry(node, typed) {
+  const eff = effective(node);
+  if (eff.mode === MODE.CLASSIC) return null;
+  const br = node?.branches || {};
+  const has = k => isWired(node, k);
+  const first = (...keys) => keys.find(has) ?? null;
+  let entry = String(typed ?? '');
+  const cut = [...entry].findIndex(c => eff.terminators.includes(c));
+  if (cut >= 0) entry = entry.slice(0, cut);
+  entry = entry.slice(0, eff.max_digits);
+
+  let reason;
+  if (entry === '') reason = 'no_input';
+  else if (entry.length < eff.min_digits) reason = 'invalid_length';
+  else reason = (has(entry) || has('_default')) ? 'valid' : 'invalid_option';
+
+  const out = (action, exit) => ({
+    entry, reason, action, exit, target: exit ? br[exit] : null, attempts: eff.attempts,
+    exhausted: exhaustedExit(),
+  });
+  function exhaustedExit() {
+    if (eff.mode !== MODE.INTERNAL) return null;
+    const exit = first('max_attempts_exceeded', 'timeout', '_default');
+    return { exit, target: exit ? br[exit] : null };
+  }
+
+  if (reason === 'valid') return out('go', has(entry) ? entry : '_default');
+
+  if (eff.mode === MODE.EXTERNAL) {
+    if (reason === 'no_input') return out('go', first('timeout'));
+    return out('go', first('invalid'));
+  }
+
+  if (!eff.retry[reason]) return out('go', first(reason, '_default', 'timeout', 'invalid'));
+  if (eff.attempts > 1) return out('retry', null);
+  const ex = exhaustedExit();
+  return out('exhausted', ex.exit);
+}
+
+function messageText(node, slot) {
+  const src = sourceOf(node, slot);
+  const text = String(node?.[`${slot}_text`] || '').trim();
+  if (src === 'tts' && text) return `says “${text}”`;
+  if (src === 'audio' && node?.[`${slot}_audio_url`]) return `plays ${fileName(node[`${slot}_audio_url`])}`;
+  return 'no message';
+}
+
+/** simulateEntry's result in plain words, one sentence per line. nameOf: node id → display name. */
+export function describeEntry(node, r, nameOf) {
+  const eff = effective(node);
+  const digits = collectType(node) === COLLECT.DIGITS;
+  const dest = target => (target ? `goes to ${nameOf(target)}` : 'nothing is connected, so the caller is disconnected');
+  const why = {
+    no_input: 'Nothing entered',
+    invalid_length: `Too few digits (${r.entry.length} of ${eff.min_digits})`,
+    invalid_option: digits ? `${r.entry} isn't accepted` : `Key ${r.entry} isn't listed`,
+  }[r.reason];
+  const lines = [];
+  if (r.reason === 'valid') {
+    lines.push(`${dest(r.target)}${digits ? `, with ${r.entry} saved as ${eff.variable_name}` : ''}.`);
+  } else if (r.action === 'go') {
+    lines.push(`${why}: no retry, ${dest(r.target)}.`);
+  } else if (r.action === 'retry') {
+    const again = eff.replay[r.reason] ? 'the prompt plays again' : 'it waits again';
+    lines.push(`${why}: ${messageText(node, r.reason)}, then ${again} (try 2 of ${r.attempts}).`);
+  } else {
+    lines.push(`${why}: no tries left.`);
+  }
+  if (r.exhausted && (r.action === 'retry' || r.action === 'exhausted')) {
+    const lead = r.action === 'retry' ? `If all ${r.attempts} tries fail` : 'Then';
+    lines.push(`${lead}: ${messageText(node, 'max_attempts_exceeded')}, then ${dest(r.exhausted.target)}.`);
+  }
+  return lines.map(l => l.charAt(0).toUpperCase() + l.slice(1));
 }
 
 // ── Retries (shown as retries, stored as attempts) ─────────────────────────
@@ -400,7 +535,7 @@ const EXIT_NAMES = Object.freeze({
 
 /** Name of the _default exit: the success exit when collecting digits, else the catch-all. */
 export function defaultExitName(node) {
-  if (collectType(node) === COLLECT.DIGITS) return 'Entry complete';
+  if (collectType(node) === COLLECT.DIGITS) return 'Number entered';
   return effective(node).max_digits > 1 ? 'Any other entry' : 'Any other key';
 }
 

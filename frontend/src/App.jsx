@@ -25,6 +25,7 @@ import ErsReport           from './pages/reports/ErsReport.jsx';
 import EnsReport           from './pages/reports/EnsReport.jsx';
 import SettingsPage        from './pages/settings/SettingsPage.jsx';
 import TelephonyGateways   from './pages/settings/TelephonyGateways.jsx';
+import PhoneRegistrations from './pages/settings/PhoneRegistrations.jsx';
 import SysVarsPage         from './pages/settings/SysVarsPage.jsx';
 import SwitchCorePage      from './pages/settings/SwitchCorePage.jsx';
 import EventSocketPage     from './pages/settings/EventSocketPage.jsx';
@@ -124,6 +125,7 @@ export default function App() {
         <Route path="audit"    element={<RequireSuperAdmin><AuditLog /></RequireSuperAdmin>} />
         <Route path="settings" element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
         <Route path="settings/gateways" element={<RequireAdmin><TelephonyGateways /></RequireAdmin>} />
+        <Route path="settings/phone-registrations" element={<RequireAdmin><PhoneRegistrations /></RequireAdmin>} />
 
         {/* Platform Configuration Center (Phase 7) */}
         <Route path="config" element={<RequireSuperAdmin><ConfigCenter /></RequireSuperAdmin>}>
