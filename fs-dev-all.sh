@@ -78,9 +78,11 @@ wait_port_listening() {
 
 start_cc() {
   echo "Starting fs-cc..."
+  # fs-cc OPS-2 (fs-cc 448dcdd): pm2 runs fs-backend plus fs-frontend (:8000) and
+  # fs-agent (:8080), which serve the built pages in dist/. No Vite dev servers here:
+  # they took those ports and pm2 restarted the page servers in a loop. Rebuild the
+  # pages after a change with fs-cc scripts/dev-deploy.sh frontend|agent.
   pm2 start "$FS_CC/ecosystem.config.js"
-  cd "$FS_CC/frontend"      && npm run dev -- --host 0.0.0.0 --port 8000 &
-  cd "$FS_CC/agent-desktop" && npm run dev -- --host 0.0.0.0 --port 8080 &
   echo "fs-cc started."
 }
 
